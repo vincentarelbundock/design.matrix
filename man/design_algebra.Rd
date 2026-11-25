@@ -60,9 +60,7 @@ the factor codes and numeric variables, with the usual base R operators:
 }
 \details{
 \itemize{
-\item \code{x \%*\% beta}: \code{X \%*\% beta}, an \code{nrow(x)} by \code{ncol(beta)} matrix. With
-many columns (48 or more), blocks of dense rows are multiplied with
-the BLAS that R uses, so the dense matrix is never formed whole.
+\item \code{x \%*\% beta}: \code{X \%*\% beta}, an \code{nrow(x)} by \code{ncol(beta)} matrix.
 \item \code{crossprod(x, w)}: \code{t(X) \%*\% w}, an \code{ncol(x)} by \code{ncol(w)} matrix.
 \item \code{colSums(x, group = g)} and \code{colMeans(x, group = g)} summarize each
 design column within groups of rows. Group order, row names and missing

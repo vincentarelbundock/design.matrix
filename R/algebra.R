@@ -171,9 +171,7 @@ jac_kernel_ok <- function(J) {
 #' Products with a `design_matrix` are computed directly from
 #' the factor codes and numeric variables, with the usual base R operators:
 #'
-#' * `x %*% beta`: `X %*% beta`, an `nrow(x)` by `ncol(beta)` matrix. With
-#'   many columns (48 or more), blocks of dense rows are multiplied with
-#'   the BLAS that R uses, so the dense matrix is never formed whole.
+#' * `x %*% beta`: `X %*% beta`, an `nrow(x)` by `ncol(beta)` matrix.
 #' * `crossprod(x, w)`: `t(X) %*% w`, an `ncol(x)` by `ncol(w)` matrix.
 #' * `colSums(x, group = g)` and `colMeans(x, group = g)` summarize each
 #'   design column within groups of rows. Group order, row names and missing
@@ -236,10 +234,6 @@ jac_kernel_ok <- function(J) {
 #' @name design_algebra
 NULL
 
-## From this many columns of B, `x %*% B` multiplies blocks of dense rows
-## with the BLAS instead of visiting each row's entries.
-dm_blas_columns <- 48L
-
 ## X %*% B for a design matrix: an n x K matrix.
 dm_mult <- function(x, beta) {
     p <- ncol(x)
@@ -255,11 +249,6 @@ dm_mult <- function(x, beta) {
     storage.mode(B) <- "double"
     if (!jac_kernel_ok(J)) {
         out <- as.matrix(J) %*% B
-    } else if (ncol(B) >= dm_blas_columns) {
-        ## Many columns: blocks of dense rows times B with R's BLAS. Rows are
-        ## not grouped here: the BLAS may round a row differently depending
-        ## on its place in a block, and grouping must not change results.
-        out <- do.call(.Call, c(list(C_dm_jac_mult_blas), jac_args(J), list(B)))
     } else {
         g <- dm_groups(J, cost = dm_row_cost(J) * ncol(B))
         out <- do.call(.Call, c(list(C_dm_jac_mult), jac_args(J),
