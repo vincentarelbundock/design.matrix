@@ -20,7 +20,61 @@ options(width = 200)
 
 ## Introduction
 
-The `design.matrix` package builds model matrices that are identical, bit for bit, to those returned by `stats::model.matrix()`, and computes products with the design without forming the dense matrix. The goal is to be more efficient than `stats::model.matrix()`, in both speed and memory use.
+The `design.matrix` package builds model matrices that are identical, bit for bit, to those returned by `stats::model.matrix()`, and computes with them without forming the dense matrix. Most uses of a model matrix only need something derived from it: predictions, their standard errors, or weighted and grouped sums. Computing those directly from the factor codes and numeric variables saves both time and memory, often by an order of magnitude or more. On data with 200,000 rows and 119 columns, on one thread:
+
+```{r}
+#| include: false
+# Benchmarks for the summary table, on the data of the sections below.
+library(design.matrix)
+design_threads(1)
+options(design.matrix.dedup = FALSE)
+set.seed(1)
+n <- 2e5
+big <- data.frame(
+    y = rnorm(n),
+    x = rnorm(n),
+    f1 = factor(sample(sprintf("a%02d", 1:50), n, TRUE)),
+    f2 = factor(sample(letters[1:20], n, TRUE)),
+    cl = sample(1:1000, n, TRUE))
+fo <- y ~ x * f1 + f2
+fit_big <- lm(fo, big)
+spec_big <- design_matrix(fit_big, newdata = NULL)
+w <- rnorm(n)
+sfo <- y ~ x + f1 * f2
+# Each expression runs once before it is timed (bench measures memory on the
+# first timed run), so that a plan is prepared, as in repeated use.
+warm_mark <- function(...) {
+    exprs <- eval(substitute(alist(...)))
+    for (e in exprs) invisible(eval(e, parent.frame()))
+    bench::mark(..., iterations = 5, check = FALSE)
+}
+intro <- list(
+    predict = warm_mark(
+        predict(fit_big, big),
+        drop(design_matrix(spec_big, big) %*% coef(fit_big))),
+    se = warm_mark(
+        predict(fit_big, big, se.fit = TRUE)$se.fit,
+        sqrt(quadratic_diagonal(design_matrix(spec_big, big), vcov(fit_big)))),
+    sums = warm_mark(
+        rowsum(w * model.matrix(fo, big), big$cl),
+        colSums(w * design_matrix(fo, big), group = big$cl)),
+    sparse = warm_mark(
+        Matrix::sparse.model.matrix(sfo, big),
+        as(design_matrix(sfo, big), "CsparseMatrix")))
+cell <- function(task, i) {
+    m <- intro[[task]]
+    paste0(format(m$median[i]), ", ", format(m$mem_alloc[i]))
+}
+```
+
+| Task | Base R | `design.matrix` |
+|---|---|---|
+| Predictions on new data | `r cell("predict", 1)` | `r cell("predict", 2)` |
+| Standard errors of predictions | `r cell("se", 1)` | `r cell("se", 2)` |
+| Grouped weighted sums (cluster-robust variance) | `r cell("sums", 1)` | `r cell("sums", 2)` |
+| Sparse model matrix (vs. `Matrix::sparse.model.matrix()`) | `r cell("sparse", 1)` | `r cell("sparse", 2)` |
+
+Memory is the total allocated on the R heap during one evaluation; the benchmarks below give the details. When you do need the dense matrix, `design.matrix` returns the identical matrix at about the same speed on one thread and about twice as fast on four threads, but it takes the same memory.
 
 Use `design.matrix` when you have a formula (or fitted model) and data, and you want to avoid the cost of allocating, filling, and storing a dense model matrix. If you already have the dense matrix `X`, use it directly.
 
@@ -148,7 +202,7 @@ b <- as.matrix(D)
 identical(a, b, num.eq = FALSE)
 ```
 
-The following construction benchmark uses one thread. Building the design defers the cost of allocating and filling the dense matrix until `as.matrix()` is called.
+The following construction benchmark uses one thread. Building the design defers the cost of allocating and filling the dense matrix until `as.matrix()` is called; the next section times that step.
 
 ```{r}
 library(design.matrix)
@@ -165,9 +219,8 @@ big <- data.frame(
 fo <- y ~ x * f1 + f2
 
 bench::mark(
-    "stats::model.matrix"      = model.matrix(fo, big),
-    "design_matrix"            = design_matrix(fo, big),
-    "as.matrix(design_matrix)" = as.matrix(design_matrix(fo, big)),
+    "stats::model.matrix" = model.matrix(fo, big),
+    "design_matrix"       = design_matrix(fo, big),
     iterations = 10, check = FALSE)[c("expression", "min", "median", "mem_alloc")]
 ```
 
