@@ -33,8 +33,13 @@
         stop("Select rows with `x[i, ]`.", call. = FALSE)
     }
     if (missing(i)) return(x)
-    rows <- dm_row_index(i, nrow(x))
-    dm_rows(x, rows)
+    n <- nrow(x)
+    rows <- dm_row_index(i, n)
+    ## Row names of a design are unique, so selected names repeat exactly
+    ## when the indices do: one counting pass, shared by both designs of a
+    ## combination.
+    dup <- length(rows) > 1L && any(tabulate(rows, nbins = n) > 1L)
+    dm_rows(x, rows, dup)
 }
 
 ## Positive row indices from a matrix-style subscript.
@@ -55,17 +60,18 @@ dm_row_index <- function(i, n) {
         if (any(i > 0L)) stop("Cannot mix positive and negative row indices.", call. = FALSE)
         return(seq_len(n)[i])
     }
-    i <- i[i != 0L]
+    if (length(i) && min(i) == 0L) i <- i[i != 0L]
     if (length(i) && max(i) > n) stop("Row index out of bounds.", call. = FALSE)
     i
 }
 
-## Rows `rows` (positive, within range) of a design or combination.
-dm_rows <- function(x, rows) {
+## Rows `rows` (positive, within range) of a design or combination; `dup`:
+## whether `rows` repeats an index.
+dm_rows <- function(x, rows, dup) {
     if (dm_is_comb(x)) {
         pick <- function(s) if (length(s) > 1L) s[rows] else s
-        return(dm_combine(dm_rows(x$design, rows), pick(x$scale),
-                          if (is.null(x$design2)) NULL else dm_rows(x$design2, rows),
+        return(dm_combine(dm_rows(x$design, rows, dup), pick(x$scale),
+                          if (is.null(x$design2)) NULL else dm_rows(x$design2, rows, dup),
                           pick(x$scale2)))
     }
     out <- x
@@ -83,7 +89,7 @@ dm_rows <- function(x, rows) {
     att <- attributes(vars)
     new <- lapply(vars, dm_var_rows, rows = rows)
     attributes(new) <- att
-    attr(new, "row.names") <- dm_row_names(att[["row.names"]], rows)
+    attr(new, "row.names") <- dm_row_names(att[["row.names"]], rows, dup)
     out$vars <- new
     out
 }
@@ -93,13 +99,13 @@ dm_rows <- function(x, rows) {
 dm_var_rows <- function(v, rows) {
     att <- attributes(v)
     if (is.matrix(v)) {
-        y <- v[rows, , drop = FALSE]
+        y <- unclass(v)[rows, , drop = FALSE]
         dn <- dimnames(v)
         if (!is.null(dn[[1L]])) dn[[1L]] <- dn[[1L]][rows]
         att$dim <- dim(y)
         att$dimnames <- dn
     } else {
-        y <- unclass(v)[rows]
+        y <- .subset(v, rows)
         if (!is.null(att$names)) att$names <- att$names[rows]
     }
     attributes(y) <- att
@@ -107,12 +113,8 @@ dm_var_rows <- function(v, rows) {
 }
 
 ## Row names of the selected rows, as `[.data.frame` gives them.
-dm_row_names <- function(rn, rows) {
-    if (is.integer(rn) && length(rn) == 2L && is.na(rn[1L])) {
-        new <- rows
-    } else {
-        new <- rn[rows]
-    }
-    if (anyDuplicated(new)) new <- make.unique(as.character(new))
+dm_row_names <- function(rn, rows, dup) {
+    new <- if (is.integer(rn) && length(rn) == 2L && is.na(rn[1L])) rows else rn[rows]
+    if (dup) new <- make.unique(as.character(new))
     new
 }
