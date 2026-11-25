@@ -171,7 +171,9 @@ jac_kernel_ok <- function(J) {
 #' Products with a `design_matrix` are computed directly from
 #' the factor codes and numeric variables, with the usual base R operators:
 #'
-#' * `x %*% beta`: `X %*% beta`, an `nrow(x)` by `ncol(beta)` matrix.
+#' * `x %*% beta`: `X %*% beta`, an `nrow(x)` by `ncol(beta)` matrix. With
+#'   many columns (48 or more), blocks of dense rows are multiplied with
+#'   the BLAS that R uses, so the dense matrix is never formed whole.
 #' * `crossprod(x, w)`: `t(X) %*% w`, an `ncol(x)` by `ncol(w)` matrix.
 #' * `colSums(x, group = g)` and `colMeans(x, group = g)` summarize each
 #'   design column within groups of rows. Group order, row names and missing
@@ -234,6 +236,10 @@ jac_kernel_ok <- function(J) {
 #' @name design_algebra
 NULL
 
+## From this many columns of B, `x %*% B` multiplies blocks of dense rows
+## with the BLAS instead of visiting each row's entries.
+dm_blas_columns <- 48L
+
 ## X %*% B for a design matrix: an n x K matrix.
 dm_mult <- function(x, beta) {
     p <- ncol(x)
@@ -249,6 +255,11 @@ dm_mult <- function(x, beta) {
     storage.mode(B) <- "double"
     if (!jac_kernel_ok(J)) {
         out <- as.matrix(J) %*% B
+    } else if (ncol(B) >= dm_blas_columns) {
+        ## Many columns: blocks of dense rows times B with R's BLAS. Rows are
+        ## not grouped here: the BLAS may round a row differently depending
+        ## on its place in a block, and grouping must not change results.
+        out <- do.call(.Call, c(list(C_dm_jac_mult_blas), jac_args(J), list(B)))
     } else {
         g <- dm_groups(J, cost = dm_row_cost(J) * ncol(B))
         out <- do.call(.Call, c(list(C_dm_jac_mult), jac_args(J),
@@ -395,6 +406,30 @@ quadratic_diagonal <- function(x, V) {
     q <- do.call(.Call, c(list(C_dm_jac_quad), jac_args(J),
                           list(V, if (is.null(g)) NULL else g$first, design_threads())))
     if (is.null(g)) q else q[g$map]
+}
+
+#' Which rows of a design matrix are finite?
+#'
+#' `finite_rows(x)` is `rowSums(!is.finite(as.matrix(x))) == 0`, computed
+#' without forming the dense matrix: `TRUE` for each row whose entries are
+#' all finite, `FALSE` for a row with any `NA`, `NaN` or infinite entry,
+#' including entries that overflow (such as the product of two large numeric
+#' variables) and, for a combination of designs, scaled sums that overflow.
+#' Use `all(finite_rows(x))` before algebra that requires finite input.
+#'
+#' @param x A `design_matrix`.
+#' @return A logical vector with one value per row.
+#' @examples
+#' d <- data.frame(x = c(1, NA, 3, Inf), f = gl(2, 2))
+#' finite_rows(design_matrix(~ x * f, d))
+#' @export
+finite_rows <- function(x) {
+    checkmate::assert_class(x, "design_matrix")
+    J <- as_jac(x)
+    if (!jac_kernel_ok(J)) {
+        return(unname(rowSums(!is.finite(as.matrix(x))) == 0))
+    }
+    do.call(.Call, c(list(C_dm_jac_finite), jac_args(J), list(design_threads())))
 }
 
 ## Groups of identical rows (same bits in every input of the row), or NULL.

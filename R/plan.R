@@ -78,8 +78,50 @@ design_plan.default <- function(object, ...) {
         xlevels <- xlevels[names(xlevels) %in% vnames]
         if (!length(xlevels)) xlevels <- NULL
     }
-    dm_new_plan(parts$terms, xlevels, parts$contrasts, NULL,
-                drop_intercept = isTRUE(parts$drop_intercept))
+    drop_intercept <- isTRUE(parts$drop_intercept)
+    key <- list(parts$terms, xlevels, parts$contrasts, drop_intercept)
+    plan <- dm_plan_cache_get(key)
+    if (is.null(plan)) {
+        plan <- dm_new_plan(parts$terms, xlevels, parts$contrasts, NULL,
+                            drop_intercept = drop_intercept)
+        dm_plan_cache_set(key, plan)
+    }
+    plan
+}
+
+## Plans of fitted models, memoized on the pieces that define them. A plan is
+## a function of its terms (with their environment and predvars), levels,
+## contrasts and intercept flag only, so two models with identical pieces
+## share one plan, and the fast path a plan learns from its first data
+## (stored by reference in `plan$lazy`) is reused by later calls, such as
+## repeated `design_matrix(fit, newdata = batch)`. Keys are compared with
+## identical(), which compares environments by address; the cache keeps the
+## most recently used `dm_plan_cache_size` plans.
+dm_plan_cache <- new.env(parent = emptyenv())
+dm_plan_cache$entries <- list()
+dm_plan_cache_size <- 16L
+
+dm_plan_cache_get <- function(key) {
+    entries <- dm_plan_cache$entries
+    for (i in seq_along(entries)) {
+        if (identical(entries[[i]]$key, key)) {
+            if (i > 1L) dm_plan_cache$entries <- c(entries[i], entries[-i])
+            return(entries[[i]]$plan)
+        }
+    }
+    NULL
+}
+
+dm_plan_cache_clear <- function() {
+    dm_plan_cache$entries <- list()
+    invisible(NULL)
+}
+
+dm_plan_cache_set <- function(key, plan) {
+    entries <- c(list(list(key = key, plan = plan)), dm_plan_cache$entries)
+    if (length(entries) > dm_plan_cache_size) entries <- entries[seq_len(dm_plan_cache_size)]
+    dm_plan_cache$entries <- entries
+    invisible(plan)
 }
 
 ## Assemble the plan on first reuse, without evaluating the training formula again.

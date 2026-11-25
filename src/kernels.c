@@ -23,11 +23,16 @@
  *  Copyright (C) 2026 Vincent Arel-Bundock.  GPL (>= 2).
  */
 
+#define USE_FC_LEN_T
 #include <string.h>
 #include <limits.h>
 #include <float.h>
 #include <math.h>
 #include <R.h>
+#include <R_ext/BLAS.h>
+#ifndef FCONE
+# define FCONE
+#endif
 #include <Rinternals.h>
 #include "dm.h"
 
@@ -475,6 +480,72 @@ SEXP dm_jac_mult(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
     return out;
 }
 
+/* J %*% B for many columns: blocks of rows of J are filled densely and
+   multiplied by B with the BLAS that R uses, writing
+   straight into the output, so that the n x p matrix is never formed.  A
+   block holding NaN or NA goes through the row-by-row kernel instead, so
+   that NA and NaN land where the dense product (which R computes without
+   the BLAS in that case) puts them.  Blocks are visited in order on one
+   thread; the BLAS may use its own threads. */
+#define BLAS_BLOCK 512
+SEXP dm_jac_mult_blas(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
+		      SEXP s2, SEXP B)
+{
+    jctx J;
+    build_jac(&J, setup1, vars1, s1, setup2, vars2, s2);
+    R_xlen_t n = J.d[0].n;
+    int p = J.p, K = ncols(B);
+    if (nrows(B) != p) error("non-conformable arguments");
+    const double *b = REAL(B);
+    SEXP out = PROTECT(allocMatrix(REALSXP, n, K));
+    double *o = REAL(out);
+    if (n == 0 || K == 0) {
+	UNPROTECT(1 + J.nd);
+	return out;
+    }
+    if (p == 0) {
+	for (R_xlen_t k = 0; k < n * (R_xlen_t) K; k++) o[k] = 0.0;
+	UNPROTECT(1 + J.nd);
+	return out;
+    }
+    scratch *S = alloc_scratch(1, p, J.nd);
+    double *A = (double *) R_alloc((size_t) BLAS_BLOCK * p, sizeof(double));
+    const double one = 1.0, zero = 0.0;
+    int ldc = (int) n;
+    if ((R_xlen_t) ldc != n) error("too many rows for the BLAS");
+    for (R_xlen_t i0 = 0; i0 < n; i0 += BLAS_BLOCK) {
+	int nb = (int) (n - i0 < BLAS_BLOCK ? n - i0 : BLAS_BLOCK);
+	int nan = 0;
+	memset(A, 0, (size_t) nb * p * sizeof(double));
+	for (int r = 0; r < nb; r++) {
+	    /* the entries the kernels visit; the others are structural zeros
+	       (a row with a non-finite input lists every column) */
+	    int m = jac_entries(&J, i0 + r, 0, S);
+	    for (int u = 0; u < m; u++) {
+		double v = S->vals[u];
+		if (ISNAN(v)) nan = 1;
+		A[r + (R_xlen_t) S->cols[u] * nb] = v;
+	    }
+	}
+	if (!nan) {
+	    F77_CALL(dgemm)("N", "N", &nb, &K, &p, &one, A, &nb, b, &p, &zero,
+			    o + i0, &ldc FCONE FCONE);
+	    continue;
+	}
+	for (int r = 0; r < nb; r++) {
+	    int m = jac_entries(&J, i0 + r, 0, S);
+	    for (int k = 0; k < K; k++) {
+		const double *bk = b + (R_xlen_t) k * p;
+		double acc = 0.0;
+		for (int u = 0; u < m; u++) acc += S->vals[u] * bk[S->cols[u]];
+		o[i0 + r + (R_xlen_t) k * n] = acc;
+	    }
+	}
+    }
+    UNPROTECT(1 + J.nd);
+    return out;
+}
+
 /* t(J) %*% W, W is n x K; with `group` (codes 1..G), sums within groups:
    returns p x (K * G), column k + K * g.  A row with a non-finite weight
    lists every column (0 * NA is NA in the dense product).  Single-threaded:
@@ -693,4 +764,36 @@ SEXP dm_jac_entries_mean(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2,
     for (R_xlen_t i = 0; i < k; i++) tot += jac_entries(&J, i, 0, S);
     UNPROTECT(J.nd);
     return ScalarReal(k > 0 ? tot / (double) k : 0.0);
+}
+
+/* Is every entry of each row finite?  Entries that the kernels skip are
+   structural zeros, which are finite unless an input of the row is not
+   (the caller checks the inputs); a non-finite scale lists every column of
+   its design, so that Inf * 0 is seen.  This catches products and sums that
+   overflow.  Returns a logical vector with one value per row. */
+SEXP dm_jac_finite(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
+		   SEXP s2, SEXP nthreads_)
+{
+    jctx J;
+    build_jac(&J, setup1, vars1, s1, setup2, vars2, s2);
+    R_xlen_t n = J.d[0].n;
+    int p = J.p, nthreads = dm_worker_count(asInteger(nthreads_), n);
+    SEXP out = PROTECT(allocVector(LGLSXP, n));
+    int *o = LOGICAL(out);
+    scratch *S = alloc_scratch(nthreads, p, J.nd);
+
+#ifdef _OPENMP
+#pragma omp parallel for if(nthreads > 1) num_threads(nthreads) schedule(static)
+#endif
+    for (R_xlen_t i = 0; i < n; i++) {
+	scratch *St = &S[thread_id()];
+	int m = jac_entries(&J, i, 0, St);
+	int ok = 1;
+	for (int u = 0; u < m; u++) {
+	    if (!R_FINITE(St->vals[u])) { ok = 0; break; }
+	}
+	o[i] = ok;
+    }
+    UNPROTECT(1 + J.nd);
+    return out;
 }

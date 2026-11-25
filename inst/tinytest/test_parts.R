@@ -195,6 +195,9 @@ if (requireNamespace("pscl", quietly = TRUE)) {
 }
 
 # a plan without training data prepares its fast path on first use
+# (plans are memoized on their pieces, so an equal model fitted above would
+# hand back its warmed plan: start from an empty cache)
+design.matrix:::dm_plan_cache_clear()
 fit <- lm(update(rhs, y ~ .), d)
 p <- design.matrix:::design_plan(fit)
 expect_null(p$fast)
@@ -293,3 +296,18 @@ expect_equal(n_calls, 1)
 expect_false(is.null(p$lazy$fast))
 expect_true(strict_identical(X, reference(p, nd)))
 expect_error(design.matrix:::design_plan(structure(list(), class = "not_a_model")), "terms\\(\\) method")
+
+# plans of fitted models are memoized on their pieces
+design.matrix:::dm_plan_cache_clear()
+fit1 <- lm(update(rhs, y ~ .), d)
+p1 <- design.matrix:::design_plan(fit1)
+invisible(design_matrix(p1, nd))
+expect_identical(design_matrix(fit1, newdata = nd[1:2, ])$path, "fast")
+expect_true(identical(design.matrix:::design_plan(fit1)$lazy, p1$lazy))
+# different contrasts: a different plan
+fit2 <- lm(update(rhs, y ~ .), d, contrasts = list(f = "contr.sum"))
+expect_false(identical(design.matrix:::design_plan(fit2)$lazy, p1$lazy))
+expect_true(strict_identical(as.matrix(design_matrix(fit2, newdata = nd)),
+                             model.matrix(delete.response(terms(fit2)),
+                                          model.frame(delete.response(terms(fit2)), nd, xlev = fit2$xlevels),
+                                          contrasts.arg = fit2$contrasts)))

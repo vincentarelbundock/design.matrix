@@ -25,6 +25,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"dm_jac_dense", (DL_FUNC) &dm_jac_dense, 7},
     {"dm_row_groups", (DL_FUNC) &dm_row_groups, 8},
     {"dm_jac_entries_mean", (DL_FUNC) &dm_jac_entries_mean, 7},
+    {"dm_jac_mult_blas", (DL_FUNC) &dm_jac_mult_blas, 7},
+    {"dm_jac_finite", (DL_FUNC) &dm_jac_finite, 7},
     {"dm_omp_max_threads", (DL_FUNC) &dm_omp_max_threads, 0},
     {NULL, NULL, 0}
 };
