@@ -1,0 +1,36 @@
+library(design.matrix)
+
+d <- data.frame(y = rnorm(10), x = rnorm(10), f = gl(2, 5))
+D <- design_matrix(y ~ x * f, d)
+p <- design.matrix:::design_plan(y ~ x * f, d)
+
+expect_error(design_matrix(y ~ x, d, contrasts.arg = "contr.sum"), "list")
+expect_error(design_matrix(y ~ x, d, xlev = 1), "list")
+expect_error(design_matrix(p), "required")
+
+expect_error(design.matrix:::design_plan("y ~ x", d), "formula")
+expect_error(design.matrix:::design_plan(y ~ x, as.list(d)), "data.frame")
+
+expect_error(quadratic_diagonal(as.matrix(D), diag(4)), "design")
+expect_error(D %*% 1:3, "length")
+expect_error(D %*% c(1, 2, NA, 4), "missing")
+expect_error(D %*% c(1, 2, Inf, 4))
+expect_error(crossprod(D, 1:3), "length")
+expect_error(matrix(1, 10, 2) * D, "numeric vector")
+expect_error(colSums(D, group = 1:3), "length")
+expect_error(colSums(D, group = rep(1, 10), na.rm = TRUE), "na.rm")
+expect_error(colSums(D, na.rm = TRUE), "na.rm")
+expect_error(rowMeans(D, dims = 2), "dims")
+expect_error(c(1, 2, 3, 4) %*% D)
+expect_error(quadratic_diagonal(D, diag(3)), "rows")
+expect_error(quadratic_diagonal(D, matrix(NA_real_, 4, 4)), "missing")
+
+expect_error(1:3 * D, "length")
+D2 <- design_matrix(y ~ x, d)
+expect_error(D + D2, "same rows and columns")
+
+expect_error(design_threads(0))
+expect_error(design_threads(1.5))
+old <- design_threads()
+expect_equal(design_threads(2), 2L)
+design_threads(old)

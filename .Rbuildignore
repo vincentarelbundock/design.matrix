@@ -1,0 +1,10 @@
+^.git$
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.github$
+^bench$
+^\.kata\.toml$
+^README\.md$
+^README\.qmd$
+^README_files$
+^prediction-batch-timing\.png$
