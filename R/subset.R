@@ -39,7 +39,23 @@
     ## when the indices do: one counting pass, shared by both designs of a
     ## combination.
     dup <- length(rows) > 1L && any(tabulate(rows, nbins = n) > 1L)
-    dm_rows(x, rows, dup)
+    out <- dm_rows(x, rows, dup)
+    dm_carry_groups(x, out, rows)
+    out
+}
+
+## Cached groups of identical rows carry over to the selected rows: rows in
+## one group still have the same bits in every input. Renumbered in order of
+## first appearance, as dm_groups() numbers them. A failed search (FALSE) is
+## not carried over, since the subset may have fewer distinct rows.
+dm_carry_groups <- function(x, out, rows) {
+    g <- if (is.environment(x$cache)) x$cache$groups else NULL
+    if (!is.list(g)) return(invisible(NULL))
+    m <- g$map[rows]
+    map <- match(m, unique(m))
+    first <- match(seq_len(max(0L, map)), map)
+    out$cache$groups <- list(map = map, first = first)
+    invisible(NULL)
 }
 
 ## Positive row indices from a matrix-style subscript.
@@ -70,9 +86,15 @@ dm_row_index <- function(i, n) {
 dm_rows <- function(x, rows, dup) {
     if (dm_is_comb(x)) {
         pick <- function(s) if (length(s) > 1L) s[rows] else s
-        return(dm_combine(dm_rows(x$design, rows, dup), pick(x$scale),
-                          if (is.null(x$design2)) NULL else dm_rows(x$design2, rows, dup),
-                          pick(x$scale2)))
+        ## each design carries its own cached groups
+        d1 <- dm_rows(x$design, rows, dup)
+        dm_carry_groups(x$design, d1, rows)
+        d2 <- NULL
+        if (!is.null(x$design2)) {
+            d2 <- dm_rows(x$design2, rows, dup)
+            dm_carry_groups(x$design2, d2, rows)
+        }
+        return(dm_combine(d1, pick(x$scale), d2, pick(x$scale2)))
     }
     out <- x
     out$cache <- new.env(parent = emptyenv())

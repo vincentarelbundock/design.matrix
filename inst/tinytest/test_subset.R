@@ -57,6 +57,29 @@ expect_equal(unname(as.matrix(J[i, ])), unname(M[i, ]))
 expect_equal(quadratic_diagonal(J[i, ], V), unname(rowSums((M[i, ] %*% V) * M[i, ])))
 expect_equal(as.matrix((2 * D)[i, ]), 2 * as.matrix(D[i, ]), check.attributes = FALSE)
 
+# grouped column sums and sparse matrices of a subset
+g <- sample(c("a", "b", "c"), length(i), TRUE)
+expect_equal(colSums(D[i, ], group = g), rowsum(X[i, ], g), check.attributes = FALSE)
+expect_equal(colSums(J[i, ], group = g), rowsum(M[i, ], g), check.attributes = FALSE)
+expect_true(strict_identical(as(D[i, ], "CsparseMatrix"), as(as.matrix(D[i, ]), "CsparseMatrix")))
+
+# cached groups of identical rows carry over, renumbered, without changing results
+dd <- fuzz_data(400, special = FALSE)
+dd <- dd[sample(400, 3000, TRUE), ]
+Dg <- design_matrix(design_matrix(y ~ f1 * f2 + o1, dd), dd)
+Vg <- diag(ncol(Dg))
+op <- options(design.matrix.dedup = TRUE)
+invisible(quadratic_diagonal(Dg, Vg))
+expect_true(is.list(Dg$cache$groups))
+ig <- c(sample(3000, 500), 7, 7)
+sub <- Dg[ig, ]
+expect_true(is.list(sub$cache$groups))
+expect_identical(sub$cache$groups$map, match(Dg$cache$groups$map[ig], unique(Dg$cache$groups$map[ig])))
+q_carried <- quadratic_diagonal(sub, Vg)
+options(design.matrix.dedup = FALSE)
+expect_true(strict_identical(q_carried, quadratic_diagonal(Dg[ig, ], Vg)))
+options(op)
+
 # dense designs (non-default model.matrix methods) are subset too
 Dd <- design.matrix:::dm_dense_design(model.matrix(~ x1 + f1, d))
 expect_true(strict_identical(as.matrix(Dd[c(2, 4), ]), model.matrix(~ x1 + f1, d[c(2, 4), ])))
