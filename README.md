@@ -162,9 +162,9 @@ bench::mark(
 #> # A tibble: 3 × 4
 #>   expression                    min   median mem_alloc
 #>   <bch:expr>               <bch:tm> <bch:tm> <bch:byt>
-#> 1 stats::model.matrix        57.3ms   64.8ms   211.1MB
-#> 2 design_matrix              10.6ms   16.5ms    29.6MB
-#> 3 as.matrix(design_matrix)   24.6ms   25.1ms   211.1MB
+#> 1 stats::model.matrix        55.6ms   62.9ms   211.1MB
+#> 2 design_matrix              10.2ms   15.9ms    29.6MB
+#> 3 as.matrix(design_matrix)   23.9ms   24.5ms   211.1MB
 ```
 
 ### Using multiple threads with `as.matrix()`
@@ -198,9 +198,9 @@ bench::mark(
 #> # A tibble: 3 × 4
 #>   expression                                   min   median mem_alloc
 #>   <bch:expr>                              <bch:tm> <bch:tm> <bch:byt>
-#> 1 model.matrix(fo, big)                     55.5ms   56.8ms     211MB
-#> 2 fast_model_matrix(fo, big, threads = 1)   55.2ms   55.6ms     211MB
-#> 3 fast_model_matrix(fo, big, threads = 4)   23.6ms     24ms     211MB
+#> 1 model.matrix(fo, big)                     52.5ms   52.8ms     211MB
+#> 2 fast_model_matrix(fo, big, threads = 1)     52ms   53.2ms     211MB
+#> 3 fast_model_matrix(fo, big, threads = 4)   23.6ms   23.6ms     211MB
 design_threads(1)
 ```
 
@@ -272,8 +272,8 @@ bench::mark(
 #> # A tibble: 2 × 4
 #>   expression                 min   median mem_alloc
 #>   <bch:expr>            <bch:tm> <bch:tm> <bch:byt>
-#> 1 base_model_matrix(nd)  310.1µs  337.6µs     224KB
-#> 2 fast_model_matrix(nd)   29.1µs   30.3µs     225KB
+#> 1 base_model_matrix(nd)  309.2µs  335.2µs     224KB
+#> 2 fast_model_matrix(nd)   27.8µs   28.9µs     225KB
 ```
 
 ### Arithmetic
@@ -340,10 +340,10 @@ bench::mark(
 #> # A tibble: 4 × 4
 #>   expression                   min   median mem_alloc
 #>   <bch:expr>              <bch:tm> <bch:tm> <bch:byt>
-#> 1 model.matrix, then %*%   71.85ms  72.29ms  212.67MB
-#> 2 design_matrix, then %*%   20.1ms  20.29ms    31.1MB
-#> 3 prebuilt X               15.09ms  16.23ms    1.53MB
-#> 4 prebuilt design matrix    9.42ms   9.64ms    1.54MB
+#> 1 model.matrix, then %*%    68.9ms  70.11ms  212.67MB
+#> 2 design_matrix, then %*%     19ms  19.35ms    31.1MB
+#> 3 prebuilt X                14.9ms   15.2ms    1.53MB
+#> 4 prebuilt design matrix     9.3ms   9.57ms    1.54MB
 ```
 
 ### `crossprod()`
@@ -395,10 +395,10 @@ bench::mark(
 #> # A tibble: 4 × 4
 #>   expression                         min   median mem_alloc
 #>   <bch:expr>                    <bch:tm> <bch:tm> <bch:byt>
-#> 1 model.matrix, then crossprod   69.67ms   71.3ms  211.14MB
-#> 2 design_matrix, then crossprod  20.35ms   20.5ms    31.1MB
-#> 3 prebuilt X                     14.52ms  14.81ms     1000B
-#> 4 prebuilt design matrix          9.68ms   9.89ms    1.54MB
+#> 1 model.matrix, then crossprod   68.96ms  69.27ms  211.14MB
+#> 2 design_matrix, then crossprod  19.43ms  19.65ms    31.1MB
+#> 3 prebuilt X                     14.38ms  14.59ms     1000B
+#> 4 prebuilt design matrix          9.28ms   9.83ms    1.54MB
 ```
 
 ### `colSums()`, `colMeans()`, `rowSums()` and `rowMeans()`
@@ -455,10 +455,10 @@ bench::mark(
 #> # A tibble: 4 × 4
 #>   expression                       min   median mem_alloc
 #>   <bch:expr>                  <bch:tm> <bch:tm> <bch:byt>
-#> 1 model.matrix, then rowsum    184.6ms  187.6ms     395MB
-#> 2 design_matrix, then colSums     23ms   24.1ms      35MB
-#> 3 prebuilt X                    49.1ms   68.4ms   183.9MB
-#> 4 prebuilt design matrix        12.4ms   12.6ms     5.4MB
+#> 1 model.matrix, then rowsum    173.7ms  175.2ms     395MB
+#> 2 design_matrix, then colSums   21.7ms   22.6ms      35MB
+#> 3 prebuilt X                    48.3ms   67.4ms   183.9MB
+#> 4 prebuilt design matrix        11.4ms   11.6ms     5.4MB
 ```
 
 ### `quadratic_diagonal()`
@@ -514,10 +514,10 @@ bench::mark(
 #> # A tibble: 4 × 4
 #>   expression                                         min   median mem_alloc
 #>   <bch:expr>                                    <bch:tm> <bch:tm> <bch:byt>
-#> 1 base_diagonal(model.matrix(fo, big), V)        166.4ms    193ms   575.8MB
-#> 2 quadratic_diagonal(design_matrix(fo, big), V)   21.4ms   21.8ms    31.3MB
-#> 3 base_diagonal(X, V)                            113.1ms  143.2ms   364.7MB
-#> 4 quadratic_diagonal(DX, V)                       10.6ms   10.8ms     1.7MB
+#> 1 base_diagonal(model.matrix(fo, big), V)        167.3ms  187.5ms   575.8MB
+#> 2 quadratic_diagonal(design_matrix(fo, big), V)     21ms   21.5ms    31.3MB
+#> 3 base_diagonal(X, V)                            107.4ms  136.2ms   364.7MB
+#> 4 quadratic_diagonal(DX, V)                       10.7ms   11.1ms     1.7MB
 ```
 
 ### Sparse model matrix
@@ -584,10 +584,10 @@ bench::mark(
 #> # A tibble: 4 × 4
 #>   expression                                               min   median mem_alloc
 #>   <bch:expr>                                          <bch:tm> <bch:tm> <bch:byt>
-#> 1 base_sparse(sfo, big)                                  1.17s    1.33s    3.02GB
-#> 2 fast_sparse(sfo, big)                                28.42ms  28.59ms   40.75MB
-#> 3 Matrix::sparse.model.matrix(sfo, big)               397.63ms 479.72ms  661.52MB
-#> 4 MatrixModels::model.Matrix(sfo, big, sparse = TRUE) 359.28ms 376.72ms  661.53MB
+#> 1 base_sparse(sfo, big)                                  1.16s     1.3s    3.02GB
+#> 2 fast_sparse(sfo, big)                                 27.8ms   27.9ms   40.75MB
+#> 3 Matrix::sparse.model.matrix(sfo, big)               396.93ms  469.7ms  661.52MB
+#> 4 MatrixModels::model.Matrix(sfo, big, sparse = TRUE) 355.89ms  360.6ms  661.53MB
 ```
 
 ### Repeated rows
@@ -624,9 +624,9 @@ bench::mark(
 #> # A tibble: 3 × 4
 #>   expression                  min   median mem_alloc
 #>   <bch:expr>             <bch:tm> <bch:tm> <bch:byt>
-#> 1 every row               40.87ms  42.11ms    4.67MB
-#> 2 grouped, first call      3.43ms   3.47ms    5.78MB
-#> 3 grouped, groups cached   1.51ms   1.54ms    2.41MB
+#> 1 every row               37.13ms  37.44ms    4.67MB
+#> 2 grouped, first call      3.26ms   3.32ms    5.78MB
+#> 3 grouped, groups cached   1.39ms   1.44ms    2.41MB
 ```
 
 ## Recipes
@@ -683,8 +683,8 @@ bench::mark(
 #> # A tibble: 2 × 4
 #>   expression                 min   median mem_alloc
 #>   <bch:expr>            <bch:tm> <bch:tm> <bch:byt>
-#> 1 predict(fit, newdata)  61.92ms     92ms     388MB
-#> 2 fast_predict            9.15ms   9.29ms      23MB
+#> 1 predict(fit, newdata)   59.4ms  89.71ms   387.7MB
+#> 2 fast_predict             9.1ms   9.32ms    3.07MB
 ```
 
 ### Standard errors of predictions
@@ -747,8 +747,8 @@ bench::mark(
 #> # A tibble: 2 × 4
 #>   expression                                   min   median mem_alloc
 #>   <bch:expr>                              <bch:tm> <bch:tm> <bch:byt>
-#> 1 base_predict_se(fit_big, big)            154.3ms  223.1ms   940.4MB
-#> 2 fast_predict_se(fit_big, big, spec_big)   16.5ms   16.8ms    31.2MB
+#> 1 base_predict_se(fit_big, big)            150.2ms  234.2ms   940.4MB
+#> 2 fast_predict_se(fit_big, big, spec_big)   16.7ms   20.7ms    11.2MB
 ```
 
 ### Leverage
@@ -807,9 +807,9 @@ bench::mark(
 #> # A tibble: 3 × 4
 #>   expression                  min   median mem_alloc
 #>   <bch:expr>             <bch:tm> <bch:tm> <bch:byt>
-#> 1 hatvalues(fit_big)      946.7ms  956.6ms    15.3MB
-#> 2 base_leverage(X, XtXi)   93.5ms   94.9ms   364.7MB
-#> 3 fast_leverage(D, XtXi)   10.7ms   11.3ms     1.7MB
+#> 1 hatvalues(fit_big)        2.31s    2.58s    15.3MB
+#> 2 base_leverage(X, XtXi)     93ms  95.36ms   364.7MB
+#> 3 fast_leverage(D, XtXi)   10.5ms  10.61ms     1.7MB
 ```
 
 ### Cluster-robust standard errors
@@ -876,8 +876,8 @@ bench::mark(
 #> # A tibble: 2 × 4
 #>   expression                                 min   median mem_alloc
 #>   <bch:expr>                            <bch:tm> <bch:tm> <bch:byt>
-#> 1 base_cluster_vcov(X, e, big$cl, XtXi)   66.6ms   67.1ms     186MB
-#> 2 fast_cluster_vcov(D, e, big$cl, XtXi)   12.5ms   12.5ms      11MB
+#> 1 base_cluster_vcov(X, e, big$cl, XtXi)   63.6ms   65.4ms     186MB
+#> 2 fast_cluster_vcov(D, e, big$cl, XtXi)   12.8ms     14ms      11MB
 ```
 
 ## Setup
