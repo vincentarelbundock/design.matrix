@@ -16,7 +16,8 @@ design_lm(
   contrasts = NULL,
   compress = "auto",
   tol = 1e-07,
-  model = TRUE
+  model = TRUE,
+  ...
 )
 
 design_lm_fit(
@@ -55,9 +56,17 @@ rank-deficient fit, as in \code{\link[stats:predict.lm]{stats::predict.lm()}}.}
 \item{model}{Keep the model frame and its design matrix, for
 \code{\link[=residuals]{residuals()}}, \code{\link[=fitted]{fitted()}} and \code{\link[=model.frame]{model.frame()}}.}
 
-\item{x}{A \code{design_matrix}.}
+\item{...}{For remote data (a DuckDB connection or Parquet paths as
+\code{data}), \code{table}, \code{sql}, \code{engine} and \code{chunk_size}; see
+\link{design_remote}. In \code{predict()} with remote \code{newdata}, also \code{name},
+\code{column}, \code{keep} and \code{overwrite} of \code{\link[=design_predict]{design_predict()}}. Otherwise not
+used.}
 
-\item{y}{A numeric response vector with one value per row of \code{x}.}
+\item{x}{A \code{design_matrix}, or a remote design (see \link{design_remote}).}
+
+\item{y}{A numeric response vector with one value per row of \code{x}. For a
+remote design, the name of a column (default: the response of its
+formula).}
 
 \item{object}{A \code{"design_lm"} object.}
 
@@ -74,8 +83,6 @@ are the fitted values (which need \code{model = TRUE}).}
 \item{rankdeficient}{For a rank-deficient fit, how predictions on
 \code{newdata} that are not estimable are flagged, as in
 \code{\link[stats:predict.lm]{stats::predict.lm()}}.}
-
-\item{...}{Not used.}
 }
 \value{
 An object of class \code{"design_lm"}: a list with, among others,

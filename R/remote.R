@@ -107,6 +107,23 @@
 #' * `design_matrix(D, newdata)` applies the design to a data frame, and
 #'   `design_matrix(D, con, table = ...)` to other remote data.
 #'
+#' @section Compression:
+#' When the rows have few distinct *design patterns* (the same values in
+#' every input column of the design, as with factors and discrete numeric
+#' variables), `crossprod()`, `colSums()`, `colMeans()`, [design_moments()]
+#' and [design_lm()] run one `GROUP BY` over those columns, which returns
+#' each pattern with its number of rows and the sums of the weights and
+#' responses, and compute the result from the design of the patterns, in
+#' memory. This works with both engines (a variable evaluated in R is
+#' evaluated on the patterns). The option `design.matrix.remote_compress`
+#' controls it: `"auto"` (default) tries it when the first 100,000 rows have
+#' few distinct patterns, and gives up when there are more than
+#' `min(n / 2, getOption("design.matrix.remote_compress_max", 1e6))`
+#' patterns; `TRUE` always compresses (unless every row is distinct);
+#' `FALSE` never does. Designs that keep rows with missing values
+#' (`na.action = na.pass`) are not compressed, nor are products with a
+#' response or weights column that has missing values.
+#'
 #' Remote designs keep only the *Algebra* promise of the package: results
 #' agree with the in-memory computation up to floating point rounding. With
 #' infinite values in the data, the placement of `NaN` and `Inf` in sums can
@@ -149,7 +166,11 @@ dm_need_duckdb <- function() {
 
 
 ## Entry point from design_matrix().
-dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = stats::na.pass) {
+## `weights` (a column name) and `drop_unused` are for design_lm(): rows with
+## a missing weight are dropped, and factor levels absent from the rows used
+## are dropped, as lm() builds its model frame.
+dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = stats::na.pass,
+                      weights = NULL, drop_unused = FALSE) {
     dm_need_duckdb()
     keys <- c("table", "sql", "engine", "chunk_size")
     nms <- names(dots)
@@ -169,7 +190,7 @@ dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = sta
     }
     if (inherits(object, "formula")) {
         if (length(rest)) stop("Unknown arguments: ", paste(names(rest), collapse = ", "), call. = FALSE)
-        D <- dm_remote_formula(object, src, contrasts.arg, xlev)
+        D <- dm_remote_formula(object, src, contrasts.arg, xlev, weights, drop_unused)
     } else {
         if (!is.null(contrasts.arg) || !is.null(xlev))
             stop("`contrasts.arg` and `xlev` apply only to a formula.", call. = FALSE)
@@ -351,13 +372,22 @@ dm_terms_vars <- function(tt) {
 
 ## A remote design from a formula: learn levels and transformations from the
 ## remote data.
-dm_remote_formula <- function(formula, src, contrasts.arg, xlev) {
+dm_remote_formula <- function(formula, src, contrasts.arg, xlev, weights = NULL, drop_unused = FALSE) {
     D <- list(src = src, na = "omit")
     tt <- stats::terms(formula, data = src$proto)
     tv <- dm_terms_vars(tt)
     types <- src$types
     D$vars <- Map(function(nm, e) dm_remote_var(nm, e, types, D, NULL, TRUE), tv$names, tv$exprs)
     names(D$vars) <- tv$names
+    if (!is.null(weights)) {
+        ## a variable in no term: it only selects rows (and feeds the fit)
+        if (!isTRUE(types[weights] %in% c("double", "integer", "logical")))
+            stop("'weights' must be a numeric vector", call. = FALSE)
+        D$vars[["(weights)"]] <- list(name = "(weights)", expr = as.name(weights), inputs = weights,
+                                      kind = "numeric", reason = NULL, col = NULL, levels = NULL,
+                                      sql = sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, weights)))
+    }
+    D$weights <- weights
     D$filter <- dm_remote_filter(D)
 
     ## a sample of the rows used, to see what the R expressions return
@@ -368,14 +398,18 @@ dm_remote_formula <- function(formula, src, contrasts.arg, xlev) {
     for (j in seq_along(D$vars)) {
         v <- D$vars[[j]]
         if (v$kind == "factor") {
-            x <- if (types[[v$col]] == "factor") src$proto[[v$col]] else dm_remote_distinct(D, v$col)[[1L]]
-            xlevels[[v$name]] <- levels(as.factor(x))
+            x <- if (types[[v$col]] == "factor" && !drop_unused) src$proto[[v$col]]
+                 else dm_remote_distinct(D, v$col)[[1L]]
+            x <- as.factor(x)
+            if (drop_unused) x <- droplevels(x)
+            xlevels[[v$name]] <- levels(x)
         } else if (v$kind == "other") {
             val <- tryCatch(eval(v$expr, sample, env), error = function(e) e)
             if (is.factor(val) || is.character(val)) {
                 ## levels from the distinct values of the inputs
                 inp <- dm_remote_distinct(D, v$inputs)
-                lv <- levels(as.factor(eval(v$expr, inp, env)))
+                fx <- as.factor(eval(v$expr, inp, env))
+                lv <- levels(if (drop_unused) droplevels(fx) else fx)
                 xlevels[[v$name]] <- lv
             } else if (!is.logical(val)) {
                 ## does model.frame() fix parameters from the data?
@@ -392,7 +426,7 @@ dm_remote_formula <- function(formula, src, contrasts.arg, xlev) {
     }
     for (nm in names(xlev)) xlevels[[nm]] <- xlev[[nm]]
     attr(tt, "predvars") <- as.call(c(list(as.name("list")), predvars))
-    for (j in seq_along(D$vars)) D$vars[[j]]$expr <- predvars[[j]]
+    for (j in seq_along(predvars)) D$vars[[j]]$expr <- predvars[[j]]
     if (!nrow(sample)) stop("The remote data has no complete rows.", call. = FALSE)
     D$plan <- design_plan.formula(tt, sample, contrasts.arg = contrasts.arg,
                                   xlev = if (length(xlevels)) xlevels else NULL)
@@ -627,7 +661,9 @@ design_moments <- function(x, y = NULL, weights = NULL) {
     if (inherits(x, "dm_remote")) {
         yy <- dm_remote_y(x, y)
         if (!is.null(weights)) dm_remote_column(x, weights, "weights")
-        out <- if (x$engine == "sql") dm_sql_moments(x, yy, weights) else dm_chunked_moments(x, yy, weights)
+        out <- dm_compressed_moments(x, yy, weights)
+        if (is.null(out))
+            out <- if (x$engine == "sql") dm_sql_moments(x, yy, weights) else dm_chunked_moments(x, yy, weights)
         x$cache$n <- out$n
         return(out)
     }
@@ -731,12 +767,16 @@ crossprod.dm_remote <- function(x, y = NULL, ...) {
         stop("`crossprod()` of a remote design takes only `y`; for weights, use `design_moments(x, weights = )`.",
              call. = FALSE)
     if (is.null(y)) {
+        out <- dm_compressed_moments(x, NULL, NULL)
+        if (!is.null(out)) return(out$xtx)
         return(if (x$engine == "sql") dm_sql_gram(x) else dm_chunked_moments(x, NULL, NULL)$xtx)
     }
     if (!is.character(y))
         stop("For a remote design, `y` must name columns of the remote data.", call. = FALSE)
     dm_remote_column(x, y, "y", several = TRUE)
     yy <- list(cols = y, response = FALSE)
+    out <- dm_compressed_moments(x, yy, NULL, gram = FALSE)
+    if (!is.null(out)) return(out$xty)
     if (x$engine == "sql") dm_sql_xty(x, yy) else dm_chunked_moments(x, yy, NULL, gram = FALSE)$xty
 }
 
@@ -745,6 +785,8 @@ dm_remote_colsums <- function(x, group, weights, reorder, mean) {
     if (!isTRUE(reorder))
         stop("Remote designs support only `reorder = TRUE`.", call. = FALSE)
     if (!is.null(group)) dm_remote_column(x, group, "group")
+    out <- dm_compressed_colsums(x, group, weights, mean)
+    if (!is.null(out)) return(out)
     if (x$engine == "sql") dm_sql_colsums(x, group, weights, mean)
     else dm_chunked_colsums(x, group, weights, mean)
 }

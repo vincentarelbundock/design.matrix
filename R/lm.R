@@ -81,8 +81,15 @@
 #'   rank-deficient fit, as in [stats::predict.lm()].
 #' @param model Keep the model frame and its design matrix, for
 #'   [residuals()], [fitted()] and [model.frame()].
-#' @param x A `design_matrix`.
-#' @param y A numeric response vector with one value per row of `x`.
+#' @param x A `design_matrix`, or a remote design (see [design_remote]).
+#' @param y A numeric response vector with one value per row of `x`. For a
+#'   remote design, the name of a column (default: the response of its
+#'   formula).
+#' @param ... For remote data (a DuckDB connection or Parquet paths as
+#'   `data`), `table`, `sql`, `engine` and `chunk_size`; see
+#'   [design_remote]. In `predict()` with remote `newdata`, also `name`,
+#'   `column`, `keep` and `overwrite` of [design_predict()]. Otherwise not
+#'   used.
 #' @return An object of class `"design_lm"`: a list with, among others,
 #'   `coefficients`, `sigma`, `df.residual`, `nobs`, `rank`, `pivot`, `R`
 #'   (the `p` by `p` factor of [design_qr], columns in pivoted order),
@@ -108,11 +115,24 @@
 #' @export
 design_lm <- function(formula, data, subset, weights, na.action, offset,
                       contrasts = NULL, compress = "auto", tol = 1e-07,
-                      model = TRUE) {
+                      model = TRUE, ...) {
     dmfit_check_compress(compress)
     checkmate::assert_number(tol, lower = 0, finite = TRUE)
     checkmate::assert_flag(model)
     cl <- match.call()
+    ## remote data (see remote_lm.R)
+    if (!missing(data) && dm_is_remote_source(data)) {
+        if (!missing(subset)) stop("`subset` is not supported for remote data.", call. = FALSE)
+        if (!missing(offset)) stop("Offsets are not supported for remote data.", call. = FALSE)
+        if (!missing(na.action) && dm_remote_na(na.action) != "omit")
+            stop("For remote data, `na.action` must be na.omit.", call. = FALSE)
+        w <- if (missing(weights)) NULL else substitute(weights)
+        if (is.name(w)) w <- as.character(w)
+        if (!is.null(w) && !checkmate::test_string(w))
+            stop("For remote data, `weights` must name a column.", call. = FALSE)
+        return(dm_remote_lm(formula, data, w, contrasts, compress, tol, cl, list(...)))
+    }
+    if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
     ## the model frame, as lm() builds it
     mf <- match.call(expand.dots = FALSE)
     m <- match(c("formula", "data", "subset", "weights", "na.action", "offset"),
@@ -142,6 +162,16 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
 #' @export
 design_lm_fit <- function(x, y, weights = NULL, offset = NULL,
                           compress = "auto", tol = 1e-07) {
+    if (inherits(x, "dm_remote")) {
+        if (!is.null(offset)) stop("Offsets are not supported for remote data.", call. = FALSE)
+        yy <- dm_remote_y(x, if (missing(y)) NULL else y)
+        if (is.null(yy) || length(yy$cols) != 1L)
+            stop("Give `y`, the name of one column (or a design with a response).", call. = FALSE)
+        if (!is.null(weights)) dm_remote_column(x, weights, "weights")
+        fit <- dm_remote_lm_fit(x, yy, weights, compress, tol)
+        fit$call <- match.call()
+        return(fit)
+    }
     checkmate::assert_class(x, "design_matrix")
     dmfit_check_compress(compress)
     checkmate::assert_number(tol, lower = 0, finite = TRUE)
@@ -390,8 +420,11 @@ dmfit_linpred <- function(object, D) {
 #' @export
 print.design_lm <- function(x, digits = max(3L, getOption("digits") - 3L), ...) {
     if (!is.null(x$call)) cat("\nCall:\n", paste(deparse(x$call), sep = "\n", collapse = "\n"), "\n", sep = "")
-    if (x$compressed)
-        cat(sprintf("\nFitted on %d design patterns of %d rows.\n", x$patterns, x$rows))
+    if (x$compressed) {
+        cat(sprintf("\nFitted on %s design patterns of %s rows.\n", dm_fmt_count(x$patterns), dm_fmt_count(x$rows)))
+    } else if (isTRUE(x$remote)) {
+        cat(sprintf("\nFitted from %s of %s rows.\n", x$method, dm_fmt_count(x$rows)))
+    }
     if (length(x$coefficients)) {
         cat("\nCoefficients:\n")
         print.default(format(x$coefficients, digits = digits), print.gap = 2L, quote = FALSE)
@@ -477,7 +510,6 @@ fitted.design_lm <- function(object, ...) {
 #' @param rankdeficient For a rank-deficient fit, how predictions on
 #'   `newdata` that are not estimable are flagged, as in
 #'   [stats::predict.lm()].
-#' @param ... Not used.
 #' @rdname design_lm
 #' @export
 predict.design_lm <- function(object, newdata, se.fit = FALSE,
@@ -496,6 +528,11 @@ predict.design_lm <- function(object, newdata, se.fit = FALSE,
         off <- dat$offset
         na_act <- object$na.action
     } else {
+        if (dm_is_remote_source(newdata)) {
+            if (se.fit || interval != "none")
+                stop("For remote data, predict() gives the fit only (no `se.fit` or intervals).", call. = FALSE)
+            return(dm_remote_lm_predict(object, newdata, na.action, list(...)))
+        }
         if (is.null(object$spec))
             stop("This design cannot be applied to new data.", call. = FALSE)
         D <- design_matrix(object$spec, newdata, na.action = na.action)
@@ -641,7 +678,7 @@ summary.design_lm <- function(object, ...) {
     ans <- list(call = object$call, terms = object$terms, coefficients = coefs,
                 aliased = aliased, sigma = sqrt(resvar), df = c(p, rdf, length(est)),
                 compressed = object$compressed, patterns = object$patterns,
-                rows = object$rows)
+                rows = object$rows, remote = object$remote, method = object$method)
     df.int <- if (object$intercept) 1L else 0L
     if (p != df.int) {
         mss <- object$mss
@@ -662,8 +699,11 @@ summary.design_lm <- function(object, ...) {
 print.summary.design_lm <- function(x, digits = max(3L, getOption("digits") - 3L),
                                     signif.stars = getOption("show.signif.stars"), ...) {
     if (!is.null(x$call)) cat("\nCall:\n", paste(deparse(x$call), sep = "\n", collapse = "\n"), "\n", sep = "")
-    if (x$compressed)
-        cat(sprintf("\nFitted on %d design patterns of %d rows.\n", x$patterns, x$rows))
+    if (x$compressed) {
+        cat(sprintf("\nFitted on %s design patterns of %s rows.\n", dm_fmt_count(x$patterns), dm_fmt_count(x$rows)))
+    } else if (isTRUE(x$remote)) {
+        cat(sprintf("\nFitted from %s of %s rows.\n", x$method, dm_fmt_count(x$rows)))
+    }
     if (length(x$aliased) == 0L) {
         cat("\nNo Coefficients\n")
     } else {
