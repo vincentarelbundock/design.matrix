@@ -127,8 +127,41 @@ expect_true(same(by_id(P[, 2]), (M %*% B)[, 2]))
 expect_true(same(by_id(P[, c(FALSE, TRUE)]), (M %*% B)[, 2]))
 expect_error(P[1:3, ], "no order")
 expect_error(P[, 3], "out of range")
-## two separate products of one design: refused, with the way out
-expect_error(D %*% b + rowSums(D), "two different branches")
+
+## ---- separate products of one design combine (nh9e) ----
+## (a product becomes a view at its first use, stacked on the products it
+## is combined with: the same values as in memory)
+b2 <- B[, 2]
+two <- function(D) D %*% b + D %*% b2
+ratio <- function(D) (D %*% b) / sqrt(quadratic_diagonal(D, V))
+mixed <- function(D) rowSums(D) - D %*% b + design_column(D, "y") * quadratic_diagonal(D, V)
+expect_true(same(by_id(two(D)), two(M)))
+expect_true(same(by_id(ratio(D)), ratio(M)))
+expect_true(same(by_id(mixed(D)), mixed(M)))
+expect_true(same(by_id(D %*% b + rowSums(D)), M %*% b + rowSums(M)))
+expect_true(same(sum(collect(two(D))), sum(two(M))))
+## the products of one expression, kept and reused: each view is made once
+e1 <- D %*% b
+e2 <- quadratic_diagonal(D, V)
+e <- e1 / sqrt(e2)
+expect_true(same(by_id(e), ratio(M)))
+expect_true(same(by_id(e1), M %*% b))
+expect_true(same(by_id(e - e1 / sqrt(e2)), rep(0, n)))
+## a computed (stored) column combines with a later product
+st <- compute(D %*% b)
+expect_true(same(by_id(st + D %*% b2), two(M)))
+expect_true(same(by_id(D %*% b2 - st), M %*% b2 - M %*% b))
+## two products each read before they are combined: refused, with the way out
+p1 <- D %*% b
+p2 <- D %*% b2
+expect_equal(length(collect(p1)), n)
+expect_equal(length(collect(p2)), n)
+expect_error(p1 + p2, "two different branches")
+expect_error(p1 + p2, "before reading either")
+## (one product of both: always combines)
+P12 <- D %*% cbind(b, b2)
+expect_equal(length(collect(P12[, 1])), n)
+expect_true(same(by_id(P12[, 1] + P12[, 2]), two(M)))
 
 ## ---- rows of the design ----
 i <- d$x > 0

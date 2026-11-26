@@ -40,7 +40,7 @@ dm_fe_solver <- function(x, codes, tol, opts) {
     G <- vapply(codes, function(g) g$G, 1L)
     offs <- c(0L, cumsum(G))
     warm <- new.env(parent = emptyenv())
-    lin <- function(theta, along = list()) {
+    lin <- function(theta) {
         Th <- as.matrix(theta)
         beta <- matrix(0, p, ncol(Th))
         beta[xcols, ] <- Th[seq_len(px), ]
@@ -49,7 +49,7 @@ dm_fe_solver <- function(x, codes, tol, opts) {
             beta <- beta[, 1L]
             fe <- lapply(fe, function(v) v[, 1L])
         }
-        dm_fe_fitted(x, beta, fe, codes, along = along)
+        dm_fe_fitted(x, beta, fe, codes)
     }
     wls <- function(w2, z) {
         ## (the residuals, for clustered standard errors, only for the last
@@ -66,7 +66,8 @@ dm_fe_solver <- function(x, codes, tol, opts) {
     we <- function(est) {
         b0 <- est$b
         b0[is.na(b0)] <- 0
-        f <- lin(c(b0, unlist(est$fe, use.names = FALSE)), along = list(warm$z, warm$w2))
+        ## (remotely f binds on the frame of z and w2, with which it combines)
+        f <- lin(c(b0, unlist(est$fe, use.names = FALSE)))
         warm$w2 * (warm$z - f)
     }
     list(lin = lin, wls = wls, we = we, np = px + sum(G), warm = warm, xcols = xcols, G = G, offs = offs)

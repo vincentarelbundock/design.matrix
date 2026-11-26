@@ -121,7 +121,7 @@ dmc_fe_add <- function(f, fe, codes, levels = NULL) {
         return(.Call(C_dm_fe_fitted_add, f, fe, lapply(codes, `[[`, "codes")))
     }
     for (k in seq_along(fe))
-        f <- f + dmc_lookup(fe[[k]], codes[[k]], levels[[k]], along = list(f))
+        f <- f + dmc_lookup(fe[[k]], codes[[k]], levels[[k]])
     f
 }
 

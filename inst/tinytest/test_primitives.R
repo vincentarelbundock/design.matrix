@@ -26,6 +26,13 @@ X <- as.matrix(D)
 B <- matrix(rnorm(ncol(X) * 2), ncol(X))
 V <- crossprod(matrix(rnorm(ncol(X)^2), ncol(X)))
 
+## no function of the package takes `along` (nh9e: a remote product or
+## lookup finds its frame at its first use)
+ns <- asNamespace("design.matrix")
+fns <- Filter(function(f) is.function(get(f, envir = ns)), ls(ns, all.names = TRUE))
+expect_identical(fns[vapply(fns, function(f) "along" %in% names(formals(get(f, envir = ns))), NA)],
+                 character(0))
+
 ## in memory: the primitives are the existing kernels
 expect_true(same(dmp_mult(D, B), X %*% B))
 expect_true(same(dmp_crossprod(D), crossprod(X)))
@@ -79,7 +86,8 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     r <- y - dmp_mult(R, b)
     expect_true(same(dm_colsum(r * r), sum((dd$y - Xr %*% b)^2)))
     expect_true(same(dmp_crossprod(R, r), crossprod(Xr, dd$y - Xr %*% b)))
-    q <- dmp_quad(R, V, along = list(r))
+    ## (pending: binds on the frame of r at its first use with r)
+    q <- dmp_quad(R, V)
     expect_true(same(dm_colsum(q * r), sum(rowSums((Xr %*% V) * Xr) * (dd$y - Xr %*% b))))
     expect_true(same(dmp_colnorms(dmp_mult(R, B)), sqrt(colSums((Xr %*% B)^2))))
     expect_true(same(sort(dmp_collect(r)), sort(drop(dd$y - Xr %*% b))))

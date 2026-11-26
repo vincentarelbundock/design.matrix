@@ -63,12 +63,25 @@
 ## when a value is NULL, as sum() does, and NaN when a value is NaN.
 ## Comparisons with NULL are NULL (R: NA).
 ##
-## Columns from successive products live on successive frames: each product
-## builds a new frame (a view) on top of
-## the frame of the columns passed as `along`, and keeps all their columns.
-## Combining columns takes the later frame (they must come from the same
-## design, and one frame must descend from the other: each frame records
-## its lineage, see dm_frame_later()). In memory `along` is ignored.
+## Products (dmp_mult, dmp_quad) and lookups (dmc_lookup, dmc_dense_codes)
+## are *pending* columns: a recipe (the design and B of a product; the
+## lookup table, already written, and its join of a lookup) that becomes a
+## new frame (a view, or a join) only at the column's first use: an
+## operation that reads rows (sums, crossprod, groups, collect,
+## as.data.frame, output), or that makes a frame or a design from the
+## column (dmc_freeze, compute, scale, subset, materialize). Arithmetic on
+## pending columns stays pending. At first use the pending columns of the
+## operands are bound on the latest settled frame among them, one on the
+## other in the order of the arguments, so that they all combine (a frame
+## keeps every column of the frame below it); each recipe is bound once
+## (later uses read the same frame). So `D %*% b1 + D %*% b2` stacks the
+## second product on the first. Combining columns takes the later frame
+## (they must come from the same design, and one frame must descend from
+## the other: each frame records its lineage, see dm_frame_later()):
+## columns already settled on two branches of one frame (computed and used
+## separately, as two frozen columns) cannot be combined. dmc_bind() binds
+## columns together that are used one by one but must combine later. In
+## memory a product is computed at once.
 ##
 ## Getting values into R: dmp_collect(col) returns the values (in memory the
 ## vector itself; remotely a SELECT of all rows: only for small data). The
@@ -116,10 +129,16 @@
 ##                            columns those of b (labels as.character() of
 ##                            the values, as in memory); with dmc_codes(), the
 ##                            Ga x Gb matrix in code order
-##   dmp_mult(x, B, along)    X B (B a p-vector or p x k matrix) as a column
-##                            (in memory a vector for a vector B)
-##   dmp_quad(x, V, along)    rowSums((X V) * X), V p x p symmetric positive
-##                            semi-definite, as a column
+##   dmp_mult(x, B)           X B (B a p-vector or p x k matrix) as a column
+##                            (in memory a vector for a vector B; remotely
+##                            pending, see above)
+##   dmp_quad(x, V)           rowSums((X V) * X), V p x p symmetric positive
+##                            semi-definite, as a column (remotely pending)
+##   dmc_bind(cols)           the pending columns of a list bound together
+##                            (one frame remotely); in memory the list
+##   dmp_rebase(x, cols)      the design over the latest frame of the
+##                            columns of a list (bound together); in
+##                            memory x
 ##   dm_colsum(col)           sums over rows: a number per column
 ##   dmc_sums(...)            sums over rows of several columns (one query)
 ##   dmc_mean(col)            the mean of a column
@@ -263,10 +282,21 @@ dm_frame_child <- function(fr, parent) {
 ## Of two frames of the same design, the later one (which keeps the columns
 ## of the earlier one): the descendant. Frames on two branches (neither
 ## descends from the other) cannot be combined. Without a known lineage,
-## the deeper frame.
+## the deeper frame. The frames of pending columns (dm_frame_pending())
+## combine their recipes: the result is pending with the recipes of both
+## (in order, each once), on the later of their settled frames.
 dm_frame_later <- function(a, b) {
     if (is.null(a)) return(b)
     if (is.null(b)) return(a)
+    pend <- dm_pend_union(a$pend, b$pend)
+    a$pend <- NULL
+    b$pend <- NULL
+    out <- dm_frame_later_settled(a, b)
+    if (length(pend)) dm_frame_pending(out, pend) else out
+}
+
+## (dm_frame_later() of two settled frames)
+dm_frame_later_settled <- function(a, b) {
     if (!identical(a$id, b$id))
         stop("Columns of different remote designs cannot be combined.", call. = FALSE)
     pa <- dm_frame_path(a)
@@ -275,14 +305,186 @@ dm_frame_later <- function(a, b) {
         prefix <- function(u, v) length(u) < length(v) && identical(u, v[seq_along(u)])
         if (prefix(pa, pb)) return(b)
         if (prefix(pb, pa)) return(a)
-        ## (users meet this with two separate products of one design, as
-        ## D %*% b1 + D %*% b2: remote rows have no key to align them)
+        ## (products and lookups bind on top of one another at their first
+        ## use, so users meet this only with columns settled separately, as
+        ## two products each read before they are combined)
         stop("Columns built on two different branches of the same remote design cannot be combined ",
-             "(remote rows have no key to align them): compute them in one product, as ",
-             "`P <- D %*% cbind(b1, b2)` and then `P[, 1]` and `P[, 2]`; internally, build one from the other ",
-             "(`along`) or freeze them together (dmc_cbind()).", call. = FALSE)
+             "(remote rows have no key to align them): combine the columns before reading either, or ",
+             "compute them in one product, as `P <- D %*% cbind(b1, b2)` and then `P[, 1]` and `P[, 2]`; ",
+             "internally, bind them together first (dmc_bind()) or freeze them together (dmc_cbind()).",
+             call. = FALSE)
     }
     if (dm_frame_depth(b) > dm_frame_depth(a)) b else a
+}
+
+## ---- pending columns: products and lookups bound at first use ----
+##
+## The frame of a pending column is a settled frame (the design's, or the
+## key's: the rows and columns its recipe reads) with a field `pend`, the
+## recipes still to bind on top of it, in order. A recipe is an environment
+## (kind "mult": design x and coefficients B, with the names of the product
+## columns as colnames; kind "lookup": the SQL of its join), with `deps`
+## (the recipes it reads, bound before it) and `frame`, NULL until bound,
+## then the frame it made (later uses read that frame: one view per
+## product). Every column made from a pending column copies its frame, so
+## arithmetic stays pending; the operations that read rows or make frames
+## call dm_frame_bind() (through dm_rebase() for designs).
+
+dm_recipe <- function(kind, deps = list(), ...) {
+    r <- list2env(list(...), parent = emptyenv())
+    dm_tmp$recipes <- (dm_tmp$recipes %||% 0) + 1
+    r$id <- sprintf("r%x", as.integer(dm_tmp$recipes))
+    r$kind <- kind
+    r$deps <- deps
+    r$frame <- NULL
+    r
+}
+
+## the recipes of a and b, those of a first, each once
+dm_pend_union <- function(a, b) {
+    if (!length(b)) return(a)
+    if (!length(a)) return(b)
+    ids <- vapply(a, function(r) r$id, "")
+    c(a, Filter(function(r) !r$id %in% ids, b))
+}
+
+## the recipes with their dependencies before them, each once
+dm_pend_order <- function(pend) {
+    out <- list()
+    ids <- character()
+    add <- function(r) {
+        if (r$id %in% ids) return(invisible())
+        for (d in r$deps) add(d)
+        out[[length(out) + 1L]] <<- r
+        ids <<- c(ids, r$id)
+        invisible()
+    }
+    for (r in pend) add(r)
+    out
+}
+
+## Settled frame `fr` with the recipes `pend` on top: the recipes already
+## bound (by an earlier use of another column) are folded into the settled
+## frame (the later of it and their frames, which errors for frames on two
+## branches); the others stay pending.
+dm_frame_pending <- function(fr, pend) {
+    left <- list()
+    for (r in pend) {
+        if (is.null(r$frame)) left[[length(left) + 1L]] <- r
+        else fr <- dm_frame_later_settled(fr, r$frame)
+    }
+    fr$pend <- if (length(left)) left
+    fr
+}
+
+## The settled frame of a (possibly pending) frame: its recipes bound one
+## on the other, in order, on the latest settled frame among it and the
+## frames of the recipes already bound.
+dm_frame_bind <- function(fr) {
+    if (is.null(fr) || !length(fr$pend)) return(fr)
+    pend <- dm_pend_order(fr$pend)
+    fr$pend <- NULL
+    fr <- dm_frame_pending(dm_remote_unscaled(fr), pend)
+    left <- fr$pend
+    fr$pend <- NULL
+    for (r in left) {
+        fr <- switch(r$kind, mult = dm_bind_mult(r, fr), lookup = dm_bind_lookup(r, fr),
+                     stop("internal error: unknown recipe", call. = FALSE))
+        r$frame <- fr
+    }
+    fr
+}
+
+## A column on its settled frame (unchanged if it is not pending).
+dm_column_bind <- function(x) {
+    if (!dm_is_column(x)) return(x)
+    u <- unclass(x)
+    if (!length(u$frame$pend)) return(x)
+    u$frame <- dm_frame_bind(u$frame)
+    structure(u, class = "design_column")
+}
+
+## Does the column wait for recipes not yet bound?
+dm_column_unbound <- function(x) {
+    dm_is_column(x) && any(vapply(unclass(x)$frame$pend %||% list(), function(r) is.null(r$frame), NA))
+}
+
+## The product recipe r bound on settled frame fr: a view of X B over the
+## rows of fr, which keeps every column of fr.
+dm_bind_mult <- function(r, fr) {
+    x <- r$x
+    if (!identical(x$id, fr$id)) stop("internal error: a product on another design", call. = FALSE)
+    x$src <- fr$src
+    x$depth <- dm_frame_depth(fr)
+    x$path <- fr$path
+    view <- dm_remote_predict(x, r$B, column = r$nm[1L])
+    out <- dm_remote_unscaled(x)
+    out$src$select <- sprintf("SELECT * FROM %s", dm_qi(x, unclass(view)[1L]))
+    out$src$base_table <- NULL
+    out$src$view <- c(out$src$view, list(view))
+    ## (the view keeps every column of the frame, and adds the products:
+    ## their type is known, no query)
+    proto <- dm_proto_add(out, r$nm, double(0), sprintf("SELECT * FROM (%s) AS s LIMIT 0", out$src$select))
+    out$src$proto <- proto
+    out$src$types <- vapply(proto, dm_col_type, "")
+    out$depth <- dm_frame_depth(x) + 1L
+    dm_frame_child(out, x)
+}
+
+## The lookup recipe r bound on settled frame fr: the lookup table joined
+## to the rows of fr (keeping every column of fr).
+dm_bind_lookup <- function(r, fr) {
+    out <- dm_remote_unscaled(fr)
+    out$src$select <- sprintf("SELECT s.*, %s FROM (%s) AS s LEFT JOIN %s AS l ON %s",
+                              r$items, fr$src$select, r$table, r$on)
+    out$src$base_table <- NULL
+    out$src$proto <- dm_proto_add(fr, r$col, r$type, sprintf("SELECT * FROM (%s) AS s LIMIT 0", out$src$select))
+    out$src$types <- vapply(out$src$proto, dm_col_type, "")
+    out$depth <- dm_frame_depth(fr) + 1L
+    dm_frame_child(out, fr)
+}
+
+## The (possibly pending) frame of the remote columns in `cols`: a column,
+## a dmc_codes() grouping, NULL, or a list of those (nested); NULL when
+## none is remote.
+dm_cols_frame <- function(cols) {
+    f <- NULL
+    walk <- function(v) {
+        if (dm_is_column(v)) f <<- dm_frame_later(f, unclass(v)$frame)
+        else if (dm_is_codes(v)) walk(v$codes)
+        else if (is.list(v) && is.null(oldClass(v))) for (e in v) walk(e)
+        invisible()
+    }
+    walk(cols)
+    f
+}
+
+## `cols` (as dm_cols_frame() takes it) with fun() applied to each column.
+dm_cols_map <- function(v, fun) {
+    if (dm_is_column(v)) return(fun(v))
+    if (dm_is_codes(v)) {
+        v$codes <- dm_cols_map(v$codes, fun)
+        return(v)
+    }
+    if (is.list(v) && is.null(oldClass(v))) return(lapply(v, dm_cols_map, fun))
+    v
+}
+
+## Columns used one by one that must still combine with each other later
+## (remotely, pending columns bound separately would sit on two branches):
+## the pending columns of `cols` (as dm_cols_frame() takes it) bound
+## together, one on the other in order, and every remote column of `cols`
+## on that one frame (which keeps the columns of the frames below it). The
+## same structure is returned; in memory, `cols` itself.
+dmc_bind <- function(cols) {
+    fr <- dm_cols_frame(cols)
+    if (is.null(fr)) return(cols)
+    fr <- dm_frame_bind(fr)
+    dm_cols_map(cols, function(v) {
+        u <- unclass(v)
+        u$frame <- fr
+        structure(u, class = "design_column")
+    })
 }
 
 dm_column_frame <- function(...) {
@@ -497,7 +699,7 @@ dmc_qcauchy <- function(x) {
 ## The values of a column in R (remotely: all its rows; for small data).
 dmp_collect <- function(x) {
     if (!dm_is_column(x)) return(x)
-    fr <- unclass(x)$frame
+    fr <- dm_frame_bind(unclass(x)$frame)
     sql <- unclass(x)$sql
     res <- dm_query(fr, sprintf("SELECT %s FROM (%s) AS s WHERE %s",
                                 paste(sprintf("CAST(%s AS DOUBLE) AS c%d", sql, seq_along(sql)), collapse = ", "),
@@ -512,7 +714,7 @@ dm_colsum <- function(x) {
         if (is.matrix(x)) return(colSums(x))
         return(sum(x))
     }
-    fr <- unclass(x)$frame
+    fr <- dm_frame_bind(unclass(x)$frame)
     sql <- unclass(x)$sql
     k <- length(sql)
     nn <- unclass(x)$notnull %||% rep(FALSE, k)
@@ -560,8 +762,10 @@ dmp_column <- function(x, sql) {
     sql
 }
 
-## The remote design over the frame of columns (same plan, rows and scale).
+## The remote design over the frame of columns (same plan, rows and scale);
+## a pending frame is bound first.
 dm_rebase <- function(x, frame) {
+    frame <- dm_frame_bind(frame)
     if (is.null(frame) || identical(x$src$select, frame$src$select)) return(x)
     if (!identical(x$id, frame$id)) stop("Columns of another remote design.", call. = FALSE)
     x$src <- frame$src
@@ -570,15 +774,26 @@ dm_rebase <- function(x, frame) {
     x
 }
 
-dm_along_frame <- function(x, along) {
-    f <- do.call(dm_column_frame, as.list(along))
-    if (is.null(f)) x else dm_rebase(x, f)
+## The remote design over the later of its frame and `frame` (the pending
+## columns of `frame` bound on top of the design's frame when it is the
+## later one). (A frame of another design: as dm_rebase().)
+dm_rebase_later <- function(x, frame) {
+    if (!is.null(frame) && identical(frame$id, x$id)) frame <- dm_frame_later(frame, x)
+    dm_rebase(x, frame)
+}
+
+## The design over the latest frame of the columns of `cols` (a list, as
+## dmc_bind() takes it): their pending columns bound together, on top of
+## the design's frame when it is the later one. In memory x.
+dmp_rebase <- function(x, cols) {
+    if (!inherits(x, "dm_remote")) return(x)
+    dm_rebase_later(x, dm_cols_frame(cols))
 }
 
 dmp_scale <- function(x, s) {
     if (is.null(s)) return(x)
     if (!dm_is_column(s)) return(s * x)
-    x <- dm_rebase(x, unclass(s)$frame)
+    x <- dm_rebase_later(x, unclass(s)$frame)
     x$scale <- dm_remote_scale_sql(x, DBI::SQL(unclass(s)$sql), "*")
     x
 }
@@ -606,7 +821,7 @@ dmp_colsums <- function(x, group = NULL) {
 ## SQL GROUP BY over the frame of columns: list(groups (a data frame of the
 ## group values, sorted as rowsum() sorts them), sums (matrix)).
 dm_group_query <- function(groups, values, nulls = FALSE) {
-    fr <- do.call(dm_column_frame, c(groups, values))
+    fr <- dm_frame_bind(do.call(dm_column_frame, c(groups, values)))
     gs <- vapply(groups, function(g) unclass(g)$sql, "")
     vs <- unlist(lapply(values, function(v) unclass(v)$sql))
     items <- c(sprintf("%s AS g%d", gs, seq_along(gs)),
@@ -656,27 +871,22 @@ dmp_crosstab <- function(a, b, w = NULL) {
                          dimnames = list(as.character(ua), as.character(ub)))
 }
 
-dmp_mult <- function(x, B, along = list()) {
+## (remotely a pending column: the view of the product is made at its first
+## use, on the frame that use needs; B is checked now)
+dmp_mult <- function(x, B) {
     if (!inherits(x, "dm_remote")) return(if (is.matrix(B)) x %*% B else drop(x %*% B))
-    x <- dm_along_frame(x, along)
     B <- if (is.matrix(B)) B else matrix(B, ncol = 1L)
+    checkmate::assert_matrix(B, mode = "numeric", nrows = x$p, any.missing = FALSE, .var.name = "beta")
+    checkmate::assert_true(all(is.finite(B)), .var.name = "all(is.finite(beta))")
+    storage.mode(B) <- "double"
     nm <- paste0("__dm_p", substr(dm_tmp_name("p"), 3L, 10L), "_", seq_len(ncol(B)))
     colnames(B) <- nm
-    view <- dm_remote_predict(x, B, column = nm[1L])
     fr <- dm_remote_unscaled(x)
-    fr$src$select <- sprintf("SELECT * FROM %s", dm_qi(x, unclass(view)[1L]))
-    fr$src$base_table <- NULL
-    fr$src$view <- c(fr$src$view, list(view))
-    ## (the view keeps every column of the frame, and adds the products)
-    proto <- dm_proto_add(fr, nm, double(0), sprintf("SELECT * FROM (%s) AS s LIMIT 0", fr$src$select))
-    fr$src$proto <- proto
-    fr$src$types <- vapply(proto, dm_col_type, "")
-    fr$depth <- dm_frame_depth(x) + 1L
-    fr <- dm_frame_child(fr, x)
+    fr$pend <- list(dm_recipe("mult", x = x, B = B, nm = nm))
     dm_column(fr, sprintf("s.%s", dm_qi(x, nm)))
 }
 
-dmp_quad <- function(x, V, along = list()) {
+dmp_quad <- function(x, V) {
     if (!inherits(x, "dm_remote")) {
         J <- as_jac(x)
         storage.mode(V) <- "double"
@@ -689,13 +899,13 @@ dmp_quad <- function(x, V, along = list()) {
                               list(V, if (is.null(g)) NULL else g$first, design_threads())))
         return(if (is.null(g)) q else q[g$map])
     }
-    zero <- dm_column(dm_along_frame(x, along), "CAST(0 AS DOUBLE)")
+    zero <- dm_column(x, "CAST(0 AS DOUBLE)")
     if (ncol(V) == 0L) return(zero)
     e <- eigen(V, symmetric = TRUE)
     keep <- e$values > 0
     if (!any(keep)) return(zero)
     L <- e$vectors[, keep, drop = FALSE] %*% diag(sqrt(e$values[keep]), sum(keep))
-    P <- dmp_mult(x, L, along)
+    P <- dmp_mult(x, L)
     dmc_rowsums(P * P)
 }
 
@@ -705,6 +915,8 @@ dmp_quad <- function(x, V, along = list()) {
 dmp_patterns <- function(x, z, w = NULL, compress = "auto", keys = NULL, fit = "lm") {
     if (inherits(x, "dm_remote")) {
         mode <- if (isTRUE(compress)) TRUE else if (isFALSE(compress)) FALSE else dm_compress_mode()
+        ## (on the frame of z and w: their pending columns bound)
+        x <- dm_rebase_later(x, dm_column_frame(z, w))
         ## (extra key columns: more keys of the GROUP BY)
         if (!is.null(keys)) x <- dm_remote_cols(x, keys, "keys")$D
         pt <- dm_sql_patterns(x, unclass(z)$sql, if (!is.null(w)) unclass(w)$sql,
@@ -748,7 +960,7 @@ dmp_output <- function(x, cols, memory = identity, na = NULL, design = FALSE, at
     taken <- intersect(names(cols), names(x$src$types))
     if (length(taken)) stop(sprintf("The remote data already has a column `%s`.", taken[1L]), call. = FALSE)
     if (design) return(dm_with_columns(x, do.call(dmc_cbind, unname(cols)), names(cols)))
-    fr <- dm_rebase(dm_remote_unscaled(x), do.call(dm_column_frame, unname(cols)))
+    fr <- dm_rebase_later(dm_remote_unscaled(x), do.call(dm_column_frame, unname(cols)))
     srccols <- names(x$src$types)
     items <- vapply(names(cols), function(nm) {
         v <- cols[[nm]]
@@ -882,7 +1094,7 @@ dmc_groupsums <- function(col, groups, total = NULL) {
     if (!remote || length(groups) + (!is.null(total)) < 2L)
         return(list(groups = lapply(groups, function(g) dmp_groupsum(col, g)),
                     total = if (!is.null(total)) dm_colsum(total)))
-    fr <- do.call(dm_column_frame, c(list(col, total), lapply(groups, `[[`, "codes")))
+    fr <- dm_frame_bind(do.call(dm_column_frame, c(list(col, total), lapply(groups, `[[`, "codes"))))
     gs <- vapply(groups, function(g) unclass(g$codes)$sql, "")
     vs <- unclass(col)$sql
     ts <- if (!is.null(total)) unclass(total)$sql else character()
@@ -1149,7 +1361,7 @@ dmc_count <- function(cond, negate = FALSE) {
 ## effects); its rows keep the filter of the design.
 dmc_freeze <- function(col, table = FALSE) {
     if (!dm_is_column(col)) return(col)
-    fr <- unclass(col)$frame
+    fr <- dm_frame_bind(unclass(col)$frame)
     sql <- unclass(col)$sql
     nm <- paste0("__dm_f", substr(dm_tmp_name("f"), 3L, 10L), "_", seq_along(sql))
     x <- dm_remote_extend(dm_remote_unscaled(fr), stats::setNames(sql, nm), "column")
@@ -1197,6 +1409,8 @@ dm_remote_used <- function(x, cols) {
 
 dmp_materialize <- function(x, cols = NULL) {
     if (!inherits(x, "dm_remote")) return(x)
+    ## (the columns' pending recipes bound: the frame copied has them)
+    if (!is.null(cols)) x <- dmp_rebase(x, cols)
     sc <- x$scale
     keep <- if (!is.null(cols) && !is.null(x$src$proto)) dm_remote_used(x, cols)
     if (!length(keep)) keep <- NULL
@@ -1302,6 +1516,11 @@ dmp_subset <- function(x, keep) {
 ## source of x.
 dmc_on <- function(col, x) {
     if (!dm_is_column(col)) return(col)
+    ## (a pending column reads columns that its recipes make: bind it, on
+    ## the frame that x copies, before)
+    if (dm_column_unbound(col))
+        stop("internal error: dmc_on() of a pending column (bind it first: dmp_rebase(), dmc_bind())",
+             call. = FALSE)
     dm_column(x, unclass(col)$sql)
 }
 

@@ -3,7 +3,7 @@
 ## Each has an in-memory and a remote method; code that calls them does not
 ## branch on the backend.
 ##
-##   dmc_lookup(values, key, levels = NULL, along = list())
+##   dmc_lookup(values, key, levels = NULL)
 ##       the column whose value in a row is values[l], l the level of the
 ##       row's key: a lookup table joined on the key. Without `levels`, the
 ##       key is one column of integer codes 1..length(values) (or a
@@ -15,17 +15,17 @@
 ##       table (one join remotely).
 ##       In memory: values[codes] (C), or values[match(keys)] (key: a vector,
 ##       or a list or data frame of vectors, one per part), as doubles.
-##       Remotely: the lookup table is written to a temporary table and
-##       joined (LEFT JOIN) to the frame of the key (or the later frame of
-##       `along`, as for dmp_mult()), which gives a new frame keeping every
-##       column of the old one; integer `values` (codes) give an integer
-##       column.
-##   dmc_lookup_flags(flags, key, along = list())
+##       Remotely: the lookup table is written to a temporary table at
+##       once, and the column is pending (see primitives.R): at its first
+##       use the table is joined (LEFT JOIN) to the latest frame among the
+##       operands of that use (at least the frame of the key), which gives
+##       a new frame keeping every column of the old one; integer `values`
+##       (codes) give an integer column.
+##   dmc_lookup_flags(flags, key)
 ##       for a G x m logical matrix of flags of the levels and key a
 ##       dmc_codes() grouping (codes 1..G): the m logical columns of the
 ##       rows' flags. In memory flags[codes, j]; remotely one dmc_lookup()
-##       of the flags as 0/1 (the columns are on its frame: pass one of them
-##       as `along` to later lookups).
+##       of the flags as 0/1.
 ##   dmc_key(x, vars, data = NULL)
 ##       the values of variables (columns of the data, of any type) as a key
 ##       over the rows of design x: in memory a data frame (from `data`, or
@@ -33,11 +33,13 @@
 ##       variable.
 ##   dmc_not_na(key)
 ##       a logical column: no part of the key is missing.
-##   dmc_dense_codes(key, along = list())
+##   dmc_dense_codes(key)
 ##       list(codes = dmc_codes(), levels = data frame): the levels of the
 ##       key that occur, sorted, and each row's level as an integer code. In
 ##       memory from the values (integer coding in C); remotely a SELECT
-##       DISTINCT of the levels and a lookup of their codes.
+##       DISTINCT of the levels and a lookup of their codes (pending: codes
+##       of several keys that are used one by one but must combine later
+##       are bound together with dmc_bind()).
 ##   dmc_subset(col, keep, x2)
 ##       a column of x restricted to the rows of x2 = dmp_subset(x, keep): in
 ##       memory col[keep]; remotely the same SQL over x2 (dmc_on()).
@@ -54,7 +56,7 @@
 ##       changes, as in dm_center(), each variable on its own. The shifted
 ##       design is a new design: re-make columns with dmc_on().
 
-dmc_lookup <- function(values, key, levels = NULL, along = list()) {
+dmc_lookup <- function(values, key, levels = NULL) {
     mat <- is.matrix(values)
     ## (remotely, integer values stay integer: codes, which group and join
     ## faster and arrive in R as integers)
@@ -81,7 +83,9 @@ dmc_lookup <- function(values, key, levels = NULL, along = list()) {
     }
     vm <- if (mat) values else matrix(values, ncol = 1L)
     vcols <- paste0("v", seq_len(ncol(vm)))
-    frame <- do.call(dm_column_frame, c(list(key), as.list(along)))
+    ## (the key's frame, possibly pending: the lookup binds on top of the
+    ## key's recipes)
+    frame <- unclass(key)$frame
     con <- dm_con(frame)
     q <- function(x) dm_qi(frame, x)
     ksql <- unclass(key)$sql
@@ -103,23 +107,19 @@ dmc_lookup <- function(values, key, levels = NULL, along = list()) {
     tn <- dm_tmp_name("dm_lookup")
     dm_write_temp(con, tn, tab)
     col <- paste0("__dm_lk", substr(tn, 11L, 18L), if (mat) paste0("_", seq_along(vcols)))
+    ## (the join is made at the first use: dm_bind_lookup())
+    r <- dm_recipe("lookup", deps = frame$pend %||% list(),
+                   items = paste(sprintf("l.%s AS %s", vcols, q(col)), collapse = ", "),
+                   table = q(tn), on = on, col = col, type = if (int) integer(0) else double(0))
     fr <- dm_remote_unscaled(frame)
-    fr$src$select <- sprintf("SELECT s.*, %s FROM (%s) AS s LEFT JOIN %s AS l ON %s",
-                             paste(sprintf("l.%s AS %s", vcols, q(col)), collapse = ", "),
-                             frame$src$select, q(tn), on)
-    fr$src$base_table <- NULL
-    fr$src$proto <- dm_proto_add(frame, col, if (int) integer(0) else double(0),
-                                 sprintf("SELECT * FROM (%s) AS s LIMIT 0", fr$src$select))
-    fr$src$types <- vapply(fr$src$proto, dm_col_type, "")
-    fr$depth <- dm_frame_depth(frame) + 1L
-    fr <- dm_frame_child(fr, frame)
+    fr$pend <- c(frame$pend, list(r))
     dm_column(fr, sprintf("s.%s", q(col)))
 }
 
-dmc_lookup_flags <- function(flags, key, along = list()) {
+dmc_lookup_flags <- function(flags, key) {
     if (dm_plain_codes(key)) return(lapply(seq_len(ncol(flags)), function(j) flags[, j][key$codes]))
     storage.mode(flags) <- "double"
-    lk <- dmc_lookup(flags, key, along = along)
+    lk <- dmc_lookup(flags, key)
     lapply(seq_len(ncol(flags)), function(j) dmc_col(lk, j) == 1)
 }
 
@@ -182,12 +182,14 @@ dmc_not_na <- function(key) {
     dm_column(frame, sprintf("(%s)", paste(one, collapse = " AND ")))
 }
 
-dmc_dense_codes <- function(key, along = list()) {
+dmc_dense_codes <- function(key) {
     if (!dm_is_column(key)) {
         cd <- dm_fe_code_term(key, names(key))
         ## (in memory, also the rows per level: n)
         return(list(codes = dmc_codes(cd$codes, cd$G), levels = cd$levels, n = cd$n))
     }
+    ## (the levels are read now: the key on its settled frame)
+    key <- dm_column_bind(key)
     frame <- unclass(key)$frame
     sql <- unclass(key)$sql
     lv <- dm_query(frame, sprintf("SELECT DISTINCT %s FROM (%s) AS s WHERE %s",
@@ -196,7 +198,7 @@ dmc_dense_codes <- function(key, along = list()) {
     for (j in seq_along(lv)) if (is.factor(lv[[j]])) lv[[j]] <- as.character(lv[[j]])
     lv <- lv[do.call(order, unname(as.list(lv))), , drop = FALSE]
     rownames(lv) <- NULL
-    codes <- dmc_lookup(seq_len(nrow(lv)), key, lv, along)
+    codes <- dmc_lookup(seq_len(nrow(lv)), key, lv)
     list(codes = dmc_codes(codes, nrow(lv)), levels = lv)
 }
 

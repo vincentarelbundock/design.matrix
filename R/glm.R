@@ -488,7 +488,7 @@ dmglm_checks <- function(cols, k, start, wmsg) {
 
 ## `solver`: NULL (the weighted least squares steps are qr() of the scaled
 ## design), or the steps of another problem with the same loop: list(lin,
-## wls, np), lin(theta, along) the linear predictor (without offset) at
+## wls, np), lin(theta) the linear predictor (without offset) at
 ## parameters theta (a vector, or a matrix with one column per parameter
 ## vector: several columns), wls(w2, z) the weighted least squares step
 ## (as dmglm_wls_design()), np the number of parameters (fixed effects:
@@ -505,7 +505,7 @@ dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg
     y <- cols$y
     w <- cols$w
     off <- cols$off %||% 0
-    lin <- if (is.null(solver)) function(b, along = list()) dmp_mult(x, b, along = along) else solver$lin
+    lin <- if (is.null(solver)) function(b) dmp_mult(x, b) else solver$lin
     ## (with another solver, whose steps read the working columns many
     ## times, they are a table remotely: `materialize`)
     rows <- list(lin = lin, wls = if (is.null(solver)) dmglm_wls_design(x, tol) else solver$wls,
@@ -754,7 +754,9 @@ dmglm_final <- function(lin, cols, cf, k, ck, beta, old, eta0, dev, intercept) {
         eta <- 0 * y + off
         eta_old <- eta
     } else if (is.null(old)) {
-        eta <- lin(beta, along = list(eta0)) + off
+        ## (remotely the product binds on the frame of eta0 when the two are
+        ## frozen together below)
+        eta <- lin(beta) + off
         eta_old <- eta0
     } else {
         P <- lin(cbind(beta, old))

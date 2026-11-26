@@ -141,13 +141,16 @@ temporary tables it reads (from products, and from \code{compute()}) live in
 the session of that connection, and disappear when it is closed; for a
 Parquet source, the column keeps its private connection open. To keep
 values beyond the session, read them with \code{as.data.frame()} and write
-them where they belong. Columns of one design combine with each other;
-columns of different designs do not. Nor do the results of two separate
-products of one design (such as \code{D \%*\% b1} and \code{quadratic_diagonal(D, V)}), whose rows the database has no key to align: compute such
-columns in one product (\code{D \%*\% cbind(b1, b2)}, then \verb{[, 1]} and
-\verb{[, 2]}), or read them with \code{as.data.frame(keep = "id")} and match them
-in R. A column made by \code{design_column()} combines with any product of
-its design.
+them where they belong. Columns of one design combine with each other,
+including the results of separate products (\code{D \%*\% b1 + D \%*\% b2}, or
+\code{(D \%*\% b) / sqrt(quadratic_diagonal(D, V))}): a product becomes a view
+only when its values are first needed, on top of the other products it
+is combined with. Columns of different designs do not combine. Nor do
+two products that were each read (by \code{collect()}, \code{as.data.frame()},
+\code{compute()} or a sum) before being combined, since their views then
+stand side by side and the database has no key to align their rows:
+combine the columns first, compute them in one product (\code{D \%*\% cbind(b1, b2)}, then \verb{[, 1]} and \verb{[, 2]}), or read them with \code{as.data.frame(keep = "id")} and match them in R. A column made by \code{design_column()} combines
+with any product of its design.
 
 \code{collect()} and \code{compute()} are generics of this package. If another
 package that defines functions of the same names is attached after
