@@ -4,7 +4,7 @@
 
 ## Introduction
 
-The `design.matrix` package builds model matrices that are identical, bit for bit, to those returned by `stats::model.matrix()`. Its main benefit comes when the dense model matrix is only an intermediate input to something else: predictions multiply it by a vector of coefficients, their standard errors need a quadratic form, and cluster-robust variances need weighted sums of its rows by group. `design.matrix` computes these results directly from the factor codes and numeric variables, without materializing the dense matrix, which often saves an order of magnitude or more in both time and memory. When the dense matrix itself is what you need, there is no step to skip, and the gains are much smaller.
+The `design.matrix` package builds model matrices that are identical, bit for bit, to those returned by `stats::model.matrix()`. Its main benefit comes when the dense model matrix is only an intermediate input to something else: least squares coefficients need `X'X` and `X'y`, predictions multiply it by a vector of coefficients, their standard errors need a quadratic form, and cluster-robust variances need weighted sums of its rows by group. `design.matrix` computes these results directly from the factor codes and numeric variables, without materializing the dense matrix, which often saves an order of magnitude or more in both time and memory. When the dense matrix itself is what you need, there is no step to skip, and the gains are much smaller.
 
 Use `design.matrix` when you have a formula (or fitted model) and data, and you need the model matrix only on the way to something else, so that allocating, filling, and storing it would be wasted work. If you already have the dense matrix `X`, use it directly.
 
@@ -357,7 +357,7 @@ bench::mark(
 
 ### `crossprod()`
 
-`crossprod(D, W)` computes `X'W`, such as `X'y` in least squares or weighted sums of the columns of `X`.
+`crossprod(D, W)` computes `X'W`, such as `X'y` in least squares or weighted sums of the columns of `X`. `crossprod(D)` computes `X'X`, and `crossprod(D, w * D)` the weighted `X'WX`; both return ordinary matrices, which go straight to `chol()`, `chol2inv()`, `eigen()` or `solve()`.
 
 ``` r
 library(design.matrix)
@@ -374,6 +374,11 @@ w <- seq(-1, 1, length.out = 8)
 a <- crossprod(M, w)
 b <- crossprod(D, w)
 all.equal(a, b, check.attributes = FALSE)
+#> [1] TRUE
+
+all.equal(crossprod(M), crossprod(D))
+#> [1] TRUE
+all.equal(crossprod(M, w * M), crossprod(D, w * D))
 #> [1] TRUE
 ```
 
@@ -408,6 +413,61 @@ bench::mark(
 #> 2 design_matrix, then crossprod  19.24ms  19.59ms    31.1MB
 #> 3 prebuilt X                     14.41ms  14.53ms     1000B
 #> 4 prebuilt design matrix          9.21ms   9.42ms    1.54MB
+```
+
+For `X'X`, the design matrix adds up the products of each row’s few non-zero entries, instead of all `p^2 / 2` products of the dense row.
+
+``` r
+library(design.matrix)
+options(design.matrix.dedup = FALSE)
+set.seed(1)
+n <- 2e5
+big <- data.frame(
+    y = rnorm(n),
+    x = rnorm(n),
+    f1 = factor(sample(sprintf("a%02d", 1:50), n, TRUE)),
+    f2 = factor(sample(letters[1:20], n, TRUE)),
+    cl = sample(1:1000, n, TRUE))
+fo <- y ~ x * f1 + f2
+X <- model.matrix(fo, big)
+DX <- design_matrix(fo, big)
+flat <- function(v) unname(c(unlist(v)))
+close <- function(a, b) isTRUE(all.equal(flat(a), flat(b)))
+
+bench::mark(
+    "model.matrix, then crossprod"  = crossprod(model.matrix(fo, big)),
+    "design_matrix, then crossprod" = crossprod(design_matrix(fo, big)),
+    "prebuilt X"                    = crossprod(X),
+    "prebuilt design matrix"        = crossprod(DX),
+    iterations = 10, check = close)[c("expression", "min", "median", "mem_alloc")]
+```
+
+### `qr()`
+
+`qr(D)` decomposes a design matrix without forming `X` or `Q`, and the usual functions accept the result: `qr.coef()`, `qr.fitted()`, `qr.resid()`, `qr.qty()`, `qr.qy()`, `qr.Q()`, `qr.R()` and `solve()`. `R` is the Cholesky factor of `crossprod(D)`, with columns pivoted as in `qr()` and `lm()`, and `Q` is `X R^-1`, never formed. Coefficients are refined from the residuals `y - X b`, which recovers much of the accuracy that the normal equations lose on badly conditioned designs. Columns whose residual norm is close to the tolerance are checked against the data, so aliased columns are those of `qr()`.
+
+Results agree with `qr(as.matrix(D))` up to floating point rounding, not bit for bit. Signs of the rows of `R` (and of the columns of `Q`) can differ, and `qr.Q()` and `qr.qty()` return only the first `rank` columns or rows, since the complete `Q` is never formed. See `?design_qr`.
+
+``` r
+library(design.matrix)
+d <- data.frame(
+    y = c(0.3, -1.2, 0.8, 1.5, -0.4, 0.9, -2.1, 0.2),
+    x = c(-1.5, 0.2, 1.1, -0.3, 2.0, 0.7, -0.9, 1.4),
+    f = factor(c("a", "b", "c", "a", "b", "c", "a", "b")),
+    cl = c(1, 1, 2, 2, 3, 3, 4, 4))
+M <- model.matrix(y ~ x * f, d)
+D <- design_matrix(y ~ x * f, d)
+
+a <- qr(M)
+b <- qr(D)
+b
+#> <design_qr: 8 x 6 design, rank 6>
+all.equal(qr.coef(a, d$y), qr.coef(b, d$y))
+#> [1] TRUE
+all.equal(qr.resid(a, d$y), qr.resid(b, d$y), check.attributes = FALSE)
+#> [1] TRUE
+all.equal(abs(qr.R(a)), abs(qr.R(b)), check.attributes = FALSE)
+#> [1] TRUE
 ```
 
 ### `colSums()`, `colMeans()`, `rowSums()` and `rowMeans()`
@@ -639,6 +699,49 @@ bench::mark(
 ```
 
 ## Recipes
+
+### Least squares
+
+Least squares coefficients only need `X'X` and `X'y`, so `qr()` on a design matrix gives them without forming the dense matrix. With weights, use `qr(sqrt(w) * D)` and `sqrt(w) * y`.
+
+``` r
+library(design.matrix)
+d <- data.frame(
+    y = c(0.3, -1.2, 0.8, 1.5, -0.4, 0.9, -2.1, 0.2),
+    x = c(-1.5, 0.2, 1.1, -0.3, 2.0, 0.7, -0.9, 1.4),
+    f = factor(c("a", "b", "c", "a", "b", "c", "a", "b")),
+    cl = c(1, 1, 2, 2, 3, 3, 4, 4))
+
+fit <- lm(y ~ x + f, d)
+D <- design_matrix(y ~ x + f, d)
+all.equal(coef(fit), qr.coef(qr(D), d$y))
+#> [1] TRUE
+```
+
+The benchmark compares `lm()`, `lm.fit()` on the model matrix (a Householder QR), and `RcppEigen::fastLmPure()` with its fastest method, a Cholesky decomposition of `X'X`. All three include building the model matrix, and so does the design matrix.
+
+``` r
+library(design.matrix)
+options(design.matrix.dedup = FALSE)
+set.seed(1)
+n <- 2e5
+big <- data.frame(
+    y = rnorm(n),
+    x = rnorm(n),
+    f1 = factor(sample(sprintf("a%02d", 1:50), n, TRUE)),
+    f2 = factor(sample(letters[1:20], n, TRUE)),
+    cl = sample(1:1000, n, TRUE))
+fo <- y ~ x * f1 + f2
+flat <- function(v) unname(c(unlist(v)))
+close <- function(a, b) isTRUE(all.equal(flat(a), flat(b)))
+
+bench::mark(
+    "lm()"                    = coef(lm(fo, big)),
+    "lm.fit()"                = lm.fit(model.matrix(fo, big), big$y)$coefficients,
+    "RcppEigen::fastLmPure()" = RcppEigen::fastLmPure(model.matrix(fo, big), big$y, method = 2L)$coefficients,
+    "qr() on a design matrix" = qr.coef(qr(design_matrix(fo, big)), big$y),
+    iterations = 5, check = close)[c("expression", "min", "median", "mem_alloc")]
+```
 
 ### Predictions
 

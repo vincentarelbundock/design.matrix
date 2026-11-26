@@ -45,7 +45,8 @@ otherwise they are in order of first appearance.}
 
 \item{y}{For \code{\%*\%}, a numeric vector of length \code{ncol(x)} or a matrix with
 \code{ncol(x)} rows (the coefficients). For \code{crossprod()}, a numeric vector
-with one value per row or a matrix with \code{nrow(x)} rows (the weights).}
+with one value per row or a matrix with \code{nrow(x)} rows (the weights),
+another \code{design_matrix} with the same rows, or \code{NULL} for \code{t(X) \%*\% X}.}
 }
 \value{
 \code{rowsum()}: a matrix with one row per group and the columns of
@@ -62,6 +63,12 @@ the factor codes and numeric variables, with the usual base R operators:
 \itemize{
 \item \code{x \%*\% beta}: \code{X \%*\% beta}, an \code{nrow(x)} by \code{ncol(beta)} matrix.
 \item \code{crossprod(x, w)}: \code{t(X) \%*\% w}, an \code{ncol(x)} by \code{ncol(w)} matrix.
+\item \code{crossprod(x)} and \code{crossprod(x, y)} with \code{y} another \code{design_matrix}
+with the same rows: \code{t(X) \%*\% X} and \code{t(X) \%*\% Y}, ordinary base R
+matrices. Weighted crossproducts are \code{crossprod(x, w * x)} or
+\code{crossprod(sqrt(w) * x)}. The result can go straight to \code{\link[=chol]{chol()}},
+\code{\link[=chol2inv]{chol2inv()}}, \code{\link[=eigen]{eigen()}} or \code{\link[=solve]{solve()}}; see also \link[=design_qr]{qr()} for
+least squares.
 \item \code{colSums(x, group = g)} and \code{colMeans(x, group = g)} summarize each
 design column within groups of rows. Group order, row names and missing
 group handling follow \code{\link[base:rowsum]{base::rowsum()}}. For weighted sums, use
@@ -76,8 +83,8 @@ the variances of unit-level estimates.
 
 The results agree with the same computation on the dense matrix up to
 floating point rounding (the order of the sums differs), with \code{NA} and
-\code{NaN} in the same places. Only \code{design \%*\% beta} and \code{crossprod(design, w)}
-are supported, with the design first.
+\code{NaN} in the same places. Only \code{design \%*\% beta}, \code{crossprod(design, w)}
+and \code{crossprod(design, design)} are supported, with a design first.
 
 \code{beta} and \code{V} must be finite: the kernels skip structural zeros, so
 \code{0 * Inf} terms that the dense product would turn into \code{NaN} are not

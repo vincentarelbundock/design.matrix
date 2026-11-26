@@ -173,6 +173,12 @@ jac_kernel_ok <- function(J) {
 #'
 #' * `x %*% beta`: `X %*% beta`, an `nrow(x)` by `ncol(beta)` matrix.
 #' * `crossprod(x, w)`: `t(X) %*% w`, an `ncol(x)` by `ncol(w)` matrix.
+#' * `crossprod(x)` and `crossprod(x, y)` with `y` another `design_matrix`
+#'   with the same rows: `t(X) %*% X` and `t(X) %*% Y`, ordinary base R
+#'   matrices. Weighted crossproducts are `crossprod(x, w * x)` or
+#'   `crossprod(sqrt(w) * x)`. The result can go straight to [chol()],
+#'   [chol2inv()], [eigen()] or [solve()]; see also [qr()][design_qr] for
+#'   least squares.
 #' * `colSums(x, group = g)` and `colMeans(x, group = g)` summarize each
 #'   design column within groups of rows. Group order, row names and missing
 #'   group handling follow [base::rowsum()]. For weighted sums, use
@@ -186,8 +192,8 @@ jac_kernel_ok <- function(J) {
 #'
 #' The results agree with the same computation on the dense matrix up to
 #' floating point rounding (the order of the sums differs), with `NA` and
-#' `NaN` in the same places. Only `design %*% beta` and `crossprod(design, w)`
-#' are supported, with the design first.
+#' `NaN` in the same places. Only `design %*% beta`, `crossprod(design, w)`
+#' and `crossprod(design, design)` are supported, with a design first.
 #'
 #' `beta` and `V` must be finite: the kernels skip structural zeros, so
 #' `0 * Inf` terms that the dense product would turn into `NaN` are not
@@ -526,7 +532,8 @@ dm_row_cost <- function(J) {
 #' @rdname design_algebra
 #' @param y For `%*%`, a numeric vector of length `ncol(x)` or a matrix with
 #'   `ncol(x)` rows (the coefficients). For `crossprod()`, a numeric vector
-#'   with one value per row or a matrix with `nrow(x)` rows (the weights).
+#'   with one value per row or a matrix with `nrow(x)` rows (the weights),
+#'   another `design_matrix` with the same rows, or `NULL` for `t(X) %*% X`.
 #' @export
 `%*%.design_matrix` <- function(x, y) {
     if (!inherits(x, "design_matrix"))
@@ -540,7 +547,66 @@ dm_row_cost <- function(J) {
 #' @export
 crossprod.design_matrix <- function(x, y = NULL, ...) {
     if (!inherits(x, "design_matrix"))
-        stop("Only `crossprod(design, w)` is supported, with the design first.", call. = FALSE)
-    if (is.null(y)) stop("`crossprod(design)` needs `y`.", call. = FALSE)
+        stop("Only `crossprod(design, w)` and `crossprod(design, design)` are supported, with a design first.", call. = FALSE)
+    if (is.null(y) || inherits(y, "design_matrix")) return(dm_gram(x, y))
     dm_crossprod(x, y)
+}
+
+## t(X) %*% Y for two design matrices (Y = X when `y` is NULL): a base
+## matrix. When both are scaled rows of the same plain design, the scales
+## become weights of a symmetric product, so that identical rows of the
+## design can be grouped.
+dm_gram <- function(x, y = NULL) {
+    n <- nrow(x)
+    if (!is.null(y) && nrow(y) != n)
+        stop("The design matrices must have the same number of rows.", call. = FALSE)
+    nm <- list(colnames(x), colnames(if (is.null(y)) x else y))
+    w <- NULL
+    tx <- dm_terms(x)
+    if (is.null(y)) {
+        if (length(tx) == 1L && !is.null(tx[[1L]]$scale)) {
+            w <- tx[[1L]]$scale^2
+            x <- tx[[1L]]$design
+        }
+    } else {
+        ty <- dm_terms(y)
+        if (length(tx) == 1L && length(ty) == 1L &&
+            dm_same_design(tx[[1L]]$design, ty[[1L]]$design)) {
+            w <- dm_times(tx[[1L]]$scale, if (is.null(ty[[1L]]$scale)) 1 else ty[[1L]]$scale)
+            x <- tx[[1L]]$design
+            y <- NULL
+        }
+    }
+    A <- as_jac(x)
+    B <- if (is.null(y)) NULL else as_jac(y)
+    if (!jac_kernel_ok(A) || (!is.null(B) && !jac_kernel_ok(B))) {
+        XA <- as.matrix(A)
+        out <- if (is.null(B)) {
+            if (is.null(w)) crossprod(XA) else crossprod(XA, w * XA)
+        } else {
+            crossprod(XA, as.matrix(B))
+        }
+        dimnames(out) <- nm
+        return(out)
+    }
+    if (!is.null(w) && length(w) == 1L) w <- rep(w, n)
+    first <- NULL
+    if (is.null(B)) {
+        g <- dm_groups(A, cost = dm_row_cost(A)^2)
+        if (!is.null(g)) {
+            w <- drop(rowsum(if (is.null(w)) rep(1, n) else w, g$map, reorder = TRUE))
+            first <- g$first
+        }
+    }
+    if (!is.null(w)) w <- as.double(w)
+    Bargs <- if (is.null(B)) rep(list(NULL), 6L) else jac_args(B)
+    out <- do.call(.Call, c(list(C_dm_jac_gram), jac_args(A), Bargs, list(w, first)))
+    dimnames(out) <- nm
+    out
+}
+
+## Are two plain designs the same object (or equal)?
+dm_same_design <- function(a, b) {
+    if (!is.null(a$cache) && identical(a$cache, b$cache)) return(TRUE)
+    identical(a, b)
 }

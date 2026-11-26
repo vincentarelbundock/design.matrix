@@ -12,8 +12,9 @@ Authors@R: c(
 Description: Builds model matrices that are identical, bit for bit, to those
     returned by 'stats::model.matrix()', with a multi-threaded fill, reusable
     plans for repeated calls on new data, and products with the design or
-    with Jacobians (X beta, X'w, diag(J V J')) computed from factor codes and
-    numeric variables without forming the dense matrix.
+    with Jacobians (X beta, X'w, X'X, diag(J V J')) and least squares QR
+    decompositions computed from factor codes and numeric variables without
+    forming the dense matrix.
 License: GPL (>= 2)
 URL: https://github.com/vincentarelbundock/design.matrix
 BugReports: https://github.com/vincentarelbundock/design.matrix/issues

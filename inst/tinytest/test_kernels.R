@@ -30,6 +30,22 @@ check_design <- function(D, info) {
     expect_true(close_enough(colSums(D), colSums(X)), info = paste(info, "colSums"))
     expect_true(close_enough(rowMeans(D), rowMeans(X)), info = paste(info, "rowMeans"))
     expect_true(close_enough(quadratic_diagonal(D, V), rowSums((X %*% V) * X)), info = paste(info, "quad"))
+    expect_true(close_enough(crossprod(D), crossprod(X)), info = paste(info, "gram"))
+    expect_true(close_enough(crossprod(D, w * D), crossprod(X, w * X)), info = paste(info, "weighted gram"))
+    expect_true(close_enough(crossprod(w * D), crossprod(w * X)), info = paste(info, "scaled gram"))
+}
+
+# crossproducts of two different designs
+set.seed(5)
+d <- fuzz_data(300, special = TRUE)
+for (fo in list(y ~ x1 * f1 + f2, y ~ poly(z, 3) * ch + m:lg, ~ 0 + x1:x2:f1)) {
+    D0 <- design_matrix(fo, d)
+    D1 <- design_matrix(D0, transform(d, x1 = x1 + 1, z = z * 1.1))
+    X0 <- as.matrix(D0); X1 <- as.matrix(D1)
+    w <- rnorm(nrow(d))
+    expect_true(close_enough(crossprod(D0, D1), crossprod(X0, X1)), info = deparse(fo))
+    expect_true(close_enough(crossprod(D1 - D0, w * D0), crossprod(X1 - X0, w * X0)), info = deparse(fo))
+    expect_true(close_enough(crossprod(D1 - D0), crossprod(X1 - X0)), info = deparse(fo))
 }
 
 set.seed(4)

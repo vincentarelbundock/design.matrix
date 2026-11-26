@@ -28,5 +28,7 @@ SEXP dm_jac_dense(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_row_groups(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_jac_entries_mean(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_jac_finite(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP dm_jac_gram(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP dm_chol_pivot(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_omp_max_threads(void);
 #endif

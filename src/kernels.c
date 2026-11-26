@@ -726,3 +726,188 @@ SEXP dm_jac_finite(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
     UNPROTECT(1 + J.nd);
     return out;
 }
+
+/* Does a row have a non-finite entry? */
+static int any_nonfinite(const double *vals, int m)
+{
+    for (int u = 0; u < m; u++)
+	if (!R_FINITE(vals[u])) return 1;
+    return 0;
+}
+
+/* t(A) %*% diag(w) %*% B, where A and B are Jacobians with the same rows
+   (B missing: B = A, and only the upper triangle is accumulated, then
+   mirrored).  w is NULL (all ones) or one weight per computed row.  A
+   row with a non-finite entry or weight lists every column of the other
+   factor (and of itself, when symmetric), so that NA * 0 and Inf * 0 are
+   seen as in the dense product.  Single-threaded: the order of the sums is
+   fixed. */
+SEXP dm_jac_gram(SEXP a1, SEXP av1, SEXP as1, SEXP a2, SEXP av2, SEXP as2,
+		 SEXP b1, SEXP bv1, SEXP bs1, SEXP b2, SEXP bv2, SEXP bs2,
+		 SEXP W, SEXP rows_)
+{
+    jctx A, B;
+    build_jac(&A, a1, av1, as1, a2, av2, as2);
+    int sym = isNull(b1);
+    int nprot = A.nd;
+    if (!sym) {
+	build_jac(&B, b1, bv1, bs1, b2, bv2, bs2);
+	nprot += B.nd;
+	if (B.d[0].n != A.d[0].n) error("non-conformable arguments");
+    }
+    const int *rows = rows_ptr(rows_, A.d[0].n);
+    R_xlen_t n = nrows_of(rows_, A.d[0].n);
+    int pa = A.p, pb = sym ? A.p : B.p;
+    const double *w = isNull(W) ? NULL : REAL(W);
+    if (w && XLENGTH(W) != n) error("internal error: one weight per row");
+    SEXP out = PROTECT(allocMatrix(REALSXP, pa, pb));
+    double *o = REAL(out);
+    memset(o, 0, sizeof(double) * (size_t) pa * pb);
+    scratch *SA = alloc_scratch(1, pa, A.nd);
+    scratch *SB = sym ? NULL : alloc_scratch(1, pb, B.nd);
+
+    for (R_xlen_t r = 0; r < n; r++) {
+	R_xlen_t i = row_at(rows, r);
+	double wi = w ? w[r] : 1.0;
+	int badw = !R_FINITE(wi);
+	int ma = jac_entries(&A, i, badw, SA);
+	if (sym) {
+	    if (!badw && any_nonfinite(SA->vals, ma))
+		ma = jac_entries(&A, i, 1, SA);
+	    const int *c = SA->cols;
+	    const double *v = SA->vals;
+	    for (int u = 0; u < ma; u++) {
+		double wu = w ? wi * v[u] : v[u];
+		for (int t = 0; t < ma; t++) {
+		    if (c[t] < c[u]) continue;
+		    o[c[u] + (R_xlen_t) c[t] * pa] += wu * v[t];
+		}
+	    }
+	} else {
+	    int mb = jac_entries(&B, i, badw, SB);
+	    if (!badw) {
+		int bada = any_nonfinite(SA->vals, ma);
+		int badb = any_nonfinite(SB->vals, mb);
+		if (bada) mb = jac_entries(&B, i, 1, SB);
+		if (badb) ma = jac_entries(&A, i, 1, SA);
+	    }
+	    for (int u = 0; u < ma; u++) {
+		double wu = w ? wi * SA->vals[u] : SA->vals[u];
+		int cu = SA->cols[u];
+		for (int t = 0; t < mb; t++)
+		    o[cu + (R_xlen_t) SB->cols[t] * pa] += wu * SB->vals[t];
+	    }
+	}
+    }
+    if (sym) {
+	for (int j = 0; j < pa; j++)
+	    for (int k = j + 1; k < pa; k++)
+		o[k + (R_xlen_t) j * pa] = o[j + (R_xlen_t) k * pa];
+    }
+    UNPROTECT(1 + nprot);
+    return out;
+}
+
+/* Cholesky factor of X'X (= G) with the limited column pivoting of
+   LINPACK's dqrdc2 (as in qr() and lm()): columns are taken in order, and
+   a column whose residual norm (after projection on the columns already
+   taken) is below tol times its norm is moved to the end, after the
+   columns already moved.  As in dqrdc2, columns are tested only until
+   min(n, p) columns are taken; the rest stay in place.
+
+   From G, a squared residual norm d is accurate to about eps * G[j, j]
+   only, so a small d cannot tell an aliased column from one whose
+   residual is just above tol.  A column with d <= susp * G[j, j] is a
+   suspect: unless `dres[j]` (its squared residual norm, computed from the
+   data by the caller) is given, it is provisionally moved, and listed in
+   the result for the caller to check.  With `dres[j]`, the column is
+   taken when dres[j] > tol^2 * G[j, j], with R[j, j] = sqrt(dres[j]).
+
+   Returns list(R, rank, pivot, suspects): R is p x p upper triangular in
+   pivoted order, with zeros in the block of the moved columns' residuals;
+   pivot and suspects are 1-based. */
+SEXP dm_chol_pivot(SEXP G_, SEXP tol_, SEXP susp_, SEXP n_, SEXP dres_)
+{
+    int p = nrows(G_);
+    if (ncols(G_) != p) error("internal error: G must be square");
+    if (XLENGTH(dres_) != p) error("internal error: dres must have p values");
+    const double *G = REAL(G_), *dres = REAL(dres_);
+    double tol = asReal(tol_), tol2 = tol * tol, susp = asReal(susp_);
+    double nrow = asReal(n_);
+    int lup = nrow < p ? (int) nrow : p;
+    int p1 = p > 0 ? p : 1;
+    int *acc = (int *) R_alloc(p1, sizeof(int));
+    int *rej = (int *) R_alloc(p1, sizeof(int));
+    int *sus = (int *) R_alloc(p1, sizeof(int));
+    int *rest = (int *) R_alloc(p1, sizeof(int));
+    double *R = (double *) R_alloc((size_t) p * p1, sizeof(double));
+    double *x = (double *) R_alloc(p1, sizeof(double));
+    int k = 0, nrej = 0, nsus = 0, nrest = 0;
+
+    for (int j = 0; j < p; j++) {
+	if (k >= lup) {
+	    rest[nrest++] = j;
+	    continue;
+	}
+	double gjj = G[j + (R_xlen_t) j * p];
+	/* forward substitution: x = R11^-T G[acc, j] */
+	double ss = 0.0;
+	for (int a = 0; a < k; a++) {
+	    double s = G[acc[a] + (R_xlen_t) j * p];
+	    const double *ra = R + (size_t) a * p;
+	    for (int b = 0; b < a; b++) s -= ra[b] * x[b];
+	    x[a] = s / ra[a];
+	    ss += x[a] * x[a];
+	}
+	double d = gjj - ss;
+	int take;
+	if (!(gjj > 0.0)) {
+	    take = 0;
+	} else if (d > susp * gjj) {
+	    take = 1;
+	} else if (!ISNAN(dres[j])) {
+	    d = dres[j];
+	    take = d > tol2 * gjj;
+	} else {
+	    take = 0;
+	    sus[nsus++] = j;
+	}
+	if (take) {
+	    double *rk = R + (size_t) k * p;
+	    for (int a = 0; a < k; a++) rk[a] = x[a];
+	    rk[k] = sqrt(d);
+	    acc[k++] = j;
+	} else {
+	    rej[nrej++] = j;
+	}
+    }
+
+    SEXP out = PROTECT(allocVector(VECSXP, 4));
+    SEXP Rout = SET_VECTOR_ELT(out, 0, allocMatrix(REALSXP, p, p));
+    double *ro = REAL(Rout);
+    memset(ro, 0, sizeof(double) * (size_t) p * p);
+    for (int a = 0; a < k; a++)
+	for (int b = 0; b <= a; b++)
+	    ro[b + (R_xlen_t) a * p] = R[b + (size_t) a * p];
+    /* columns not taken, in pivoted order (untested, then moved):
+       R12 = R11^-T G[acc, j] */
+    int *pv = INTEGER(SET_VECTOR_ELT(out, 2, allocVector(INTSXP, p)));
+    for (int a = 0; a < k; a++) pv[a] = acc[a] + 1;
+    for (int q = 0; q < nrest; q++) pv[k + q] = rest[q] + 1;
+    for (int q = 0; q < nrej; q++) pv[k + nrest + q] = rej[q] + 1;
+    for (int q = k; q < p; q++) {
+	int j = pv[q] - 1;
+	double *col = ro + (R_xlen_t) q * p;
+	for (int a = 0; a < k; a++) {
+	    double s = G[acc[a] + (R_xlen_t) j * p];
+	    const double *ra = R + (size_t) a * p;
+	    for (int b = 0; b < a; b++) s -= ra[b] * col[b];
+	    col[a] = s / ra[a];
+	}
+    }
+    SET_VECTOR_ELT(out, 1, ScalarInteger(k));
+    int *sv = INTEGER(SET_VECTOR_ELT(out, 3, allocVector(INTSXP, nsus)));
+    for (int q = 0; q < nsus; q++) sv[q] = sus[q] + 1;
+    UNPROTECT(1);
+    return out;
+}
