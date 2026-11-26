@@ -766,7 +766,7 @@ cat("\n", paste(readLines("bench/ols/machine.txt"), collapse = "; "), "\n")
 
 ### Fitting linear models
 
-`design_lm()` takes the arguments of `lm()` (`formula`, `data`, `subset`, `weights`, `na.action`, `offset`, `contrasts`) and fits the model on a design matrix, without forming the dense matrix. Coefficients, `vcov()` and `sigma()` agree with `lm()`, including the `NA` coefficients of aliased columns, and the usual methods work: `summary()`, `predict()` (with standard errors and intervals), `residuals()`, `fitted()`, `nobs()`, `logLik()`, `AIC()`. `design_lm_fit(D, y, weights, offset)` fits a design matrix you already have.
+`design_lm()` takes the arguments of `lm()` (`formula`, `data`, `subset`, `weights`, `na.action`, `offset`, `contrasts`) and fits the model on a design matrix, without forming the dense matrix. Coefficients, `vcov()` and `sigma()` agree with `lm()`, including the `NA` coefficients of aliased columns, and the usual methods work: `summary()`, `predict()` (with standard errors and intervals), `residuals()`, `fitted()`, `nobs()`, `logLik()`, `AIC()`. `design_lm(D, y = y)` fits a design matrix `D` you already have.
 
 When many rows share a design pattern, as with categorical predictors, the fit only needs the count, the weighted mean and the sum of squares of the response in each pattern. `design_lm()` finds the patterns with the machinery of [repeated rows](#repeated-rows) and fits on them: here, 15 patterns instead of 100,000 rows. `compress = FALSE` turns this off.
 

@@ -2,7 +2,6 @@
 % Please edit documentation in R/lm.R
 \name{design_lm}
 \alias{design_lm}
-\alias{design_lm_fit}
 \alias{predict.design_lm}
 \title{Linear models without the model matrix}
 \usage{
@@ -16,16 +15,8 @@ design_lm(
   contrasts = NULL,
   compress = "auto",
   tol = 1e-07,
-  model = TRUE
-)
-
-design_lm_fit(
-  x,
-  y,
-  weights = NULL,
-  offset = NULL,
-  compress = "auto",
-  tol = 1e-07
+  model = TRUE,
+  y = NULL
 )
 
 \method{predict}{design_lm}(
@@ -41,13 +32,18 @@ design_lm_fit(
 )
 }
 \arguments{
-\item{formula, data, subset, weights, na.action, offset, contrasts}{As in
-\code{\link[stats:lm]{stats::lm()}}.}
+\item{formula}{A model formula, as in \code{\link[stats:lm]{stats::lm()}}, or a
+\code{\link[=design_matrix]{design_matrix()}} (then give the response as \code{y}).}
+
+\item{data, subset, weights, na.action, offset, contrasts}{As in \code{\link[stats:lm]{stats::lm()}}.
+With a design matrix, \code{weights} and \code{offset} are numeric vectors with one
+value per row, and \code{data}, \code{subset}, \code{na.action} and \code{contrasts} do not
+apply.}
 
 \item{compress}{\code{"auto"}, \code{TRUE} or \code{FALSE}: fit on the sufficient
 statistics of rows that share a design pattern (see Details).}
 
-\item{tol}{In \code{design_lm()} and \code{design_lm_fit()}, the tolerance for
+\item{tol}{In \code{design_lm()}, the tolerance for
 detecting aliased columns, as in \code{\link[stats:lm.fit]{stats::lm.fit()}}. In \code{predict()}, the
 tolerance of the check for non-estimable predictions from a
 rank-deficient fit, as in \code{\link[stats:predict.lm]{stats::predict.lm()}}.}
@@ -55,9 +51,8 @@ rank-deficient fit, as in \code{\link[stats:predict.lm]{stats::predict.lm()}}.}
 \item{model}{Keep the model frame and its design matrix, for
 \code{\link[=residuals]{residuals()}}, \code{\link[=fitted]{fitted()}} and \code{\link[=model.frame]{model.frame()}}.}
 
-\item{x}{A \code{design_matrix}.}
-
-\item{y}{A numeric response vector with one value per row of \code{x}.}
+\item{y}{With a design matrix as first argument, the numeric response,
+one value per row.}
 
 \item{object}{A \code{"design_lm"} object.}
 
@@ -87,8 +82,9 @@ design specification), \code{call} and \code{terms}.
 }
 \description{
 \code{design_lm()} fits a linear model by least squares, like \code{\link[stats:lm]{stats::lm()}},
-without forming the dense model matrix. \code{design_lm_fit()} does the same
-from a \code{\link[=design_matrix]{design_matrix()}} and a response, like \code{\link[stats:lm.fit]{stats::lm.fit()}}.
+without forming the dense model matrix. Given a \code{\link[=design_matrix]{design_matrix()}} and a
+response \code{y} instead of a formula and data, it fits that design, like
+\code{\link[stats:lm.fit]{stats::lm.fit()}}.
 }
 \details{
 \strong{Method.} The fit uses \link[=design_qr]{qr()} on the (weighted) design
