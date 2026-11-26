@@ -61,9 +61,8 @@ dmc_lookup <- function(values, key, levels = NULL, along = list()) {
     if (!dm_is_rcols(key)) {
         if (is.null(levels)) {
             if (!is.integer(key)) key <- as.integer(key)
-            if (!mat) return(.Call(C_dm_fe_lookup, values, key))
-            return(matrix(vapply(seq_len(ncol(values)), function(j) .Call(C_dm_fe_lookup, values[, j], key),
-                                 numeric(length(key))), length(key)))
+            ## (a matrix of values gives an n x k matrix, in one call)
+            return(.Call(C_dm_fe_lookup, values, key))
         }
         kd <- if (is.data.frame(key) || is.list(key)) as.data.frame(key, stringsAsFactors = FALSE)
               else data.frame(key, stringsAsFactors = FALSE)
@@ -178,7 +177,7 @@ dmc_subset <- function(col, keep, x2) {
     if (is.null(col)) return(NULL)
     if (dm_is_codes(col)) stop("Codes change with the rows: compute them again.", call. = FALSE)
     if (dm_is_rcols(col)) return(dmc_on(col, x2))
-    k <- !is.na(keep) & keep
+    k <- if (is.logical(keep) && !anyNA(keep)) keep else !is.na(keep) & keep
     if (is.data.frame(col) || is.matrix(col)) col[k, , drop = FALSE] else col[k]
 }
 

@@ -148,13 +148,13 @@ or with \code{force = TRUE}.
 
 \section{Compression}{
 
-When the rows have few distinct \emph{design patterns} (the same values in
-every input column of the design, as with factors and discrete numeric
-variables), \code{crossprod()}, \code{colSums()}, \code{colMeans()} and \code{\link[=design_lm]{design_lm()}}
-run one \verb{GROUP BY} over those columns, which returns
-each pattern with its number of rows and the sums of the weights and
-responses, and compute the result from the design of the patterns, in
-memory (a variable evaluated in R is evaluated on the patterns). The
+When the rows have few distinct \emph{design patterns} (the same factor levels
+and the same values of the numeric variables of the design, as with
+factors and discrete numeric variables), \code{crossprod()}, \code{colSums()},
+\code{colMeans()}, \code{\link[=design_lm]{design_lm()}} and \code{\link[=design_glm]{design_glm()}} compress: the one scan of
+the rows also groups by the numeric variables, which returns each pattern
+with its number of rows and the sums of the weights and responses, and
+the result is computed from the design of the patterns, in memory. The
 option \code{design.matrix.remote_compress}
 controls it. With \code{"auto"} (default), a design with a continuous
 numeric column (a \code{DOUBLE} column with many distinct values in a sample
@@ -165,8 +165,7 @@ and the products are compressed when it is at most
 of rows and at most \code{getOption("design.matrix.remote_compress_max", 1e6)}.
 \code{TRUE} always compresses (unless every row is distinct); \code{FALSE} never
 does. Designs that keep rows with missing values
-(\code{na.action = na.pass}) are not compressed, nor are products with a
-column or row scale that has missing values.
+(\code{na.action = na.pass}) are not compressed.
 
 Remote designs keep only the \emph{Algebra} promise of the package: results
 agree with the in-memory computation up to floating point rounding. With

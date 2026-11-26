@@ -110,7 +110,7 @@ check_fit(q$value, lm(y ~ xc + f1, dd), "auto: continuous")
 ## a discrete DOUBLE key: sample, estimate, compression
 q <- queries(design_lm(y ~ xd7 + f1, con, table = "d"))
 expect_true(q$value$compressed)
-expect_true(has(q, "TABLESAMPLE") && has(q, "approx_count_distinct(hash(") && has(q, "AS __dm_sy1"))
+expect_true(has(q, "TABLESAMPLE") && has(q, "approx_count_distinct(hash(") && has(q, "var_pop(__dm_y1)"))
 ## integer keys: no sample, the estimate decides
 q <- queries(design_lm(y ~ xd + f1, con, table = "d"))
 expect_true(q$value$compressed)
@@ -118,16 +118,16 @@ expect_false(has(q, "TABLESAMPLE"))
 q <- queries(design_lm(y ~ id + f1, con, table = "d"))  # an integer id: one pattern per row
 expect_false(q$value$compressed)
 expect_true(has(q, "approx_count_distinct(hash("))
-expect_false(has(q, "AS __dm_sy1"))
+expect_false(has(q, "var_pop(__dm_y1)"))
 check_fit(q$value, lm(y ~ id + f1, dd), "auto: integer id")
 ## the threshold on the estimate
 q <- queries(design_lm(y ~ xd + f1, con, table = "d"), design.matrix.remote_compress_ratio = 1e-6)
 expect_false(q$value$compressed)
-expect_false(has(q, "AS __dm_sy1"))
+expect_false(has(q, "var_pop(__dm_y1)"))
 ## the safety net after the GROUP BY: more than n / 2 patterns
 op <- options(design.matrix.remote_compress_ratio = 1, design.matrix.remote_compress_max = 1e9)
 D <- design_matrix(y ~ id + f1, con, table = "d")
-expect_null(design.matrix:::dm_remote_patterns(D, "y"))
+expect_null(design.matrix:::dm_sql_patterns(D, "CAST(s.y AS DOUBLE)"))
 options(op)
 
 ## printing

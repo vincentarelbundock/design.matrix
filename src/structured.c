@@ -32,6 +32,9 @@
 #include <R_ext/BLAS.h>
 #include "dm.h"
 #include "structured.h"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #ifndef FCONE
 # define FCONE
 #endif
@@ -82,11 +85,11 @@ void build_sctx(sctx *S, SEXP setup, SEXP vars)
 	    if (nlevs[i] > 0) {
 		SEXP cm = VECTOR_ELT(fik == 1 ? contr1 : contr2, i);
 		int c = T->nf++;
-		T->code[c] = INTEGER(var_i);
+		T->code[c] = INTEGER_RO(var_i);
 		T->fvar[c] = i;
 		T->fcm[c] = cm;
 		T->adj[c] = isLogical(var_i) ? 1 : 0;
-		T->cm[c] = REAL(cm);
+		T->cm[c] = REAL_RO(cm);
 		T->nrc[c] = nrows(cm);
 		T->fnc[c] = ncols(cm);
 		T->lstride[c] = L;
@@ -98,7 +101,7 @@ void build_sctx(sctx *S, SEXP setup, SEXP vars)
 		stride *= ncols(cm);
 	    } else {
 		int c = T->nn++;
-		T->num[c] = REAL(var_i);
+		T->num[c] = REAL_RO(var_i);
 		T->nnc[c] = ncols(var_i);
 		T->nstride[c] = stride;
 		nsd *= ncols(var_i);
@@ -169,6 +172,16 @@ typedef struct {
     int *off;       /* per term: first column in the buffer, or -1 */
     double *buf;
 } dpart;
+
+/* Number of dense columns (terms with one level), as dense_part() counts
+   them, without allocating its buffer. */
+static int dense_count(const sctx *S)
+{
+    int q = 0;
+    for (int t = 0; t < S->nt; t++)
+	if (S->t[t].L == 1) q += S->t[t].ns;
+    return q;
+}
 
 static dpart dense_part(const sctx *S)
 {
@@ -689,77 +702,70 @@ static void gram_block(const sterm *A, const sterm *B, int same, const double *M
     vmaxset(vmax);
 }
 
-/* X'WX (p x p), from moments by pair of terms (s <= t, in order t = 0..,
-   s = 0..t), assembled by gram_block(); the moments are arrays: s < t: [Ls, Lx, ns, nt] sums of w N_s[u] N_t[v] by cell of
-   the union of the two terms' factors, with Lx the combined levels of the
-   factors of t that s does not have (extra_factors(); the levels of the
-   factors they share agree within a row, so only these cells can be
-   non-zero); s == t: [Ls, ns, ns]. */
-SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
+/* Per-thread work space of the moment kernels: the blocks of each term
+   (with the dense part), the accumulators (moments by pair of terms or by
+   term, and the dense part's BLAS product) and scratch. */
+typedef struct {
+    dpart P;
+    tblock *Bk;
+    double **acc;
+    double *Gd, *WB, *wN;
+    int *Fx;
+} mws;
+
+static void alloc_mws(mws *ws, const sctx *S, int nacc)
 {
-    sctx S;
-    build_sctx(&S, setup, vars);
-    const double *w = isNull(w_) ? NULL : REAL(w_);
-    if (w && XLENGTH(w_) != S.n) error("internal error: one weight per row");
-    int np = S.nt * (S.nt + 1) / 2;
-    SEXP out = PROTECT(allocVector(VECSXP, np));
-    double **acc = (double **) R_alloc(np > 0 ? np : 1, sizeof(double *));
-    int npa = np > 0 ? np : 1;
-    int *nx = (int *) R_alloc(npa, sizeof(int)), *Lx = (int *) R_alloc(npa, sizeof(int));
-    int **xpos = (int **) R_alloc(npa, sizeof(int *)), **xstr = (int **) R_alloc(npa, sizeof(int *));
-    int *Fx = (int *) R_alloc(BLOCK, sizeof(int));
-    int q = 0;
-    for (int t = 0; t < S.nt; t++)
-	for (int s = 0; s <= t; s++, q++) {
-	    const sterm *A = &S.t[s], *B = &S.t[t];
-	    if (s < t) {
-		xpos[q] = (int *) R_alloc(SMAXC, sizeof(int));
-		xstr[q] = (int *) R_alloc(SMAXC, sizeof(int));
-		Lx[q] = extra_factors(A, B, &nx[q], xpos[q], xstr[q]);
-	    } else {
-		nx[q] = 0; Lx[q] = 1; xpos[q] = NULL; xstr[q] = NULL;
-	    }
-	    R_xlen_t len = (s == t) ? (R_xlen_t) A->L * A->ns * A->ns
-		: (R_xlen_t) A->L * Lx[q] * A->ns * B->ns;
-	    SEXP m = SET_VECTOR_ELT(out, q, allocVector(REALSXP, len));
-	    acc[q] = REAL(m);
-	    memset(acc[q], 0, sizeof(double) * (size_t) len);
-	}
-    dpart P = dense_part(&S);
-    tblock *Bk = alloc_blocks(&S, &P);
-    double *wN = (double *) R_alloc(BLOCK, sizeof(double));
-    int qd = P.q;
-    double *Gd = NULL, *WB = NULL;
-    if (qd > 0) {
-	Gd = (double *) R_alloc((size_t) qd * qd, sizeof(double));
-	memset(Gd, 0, sizeof(double) * (size_t) qd * qd);
-	if (w) WB = (double *) R_alloc((size_t) BLOCK * qd, sizeof(double));
-    }
-    for (R_xlen_t i0 = 0; i0 < S.n; i0 += BLOCK) {
-	int nb = (int) (S.n - i0 < BLOCK ? S.n - i0 : BLOCK);
-	for (int t = 0; t < S.nt; t++) term_block(&S.t[t], S.n, i0, nb, Bk[t].F, Bk[t].N);
+    ws->P = dense_part(S);
+    ws->Bk = alloc_blocks(S, &ws->P);
+    ws->acc = (double **) R_alloc(nacc > 0 ? nacc : 1, sizeof(double *));
+    ws->Gd = ws->WB = ws->wN = NULL;
+    ws->Fx = NULL;
+}
+
+/* The pairs of terms of X'WX (s <= t, in order t = 0.., s = 0..t). */
+typedef struct {
+    int np;
+    int *nx, *Lx, **xpos, **xstr;
+    R_xlen_t *len;
+} gpairs;
+
+/* Rows i0 .. i1 - 1 (i0 a multiple of BLOCK) of the moments of X'WX, added
+   to ws->acc and ws->Gd. */
+static void sgram_rows(const sctx *S, const gpairs *G, const double *w,
+		       R_xlen_t i0s, R_xlen_t i1, mws *ws)
+{
+    const dpart *P = &ws->P;
+    tblock *Bk = ws->Bk;
+    double **acc = ws->acc, *Gd = ws->Gd, *WB = ws->WB, *wN = ws->wN;
+    int *Fx = ws->Fx;
+    const int *nx = G->nx, *Lx = G->Lx;
+    int *const *xpos = G->xpos, *const *xstr = G->xstr;
+    int qd = P->q;
+    for (R_xlen_t i0 = i0s; i0 < i1; i0 += BLOCK) {
+	int nb = (int) (i1 - i0 < BLOCK ? i1 - i0 : BLOCK);
+	for (int t = 0; t < S->nt; t++) term_block(&S->t[t], S->n, i0, nb, Bk[t].F, Bk[t].N);
 	if (qd > 0) {
 	    double one = 1.0;
 	    int ld = BLOCK;
 	    if (w) {
 		for (int c = 0; c < qd; c++)
 		    for (int r = 0; r < nb; r++)
-			WB[r + (size_t) BLOCK * c] = w[i0 + r] * P.buf[r + (size_t) BLOCK * c];
-		F77_CALL(dgemm)("T", "N", &qd, &qd, &nb, &one, P.buf, &ld, WB, &ld,
+			WB[r + (size_t) BLOCK * c] = w[i0 + r] * P->buf[r + (size_t) BLOCK * c];
+		F77_CALL(dgemm)("T", "N", &qd, &qd, &nb, &one, P->buf, &ld, WB, &ld,
 				&one, Gd, &qd FCONE FCONE);
 	    } else {
-		F77_CALL(dsyrk)("U", "T", &qd, &nb, &one, P.buf, &ld, &one, Gd, &qd FCONE FCONE);
+		F77_CALL(dsyrk)("U", "T", &qd, &nb, &one, P->buf, &ld, &one, Gd, &qd FCONE FCONE);
 	    }
 	}
-	q = 0;
-	for (int t = 0; t < S.nt; t++) {
-	    const sterm *B = &S.t[t];
+	int q = 0;
+	for (int t = 0; t < S->nt; t++) {
+	    const sterm *B = &S->t[t];
 	    const int *Ft = Bk[t].F;
 	    const double *Nt = Bk[t].N;
 	    int nt = B->ns;
 	    for (int s = 0; s <= t; s++, q++) {
-		if (P.off[s] >= 0 && P.off[t] >= 0) continue; /* dense part: BLAS */
-		const sterm *A = &S.t[s];
+		if (P->off[s] >= 0 && P->off[t] >= 0) continue; /* dense part: BLAS */
+		const sterm *A = &S->t[s];
 		const int *Fs = Bk[s].F;
 		const double *Ns = Bk[s].N;
 		int ns = A->ns, Ls = A->L;
@@ -817,17 +823,138 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
 	    }
 	}
     }
+}
+
+/* Chunk accumulators: ws[t].acc[a] (a < nacc, `len[a]` doubles) and ws[t].Gd
+   (lg doubles) for t >= 1, carved out of one buffer per thread, which the
+   chunk zeroes on its thread. */
+static double **moment_buffers(mws *ws, int T, int nacc, const R_xlen_t *len, R_xlen_t lg)
+{
+    R_xlen_t tot = lg;
+    for (int a = 0; a < nacc; a++) tot += len[a];
+    double **buf = (double **) R_alloc(T, sizeof(double *));
+    buf[0] = NULL;
+    for (int t = 1; t < T; t++) {
+	double *b = (double *) R_alloc(tot > 0 ? tot : 1, sizeof(double));
+	buf[t] = b;
+	for (int a = 0; a < nacc; a++) { ws[t].acc[a] = b; b += len[a]; }
+	ws[t].Gd = lg > 0 ? b : NULL;
+    }
+    return buf;
+}
+
+static R_xlen_t moment_total(int nacc, const R_xlen_t *len, R_xlen_t lg)
+{
+    R_xlen_t tot = lg;
+    for (int a = 0; a < nacc; a++) tot += len[a];
+    return tot;
+}
+
+/* ws[0].acc[a] += ws[t].acc[a], t = 1 .. T - 1 in order; the same for Gd. */
+static void moment_combine(mws *ws, int T, int nacc, const R_xlen_t *len, R_xlen_t lg)
+{
+    double **p = (double **) R_alloc(T, sizeof(double *));
+    for (int a = 0; a < nacc; a++) {
+	for (int t = 0; t < T; t++) p[t] = ws[t].acc[a];
+	dm_combine(p, T, len[a]);
+    }
+    if (lg > 0) {
+	for (int t = 0; t < T; t++) p[t] = ws[t].Gd;
+	dm_combine(p, T, lg);
+    }
+}
+
+/* X'WX (p x p), from moments by pair of terms (s <= t, in order t = 0..,
+   s = 0..t), assembled by gram_block(); the moments are arrays: s < t: [Ls, Lx, ns, nt] sums of w N_s[u] N_t[v] by cell of
+   the union of the two terms' factors, with Lx the combined levels of the
+   factors of t that s does not have (extra_factors(); the levels of the
+   factors they share agree within a row, so only these cells can be
+   non-zero); s == t: [Ls, ns, ns].  On several threads, fixed chunks of
+   rows (whole blocks) with their own moments, added in order (see
+   dm_reduce_threads()). */
+SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_, SEXP nthreads_)
+{
+    sctx S;
+    build_sctx(&S, setup, vars);
+    const double *w = isNull(w_) ? NULL : REAL_RO(w_);
+    if (w && XLENGTH(w_) != S.n) error("internal error: one weight per row");
+    gpairs GP;
+    int np = S.nt * (S.nt + 1) / 2;
+    GP.np = np;
+    SEXP out = PROTECT(allocVector(VECSXP, np));
+    int npa = np > 0 ? np : 1;
+    GP.nx = (int *) R_alloc(npa, sizeof(int));
+    GP.Lx = (int *) R_alloc(npa, sizeof(int));
+    GP.xpos = (int **) R_alloc(npa, sizeof(int *));
+    GP.xstr = (int **) R_alloc(npa, sizeof(int *));
+    GP.len = (R_xlen_t *) R_alloc(npa, sizeof(R_xlen_t));
+    double **acc0 = (double **) R_alloc(npa, sizeof(double *));
+    double work = 0.0;  /* multiply-adds per row */
+    int q = 0;
+    for (int t = 0; t < S.nt; t++)
+	for (int s = 0; s <= t; s++, q++) {
+	    const sterm *A = &S.t[s], *B = &S.t[t];
+	    if (s < t) {
+		GP.xpos[q] = (int *) R_alloc(SMAXC, sizeof(int));
+		GP.xstr[q] = (int *) R_alloc(SMAXC, sizeof(int));
+		GP.Lx[q] = extra_factors(A, B, &GP.nx[q], GP.xpos[q], GP.xstr[q]);
+	    } else {
+		GP.nx[q] = 0; GP.Lx[q] = 1; GP.xpos[q] = NULL; GP.xstr[q] = NULL;
+	    }
+	    R_xlen_t len = (s == t) ? (R_xlen_t) A->L * A->ns * A->ns
+		: (R_xlen_t) A->L * GP.Lx[q] * A->ns * B->ns;
+	    GP.len[q] = len;
+	    SEXP m = SET_VECTOR_ELT(out, q, allocVector(REALSXP, len));
+	    acc0[q] = REAL(m);
+	    memset(acc0[q], 0, sizeof(double) * (size_t) len);
+	    work += (double) A->ns * B->ns + A->ns;
+	}
+    int qd = dense_count(&S);
+    R_xlen_t lg = (R_xlen_t) qd * qd;
+    int T = 1, req = asInteger(nthreads_);
+    if (req > 1)
+	T = dm_reduce_threads(req, S.n, (double) S.n * (work + 4.0 * S.nt + 1.0),
+			      (double) moment_total(np, GP.len, lg));
+    mws *ws = (mws *) R_alloc(T, sizeof(mws));
+    for (int t = 0; t < T; t++) {
+	alloc_mws(&ws[t], &S, np);
+	ws[t].wN = (double *) R_alloc(BLOCK, sizeof(double));
+	ws[t].Fx = (int *) R_alloc(BLOCK, sizeof(int));
+	if (qd > 0 && w) ws[t].WB = (double *) R_alloc((size_t) BLOCK * qd, sizeof(double));
+    }
+    for (int a = 0; a < np; a++) ws[0].acc[a] = acc0[a];
+    if (qd > 0) {
+	ws[0].Gd = (double *) R_alloc((size_t) lg, sizeof(double));
+	memset(ws[0].Gd, 0, sizeof(double) * (size_t) lg);
+    }
+    if (T == 1) {
+	sgram_rows(&S, &GP, w, 0, S.n, &ws[0]);
+    } else {
+	double **buf = moment_buffers(ws, T, np, GP.len, lg);
+	R_xlen_t tot = moment_total(np, GP.len, lg);
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(T) schedule(static)
+#endif
+	for (int t = 0; t < T; t++) {
+	    if (t > 0) dm_zero(buf[t], tot);
+	    sgram_rows(&S, &GP, w, dm_chunk_start(S.n, T, t, BLOCK),
+		       dm_chunk_start(S.n, T, t + 1, BLOCK), &ws[t]);
+	}
+	moment_combine(ws, T, np, GP.len, lg);
+    }
+    double **acc = ws[0].acc, *Gd = ws[0].Gd;
+    const dpart *P = &ws[0].P;
     /* moments of pairs of dense terms, from the BLAS accumulation (upper
        triangle without weights) */
     if (qd > 0) {
 	q = 0;
 	for (int t = 0; t < S.nt; t++)
 	    for (int s = 0; s <= t; s++, q++) {
-		if (P.off[s] < 0 || P.off[t] < 0) continue;
+		if (P->off[s] < 0 || P->off[t] < 0) continue;
 		int ns = S.t[s].ns, nt = S.t[t].ns;
 		for (int u = 0; u < ns; u++)
 		    for (int v = 0; v < nt; v++) {
-			int i = P.off[s] + u, j = P.off[t] + v;
+			int i = P->off[s] + u, j = P->off[t] + v;
 			double g = (w || i <= j) ? Gd[i + (size_t) qd * j] : Gd[j + (size_t) qd * i];
 			acc[q][u + ns * v] = g;
 		    }
@@ -838,54 +965,38 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
     q = 0;
     for (int t = 0; t < S.nt; t++)
 	for (int s = 0; s <= t; s++, q++)
-	    gram_block(&S.t[s], &S.t[t], s == t, acc[q], nx[q], xpos[q], REAL(G), S.p);
+	    gram_block(&S.t[s], &S.t[t], s == t, acc[q], GP.nx[q], GP.xpos[q], REAL(G), S.p);
     UNPROTECT(3);
     return G;
 }
 
-/* Moments for X'Y (Y n x K): list per term of [L, ns, K] sums of
-   N[u] Y[, k] by level. */
-SEXP dm_struct_xty(SEXP setup, SEXP vars, SEXP Y_)
+/* Rows i0 .. i1 - 1 (i0 a multiple of BLOCK) of the moments of X'Y, added
+   to ws->acc and ws->Gd (the dense part, qd x K). */
+static void sxty_rows(const sctx *S, const double *Y, int K, R_xlen_t i0s,
+		      R_xlen_t i1, mws *ws)
 {
-    sctx S;
-    build_sctx(&S, setup, vars);
-    if (nrows(Y_) != S.n) error("non-conformable arguments");
-    int K = ncols(Y_);
-    const double *Y = REAL(Y_);
-    SEXP out = PROTECT(allocVector(VECSXP, S.nt));
-    double **acc = (double **) R_alloc(S.nt > 0 ? S.nt : 1, sizeof(double *));
-    for (int t = 0; t < S.nt; t++) {
-	R_xlen_t len = (R_xlen_t) S.t[t].L * S.t[t].ns * K;
-	acc[t] = REAL(SET_VECTOR_ELT(out, t, allocVector(REALSXP, len)));
-	memset(acc[t], 0, sizeof(double) * (size_t) len);
-    }
-    dpart P = dense_part(&S);
-    tblock *Bk = alloc_blocks(&S, &P);
-    int qd = P.q;
-    double *Rd = NULL;
-    if (qd > 0) {
-	Rd = (double *) R_alloc((size_t) qd * K, sizeof(double));
-	memset(Rd, 0, sizeof(double) * (size_t) qd * K);
-    }
-    for (R_xlen_t i0 = 0; i0 < S.n; i0 += BLOCK) {
-	int nb = (int) (S.n - i0 < BLOCK ? S.n - i0 : BLOCK);
-	for (int t = 0; t < S.nt; t++) term_block(&S.t[t], S.n, i0, nb, Bk[t].F, Bk[t].N);
+    const dpart *P = &ws->P;
+    tblock *Bk = ws->Bk;
+    int qd = P->q;
+    for (R_xlen_t i0 = i0s; i0 < i1; i0 += BLOCK) {
+	int nb = (int) (i1 - i0 < BLOCK ? i1 - i0 : BLOCK);
+	for (int t = 0; t < S->nt; t++) term_block(&S->t[t], S->n, i0, nb, Bk[t].F, Bk[t].N);
 	if (qd > 0) {
 	    double one = 1.0;
-	    int ldy = (int) S.n, ld = BLOCK;
-	    F77_CALL(dgemm)("T", "N", &qd, &K, &nb, &one, P.buf, &ld, Y + i0, &ldy,
-			    &one, Rd, &qd FCONE FCONE);
+	    int ldy = (int) S->n, ld = BLOCK;
+	    F77_CALL(dgemm)("T", "N", &qd, &K, &nb, &one, P->buf, &ld, Y + i0, &ldy,
+			    &one, ws->Gd, &qd FCONE FCONE);
 	}
-	for (int t = 0; t < S.nt; t++) {
-	    if (P.off[t] >= 0) continue; /* dense part: BLAS */
-	    const sterm *T = &S.t[t];
+	for (int t = 0; t < S->nt; t++) {
+	    if (P->off[t] >= 0) continue; /* dense part: BLAS */
+	    const sterm *T = &S->t[t];
 	    const int *F = Bk[t].F;
 	    const double *N = Bk[t].N;
 	    int ns = T->ns, L = T->L;
 	    for (int k = 0; k < K; k++) {
-		const double *y = Y + i0 + (R_xlen_t) k * S.n;
+		const double *y = Y + i0 + (R_xlen_t) k * S->n;
 		for (int u = 0; u < ns; u++) {
-		    double *M = acc[t] + (R_xlen_t) L * (u + (R_xlen_t) ns * k);
+		    double *M = ws->acc[t] + (R_xlen_t) L * (u + (R_xlen_t) ns * k);
 		    if (L == 1) {
 			double sum = 0.0;
 			for (int r = 0; r < nb; r++) sum += N[(size_t) u * BLOCK + r] * y[r];
@@ -897,13 +1008,65 @@ SEXP dm_struct_xty(SEXP setup, SEXP vars, SEXP Y_)
 	    }
 	}
     }
+}
+
+/* Moments for X'Y (Y n x K): list per term of [L, ns, K] sums of
+   N[u] Y[, k] by level.  On several threads, as dm_struct_gram(). */
+SEXP dm_struct_xty(SEXP setup, SEXP vars, SEXP Y_, SEXP nthreads_)
+{
+    sctx S;
+    build_sctx(&S, setup, vars);
+    if (nrows(Y_) != S.n) error("non-conformable arguments");
+    int K = ncols(Y_);
+    const double *Y = REAL_RO(Y_);
+    SEXP out = PROTECT(allocVector(VECSXP, S.nt));
+    int nta = S.nt > 0 ? S.nt : 1;
+    R_xlen_t *len = (R_xlen_t *) R_alloc(nta, sizeof(R_xlen_t));
+    double **acc0 = (double **) R_alloc(nta, sizeof(double *));
+    double work = 0.0;
+    for (int t = 0; t < S.nt; t++) {
+	len[t] = (R_xlen_t) S.t[t].L * S.t[t].ns * K;
+	acc0[t] = REAL(SET_VECTOR_ELT(out, t, allocVector(REALSXP, len[t])));
+	memset(acc0[t], 0, sizeof(double) * (size_t) len[t]);
+	work += (double) S.t[t].ns * (K + 1);
+    }
+    int qd = dense_count(&S);
+    R_xlen_t lg = (R_xlen_t) qd * K;
+    int T = 1, req = asInteger(nthreads_);
+    if (req > 1)
+	T = dm_reduce_threads(req, S.n, (double) S.n * (work + 4.0 * S.nt + 1.0),
+			      (double) moment_total(S.nt, len, lg));
+    mws *ws = (mws *) R_alloc(T, sizeof(mws));
+    for (int t = 0; t < T; t++) alloc_mws(&ws[t], &S, S.nt);
+    for (int a = 0; a < S.nt; a++) ws[0].acc[a] = acc0[a];
+    if (qd > 0) {
+	ws[0].Gd = (double *) R_alloc((size_t) lg, sizeof(double));
+	memset(ws[0].Gd, 0, sizeof(double) * (size_t) lg);
+    }
+    if (T == 1) {
+	sxty_rows(&S, Y, K, 0, S.n, &ws[0]);
+    } else {
+	double **buf = moment_buffers(ws, T, S.nt, len, lg);
+	R_xlen_t tot = moment_total(S.nt, len, lg);
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(T) schedule(static)
+#endif
+	for (int t = 0; t < T; t++) {
+	    if (t > 0) dm_zero(buf[t], tot);
+	    sxty_rows(&S, Y, K, dm_chunk_start(S.n, T, t, BLOCK),
+		      dm_chunk_start(S.n, T, t + 1, BLOCK), &ws[t]);
+	}
+	moment_combine(ws, T, S.nt, len, lg);
+    }
+    double **acc = ws[0].acc, *Rd = ws[0].Gd;
+    const dpart *P = &ws[0].P;
     if (qd > 0) {
 	for (int t = 0; t < S.nt; t++) {
-	    if (P.off[t] < 0) continue;
+	    if (P->off[t] < 0) continue;
 	    int ns = S.t[t].ns;
 	    for (int k = 0; k < K; k++)
 		for (int u = 0; u < ns; u++)
-		    acc[t][u + (R_xlen_t) ns * k] = Rd[P.off[t] + u + (size_t) qd * k];
+		    acc[t][u + (R_xlen_t) ns * k] = Rd[P->off[t] + u + (size_t) qd * k];
 	}
     }
     UNPROTECT(2);
@@ -911,8 +1074,10 @@ SEXP dm_struct_xty(SEXP setup, SEXP vars, SEXP Y_)
 }
 
 /* X B from per-term tables P_t [L, ns, K] (P_t = C_t B_t, built in R):
-   row i, column k is sum over t, u of N_t(i)[u] P_t[F_t(i), u, k]. */
-SEXP dm_struct_mult(SEXP setup, SEXP vars, SEXP P, SEXP K_)
+   row i, column k is sum over t, u of N_t(i)[u] P_t[F_t(i), u, k].  Rows
+   are computed in blocks of BLOCK rows, each the same on any number of
+   threads. */
+SEXP dm_struct_mult(SEXP setup, SEXP vars, SEXP P, SEXP K_, SEXP nthreads_)
 {
     sctx S;
     build_sctx(&S, setup, vars);
@@ -921,37 +1086,55 @@ SEXP dm_struct_mult(SEXP setup, SEXP vars, SEXP P, SEXP K_)
     SEXP out = PROTECT(allocMatrix(REALSXP, S.n, K));
     double *o = REAL(out);
     memset(o, 0, sizeof(double) * (size_t) S.n * K);
-    dpart DP = dense_part(&S);
-    tblock *Bk = alloc_blocks(&S, &DP);
-    int qd = DP.q;
+    R_xlen_t nblocks = dm_block_count(S.n, BLOCK);
+    int nthreads = dm_worker_count(asInteger(nthreads_), nblocks);
+    dpart *DP = (dpart *) R_alloc(nthreads, sizeof(dpart));
+    tblock **Bk = (tblock **) R_alloc(nthreads, sizeof(tblock *));
+    for (int t = 0; t < nthreads; t++) {
+	DP[t] = dense_part(&S);
+	Bk[t] = alloc_blocks(&S, &DP[t]);
+    }
+    int qd = DP[0].q;
     double *Pd = NULL;
     if (qd > 0) {
 	/* the dense terms' tables, stacked: qd x K */
 	Pd = (double *) R_alloc((size_t) qd * K, sizeof(double));
 	for (int t = 0; t < S.nt; t++) {
-	    if (DP.off[t] < 0) continue;
+	    if (DP[0].off[t] < 0) continue;
 	    int ns = S.t[t].ns;
 	    const double *p = REAL(VECTOR_ELT(P, t));
 	    for (int k = 0; k < K; k++)
 		for (int u = 0; u < ns; u++)
-		    Pd[DP.off[t] + u + (size_t) qd * k] = p[u + (R_xlen_t) ns * k];
+		    Pd[DP[0].off[t] + u + (size_t) qd * k] = p[u + (R_xlen_t) ns * k];
 	}
     }
-    for (R_xlen_t i0 = 0; i0 < S.n; i0 += BLOCK) {
+    const double **ptab = (const double **) R_alloc(S.nt > 0 ? S.nt : 1, sizeof(double *));
+    for (int t = 0; t < S.nt; t++) ptab[t] = REAL(VECTOR_ELT(P, t));
+#ifdef _OPENMP
+#pragma omp parallel for if(nthreads > 1) num_threads(nthreads) schedule(static)
+#endif
+    for (R_xlen_t b = 0; b < nblocks; b++) {
+	int th = 0;
+#ifdef _OPENMP
+	th = omp_get_thread_num();
+#endif
+	tblock *Bt = Bk[th];
+	const dpart *Dt = &DP[th];
+	R_xlen_t i0 = b * BLOCK;
 	int nb = (int) (S.n - i0 < BLOCK ? S.n - i0 : BLOCK);
-	for (int t = 0; t < S.nt; t++) term_block(&S.t[t], S.n, i0, nb, Bk[t].F, Bk[t].N);
+	for (int t = 0; t < S.nt; t++) term_block(&S.t[t], S.n, i0, nb, Bt[t].F, Bt[t].N);
 	if (qd > 0) {
 	    double one = 1.0;
 	    int ldo = (int) S.n, ld = BLOCK;
-	    F77_CALL(dgemm)("N", "N", &nb, &K, &qd, &one, DP.buf, &ld, Pd, &qd,
+	    F77_CALL(dgemm)("N", "N", &nb, &K, &qd, &one, Dt->buf, &ld, Pd, &qd,
 			    &one, o + i0, &ldo FCONE FCONE);
 	}
 	for (int t = 0; t < S.nt; t++) {
-	    if (DP.off[t] >= 0) continue; /* dense part: BLAS */
+	    if (Dt->off[t] >= 0) continue; /* dense part: BLAS */
 	    const sterm *T = &S.t[t];
-	    const int *F = Bk[t].F;
-	    const double *N = Bk[t].N;
-	    const double *p = REAL(VECTOR_ELT(P, t));
+	    const int *F = Bt[t].F;
+	    const double *N = Bt[t].N;
+	    const double *p = ptab[t];
 	    int ns = T->ns, L = T->L;
 	    for (int k = 0; k < K; k++) {
 		double *ok = o + i0 + (R_xlen_t) k * S.n;

@@ -158,14 +158,21 @@ SEXP dm_fe_nested(SEXP a_, SEXP b_, SEXP Gb_)
 /* values[codes], NA for codes out of 1..length(values) or NA. */
 SEXP dm_fe_lookup(SEXP values_, SEXP codes_)
 {
-    R_xlen_t n = XLENGTH(codes_), G = XLENGTH(values_);
-    const double *v = REAL(values_);
-    const int *c = INTEGER(codes_);
-    SEXP out = PROTECT(allocVector(REALSXP, n));
+    /* values: a vector, or a G x K matrix (then an n x K matrix) */
+    int mat = isMatrix(values_);
+    R_xlen_t n = XLENGTH(codes_), G = mat ? nrows(values_) : XLENGTH(values_);
+    int K = mat ? ncols(values_) : 1;
+    const double *v = REAL_RO(values_);
+    const int *c = INTEGER_RO(codes_);
+    SEXP out = PROTECT(mat ? allocMatrix(REALSXP, n, K) : allocVector(REALSXP, n));
     double *o = REAL(out);
-    for (R_xlen_t i = 0; i < n; i++) {
-	int k = c[i];
-	o[i] = (k == NA_INTEGER || k < 1 || k > G) ? NA_REAL : v[k - 1];
+    for (int j = 0; j < K; j++) {
+	const double *vj = v + (R_xlen_t) j * G;
+	double *oj = o + (R_xlen_t) j * n;
+	for (R_xlen_t i = 0; i < n; i++) {
+	    int k = c[i];
+	    oj[i] = (k == NA_INTEGER || k < 1 || k > G) ? NA_REAL : vj[k - 1];
+	}
     }
     UNPROTECT(1);
     return out;

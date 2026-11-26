@@ -43,6 +43,12 @@ title = "Recipes"
   target = "recipes/out-of-core.typ"
 
 [[sidebar.section]]
+title = "Benchmarks"
+
+  [[sidebar.section.item]]
+  target = "benchmarks/fixed_effects.typ"
+
+[[sidebar.section]]
 title = "Reference"
 
   [[sidebar.section.item]]
