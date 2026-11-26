@@ -28,7 +28,10 @@ cores=${1:-"0"}
 size=${BENCH_SIZE:-full}
 out=$(mktemp -d)
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
-n=200000
+# Rows: 50,000 by default (OLS_BENCH_N): the slowest implementations take
+# seconds per fit at the widest designs, and each fit is timed several times
+# in a fresh process, so larger data mostly add waiting.
+n=${OLS_BENCH_N:-50000}
 case "$size" in
   full)
     dest=$here
