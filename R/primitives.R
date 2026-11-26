@@ -722,10 +722,11 @@ Math.design_column <- function(x, ...) {
 ## negative base NaN; NA (NULL) in x or base gives NA, else NaN gives NaN.
 ## `base`: a number (its R_log() computed in R) or a column of the design
 ## (one column, or as many as x).
+## (R_log() of each base: the macros dm_log, dm_log2 and dm_log10 of
+## dm_ext_macros_sql, which name the operand once)
 dm_column_log <- function(x, base) {
     rlog <- function(v, fun = "ln")
-        sprintf("(CASE WHEN %1$s = 0 THEN CAST('-Infinity' AS DOUBLE) WHEN %1$s < 0 THEN CAST('NaN' AS DOUBLE) ELSE %2$s(%1$s) END)",
-                v, fun)
+        sprintf("%s(%s)", c(ln = "dm_log", log2 = "dm_log2", log10 = "dm_log10")[[fun]], v)
     xv <- sprintf("CAST(%s AS DOUBLE)", unclass(x)$sql)
     if (missing(base)) return(dm_column(unclass(x)$frame, rlog(xv)))
     if (dm_is_column(base)) {
@@ -770,34 +771,52 @@ dm_sql_pow <- function(a, b, e2) {
 ## pmax/pmin with R's missing values: DuckDB's greatest() and least() skip
 ## NULL and order NaN above every number, while in R an NA or NaN gives NA or
 ## NaN (that of y where both are missing, as R's pmax takes the later
-## missing argument). NULLIF(v, NaN) is NULL where v is NA or NaN. With a
-## finite number on one side (every use in the fits), the column is kept
-## where it is missing or beyond the number.
+## missing argument). The macros dm_pmax and dm_pmin (dm_ext_macros_sql)
+## hold the CASE, so that the SQL names each operand once (the links nest
+## them: pmin(pmax(eta, -thr), thr), pmax(dnorm(eta), eps)).
 dmc_pmax <- function(x, y) {
     f <- dm_column_frame(x, y)
     if (is.null(f)) return(pmax(x, y))
-    dm_sql_pext(f, x, y, "greatest", "<=")
+    dm_column(f, sprintf("dm_pmax(%s, %s)", dm_column_operand(x), dm_column_operand(y)))
 }
 
 dmc_pmin <- function(x, y) {
     f <- dm_column_frame(x, y)
     if (is.null(f)) return(pmin(x, y))
-    dm_sql_pext(f, x, y, "least", ">=")
+    dm_column(f, sprintf("dm_pmin(%s, %s)", dm_column_operand(x), dm_column_operand(y)))
 }
 
-dm_sql_pext <- function(f, x, y, fun, cmp) {
-    num <- function(v) !dm_is_column(v) && is.numeric(v) && length(v) == 1L && is.finite(v)
-    a <- dm_column_operand(x)
-    b <- dm_column_operand(y)
+## The DuckDB macros of pmax, pmin and R_log() (f7p0): their bodies repeat
+## the operands, the SQL that calls them does not (the queries of nested
+## links stay short). NULLIF(v, NaN) is NULL where v is NA or NaN. R_log(v)
+## is ln(v) for v > 0, -Inf for 0 and NaN for v < 0 (DuckDB's ln() refuses
+## 0 and negative numbers: it is reached only for v > 0, NaN or NULL).
+## They are created on a connection by the first statement that uses them
+## (dm_sql_send()), in that statement: no statement of their own.
+dm_ext_macros_sql <- local({
     nan <- "CAST('NaN' AS DOUBLE)"
-    if (num(x) || num(y)) {
-        if (num(x)) { cc <- a; v <- b } else { cc <- b; v <- a }
-        return(dm_column(f, sprintf("CASE WHEN NULLIF(%1$s, %3$s) %4$s %2$s THEN %2$s ELSE %1$s END",
-                                   v, cc, nan, cmp)))
-    }
-    dm_column(f, sprintf(paste("CASE WHEN NULLIF(%2$s, %3$s) IS NULL THEN %2$s",
-                              "WHEN NULLIF(%1$s, %3$s) IS NULL THEN %1$s ELSE %4$s(%1$s, %2$s) END"),
-                        a, b, nan, fun))
+    ext <- function(fun) sprintf(paste("(CASE WHEN NULLIF(b, %1$s) IS NULL THEN b",
+                                       "WHEN NULLIF(a, %1$s) IS NULL THEN a ELSE %2$s(a, b) END)"), nan, fun)
+    rlog <- function(fun) sprintf("(CASE WHEN x = 0 THEN CAST('-Infinity' AS DOUBLE) WHEN x < 0 THEN %s ELSE %s(x) END)",
+                                  nan, fun)
+    paste(sprintf("CREATE OR REPLACE TEMP MACRO %s AS %s",
+                  c("dm_pmax(a, b)", "dm_pmin(a, b)", "dm_log(x)", "dm_log2(x)", "dm_log10(x)"),
+                  c(ext("greatest"), ext("least"), rlog("ln"), rlog("log2"), rlog("log10"))),
+          collapse = "; ")
+})
+
+## Send `sql` on the connection of `holder` with `send` (DBI::dbGetQuery or
+## DBI::dbExecute; with `log`, the option design.matrix.remote_debug prints
+## it), first creating the macros of dm_ext_macros_sql in the same call
+## (DuckDB runs the statements in order) when the SQL uses them and they
+## are not yet on this connection (flagged on the holder once sent).
+dm_sql_send <- function(holder, sql, send, log = TRUE) {
+    pre <- !isTRUE(holder$dm_ext_macros) && grepl("dm_(pmax|pmin|log|log2|log10)\\(", sql)
+    if (pre) sql <- paste0(dm_ext_macros_sql, "; ", sql)
+    if (log && isTRUE(getOption("design.matrix.remote_debug"))) message(sql)
+    out <- send(holder$con, sql)
+    if (pre) holder$dm_ext_macros <- TRUE
+    out
 }
 
 ## (in memory a numeric vector: `no` with `yes` where test is TRUE and NA

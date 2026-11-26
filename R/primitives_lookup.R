@@ -128,7 +128,7 @@ dmc_lookup_flags <- function(flags, key) {
 ## prototype when it has one, else from the database (query `sql`).
 dm_proto_add <- function(frame, cols, type, sql) {
     proto <- frame$src$proto
-    if (is.null(proto) || any(cols %in% names(proto))) return(DBI::dbGetQuery(dm_con(frame), sql))
+    if (is.null(proto) || any(cols %in% names(proto))) return(dm_sql_send(frame$src$holder, sql, DBI::dbGetQuery, log = FALSE))
     for (cn in cols) proto[[cn]] <- type
     proto
 }
