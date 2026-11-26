@@ -211,38 +211,26 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
         if (fe) dm_fe_na_kind(na.action) else dm_na_kind(na.action, c("omit", "exclude", "fail"))
     }
     dm_check_fit_args(compress, model, vcov = vcov, fe = fe, start = start)
-    if (design) {
-        ## (remotely, `weights` and `offset` are columns or expressions)
-        fit <- if (inherits(formula, "dm_remote")) {
-            dm_remote_glm_design(formula, y, if (missing(weights)) NULL else substitute(weights),
-                                 if (missing(offset)) NULL else substitute(offset), family, start, control,
-                                 compress, parent.frame())
-        } else {
-            dmglm_design(formula, y, if (missing(weights)) NULL else weights,
-                         if (missing(offset)) NULL else offset, start, family, control, compress)
-        }
-        fit$call <- cl
-        return(fit)
-    }
     ## fixed effects (fe_glm.R)
     if (fe) {
         return(dm_fe_glm(cl, parent.frame(), formula, family, if (missing(data)) NULL else data, start, control,
                          contrasts, compress, model, vcov, fixef.rm, dm_dots(...)))
     }
-    ## the design and columns of a data frame or remote data (remote_fit.R)
+    ## the design and columns of a data frame, remote data, a design matrix
+    ## or a remote design (remote_fit.R)
     P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, dm_dots(...),
-                        family = dmglm_kind(family))
-    fit <- dmglm_fit(P$x, P$cols, family, start, control, attr(P$terms, "intercept") > 0L, compress,
+                        family = dmglm_kind(family), frame = environment())
+    fit <- dmglm_fit(P$x, P$cols, family, start, control, P$intercept, compress,
                      wmsg = "negative weights not allowed")
     fit$call <- cl
     fit$terms <- P$terms
     fit$formula <- P$formula
     fit$contrasts <- P$contrasts
     fit$xlevels <- P$xlevels
-    fit$na.action <- P$na.action
-    fit$offset_call <- cl$offset
+    fit$na.action <- dm_na_result(P)
+    fit$offset_call <- P$offset_call
     fit$env <- P$env
-    ## (the data of a remote fit stay in the database: always kept)
+    ## (the data of a remote fit or a fit on a design: always kept)
     if (model) fit$model <- P$frame else if (!is.null(P$frame)) fit$data <- NULL
     fit
 }
@@ -426,21 +414,6 @@ dmglm_mem_cols <- function(Y, w, off, k) {
     y <- as.double(Y)
     attributes(y) <- NULL
     dmglm_cols(y, NULL, NULL, w, off, k, FALSE, weighted)
-}
-
-## design_glm() on a design matrix x and a response y.
-dmglm_design <- function(x, y, weights, offset, start, family, control, compress) {
-    checkmate::assert_class(x, "design_matrix")
-    if (is.null(y)) stop("Give the response as `y`.", call. = FALSE)
-    n <- nrow(x)
-    if (NROW(y) != n) stop(sprintf("The response must have %d values.", n), call. = FALSE)
-    if (!is.null(weights)) checkmate::assert_numeric(weights, len = n)
-    if (!is.null(offset)) checkmate::assert_numeric(offset, len = n)
-    tt <- x$training_terms
-    intercept <- if (!is.null(tt)) attr(tt, "intercept") > 0L else "(Intercept)" %in% colnames(x)
-    cols <- dmglm_mem_cols(y, weights, offset, dmglm_kind(family))
-    dmglm_check_design(cols)
-    dmglm_fit(x, cols, family, start, control, intercept, compress, wmsg = "negative weights not allowed")
 }
 
 ## The checks of a fit on a design (no rows dropped): no missing response
@@ -871,11 +844,7 @@ dmglm_rows <- function(object, what) {
 ## Row-wise results: a vector in memory (the last column, named, padded by
 ## pad(na.action)), a remote table remotely (dmp_output()).
 dmglm_output <- function(x, cols, na_act, pad = stats::napredict) {
-    dmp_output(x, cols, na = na_act, memory = function(d) {
-        v <- d[[ncol(d)]]
-        names(v) <- dimnames(x)[[1L]]
-        pad(na_act, v)
-    })
+    dmp_output(x, cols, na = na_act, memory = function(d) dm_na_pad(na_act, d[[ncol(d)]], x, pad))
 }
 
 ## A linear predictor (with its NAs kept as NA by the inverse link).

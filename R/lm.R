@@ -134,57 +134,29 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
                             contrasts = !is.null(contrasts)), y, ...)
     if (fe && !missing(na.action)) dm_fe_na_kind(na.action)
     dm_check_fit_args(compress, model, tol, vcov, fe = fe, subset = !missing(subset))
-    if (design) {
-        fit <- if (inherits(formula, "dm_remote")) {
-            ## `y`, `weights` and `offset` are columns, DBI::SQL() or R
-            ## expressions over the columns (remote_fit.R)
-            dm_remote_lm_design(formula, substitute(y), if (missing(weights)) NULL else substitute(weights),
-                                if (missing(offset)) NULL else substitute(offset), compress, tol, parent.frame())
-        } else {
-            dmfit_design(formula, y, if (missing(weights)) NULL else weights,
-                         if (missing(offset)) NULL else offset, compress, tol)
-        }
-        fit$call <- match.call()
-        return(fit)
-    }
     ## fixed effects (fe.R)
     if (fe)
         return(dm_fe_lm(match.call(), parent.frame(), formula, contrasts, compress, tol, missing(tol),
                         model, vcov, fixef.rm, dm_dots(...)))
     cl <- match.call()
-    ## the design and columns of a data frame or remote data (remote_fit.R)
-    P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, dm_dots(...))
-    fit <- dmfit_lm(P$x, P$y, P$w, P$off, compress, tol, intercept = attr(P$terms, "intercept") > 0L)
+    ## the design and columns of a data frame, remote data, a design matrix
+    ## or a remote design (remote_fit.R)
+    P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, dm_dots(...),
+                        frame = environment())
+    fit <- dmfit_lm(P$x, P$y, P$w, P$off, compress, tol, intercept = P$intercept)
     fit$call <- cl
     fit$terms <- P$terms
     fit$contrasts <- P$contrasts
     fit$xlevels <- P$xlevels
-    fit$na.action <- P$na.action
-    fit$offset_call <- cl$offset
+    fit$na.action <- dm_na_result(P)
+    fit$offset_call <- P$offset_call
     fit$env <- P$env
     fit$method <- switch(dm_engine(P$x), sql = if (fit$compressed) "patterns" else "SQL moments")
-    ## (the rows of the design, which later queries on a remote design reuse)
-    assign("n", fit$rows, envir = P$x$cache)
-    ## (the data of a remote fit stay in the database: always kept)
+    ## (the rows of a remote design, which later queries reuse)
+    if (!is.null(fit$method)) assign("n", fit$rows, envir = P$x$cache)
+    ## (the data of a remote fit or a fit on a design: always kept)
     if (model || is.null(P$frame)) fit$data <- list(design = P$x, y = P$y, weights = P$w, offset = P$off)
     if (model) fit$model <- P$frame
-    fit
-}
-
-## design_lm() on a design matrix x and a response y.
-dmfit_design <- function(x, y, weights = NULL, offset = NULL,
-                         compress = "auto", tol = 1e-07) {
-    checkmate::assert_class(x, "design_matrix")
-    if (is.matrix(y) && ncol(y) == 1L) y <- drop(y)
-    checkmate::assert_numeric(y, len = nrow(x))
-    y <- as.double(y)
-    if (!is.null(weights)) checkmate::assert_numeric(weights, len = nrow(x))
-    if (!is.null(offset)) checkmate::assert_numeric(offset, len = nrow(x))
-    tt <- x$training_terms
-    intercept <- if (!is.null(tt)) attr(tt, "intercept") > 0L else
-        "(Intercept)" %in% colnames(x)
-    fit <- dmfit_lm(x, y, weights, offset, compress, tol, intercept = intercept)
-    fit$data <- list(design = x, y = y, weights = weights, offset = offset)
     fit
 }
 
@@ -516,11 +488,8 @@ residuals.design_lm <- function(object, ...) {
     rw <- dmfit_predict_rows(object, NULL, NULL, list(), "residuals()")
     xb <- dmfit_linpred(object, rw$D, along = list(rw$z))
     fit <- if (is.null(rw$off)) xb else xb + rw$off
-    dmp_output(rw$D, list(.fitted = fit, .resid = rw$z - xb), design = TRUE, memory = function(d) {
-        r <- d$.resid
-        names(r) <- dimnames(rw$D)[[1L]]
-        stats::naresid(rw$na_act, r)
-    })
+    dmp_output(rw$D, list(.fitted = fit, .resid = rw$z - xb), design = TRUE,
+               memory = function(d) dm_na_pad(rw$na_act, d$.resid, rw$D, stats::naresid))
 }
 
 #' @export

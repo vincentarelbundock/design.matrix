@@ -29,7 +29,7 @@ Three choices follow from this, and the rest of the page describes them:
   [Design], [Checks, contrasts and column names as in R; the dense fill], [`src/modelmatrix.c`, `R/design_matrix.R`],
   [Kernels], [Products with the design from codes and numbers], [`src/kernels.c`, `src/structured.c`, `R/algebra.R`],
   [Primitives], [Operations on designs and columns, in memory and remote], [`R/primitives.R`, `R/primitives_lookup.R`],
-  [Fits], [Least squares, IRLS, fixed effects], [`R/qr.R`, `R/lm.R`, `R/glm.R`, `R/fe.R`, `R/fe_glm.R`, `src/fe.c`, `src/fused.c`],
+  [Fits], [Least squares, IRLS, fixed effects], [`R/qr.R`, `R/lm.R`, `R/glm.R`, `R/fe.R`, `R/fe_glm.R`, `R/na_action.R`, `src/fe.c`, `src/fused.c`],
   [Remote], [Designs over DuckDB tables, queries and Parquet files], [`R/remote.R`, `R/remote_sql.R`, `R/remote_fit.R`, `R/remote_compress.R`],
 )
 

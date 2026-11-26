@@ -152,9 +152,9 @@ dm_fe_glm <- function(call, env, formula, family, data, start, control, contrast
     fit$offset_call <- call$offset
     fit$env <- base$env
     fit$rows <- base$nall
-    ## (remotely, na.exclude pads the results with every row not used)
-    fit$na.action <- if (base$exclude) dm_remote_exclude(prob$x_rows)
-                     else dm_fe_na_action(base$na.action, prob$rows, base$nall)
+    ## (remotely, na.exclude pads the results with every row not used:
+    ## na_action.R)
+    fit$na.action <- dm_na_result(base, prob$rows, prob$x_rows)
     fit$method <- switch(dm_engine(x), sql = "SQL iterations", NULL)
     ## (the data of a remote fit stay in the database: always kept)
     if (!model && is.null(fit$method)) fit$data <- NULL

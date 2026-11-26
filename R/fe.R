@@ -881,9 +881,9 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     fit$contrasts <- base$contrasts
     fit$xlevels <- base$xlevels
     fit$spec <- dmfit_spec(base$x)
-    ## (remotely, na.exclude pads the results with every row not used)
-    fit$na.action <- if (base$exclude) dm_remote_exclude(prob$x_rows)
-                     else dm_fe_na_action(base$na.action, prob$rows, base$nall)
+    ## (remotely, na.exclude pads the results with every row not used:
+    ## na_action.R)
+    fit$na.action <- dm_na_result(base, prob$rows, prob$x_rows)
     fit$method <- switch(dm_engine(prob$x), sql = "SQL aggregates", NULL)
     ## (the data of a remote fit stay in the database: always kept)
     if (!is.null(fit$method)) {
@@ -1040,19 +1040,6 @@ dm_fe_estimate <- function(x, cols, tol, cluster) {
         if (!is.null(est)) return(est)
     }
     dm_fe_core(x, cols, tol, opts, cluster)
-}
-
-## The na.action of the fit: rows dropped for missing values (those of the
-## model frame's na.action) and rows of the frame not used (zero weights,
-## singletons), as indices in the data, with the class of the na.action
-## ("omit" by default).
-dm_fe_na_action <- function(na_act, rows, nall) {
-    if (is.null(rows) || length(rows) == nall) return(na_act)
-    orig <- if (is.null(na_act)) seq_len(nall) else seq_len(nall + length(na_act))[-na_act]
-    dropped <- sort(c(as.integer(na_act), orig[-rows]))
-    names(dropped) <- as.character(dropped)
-    class(dropped) <- if (is.null(na_act)) "omit" else class(na_act)
-    dropped
 }
 
 ## The design_lm object of an FE fit.
