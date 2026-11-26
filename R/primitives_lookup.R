@@ -20,6 +20,12 @@
 ##       `along`, as for dmp_mult()), which gives a new frame keeping every
 ##       column of the old one; integer `values` (codes) give an integer
 ##       column.
+##   dmc_lookup_flags(flags, key, along = list())
+##       for a G x m logical matrix of flags of the levels and key a
+##       dmc_codes() grouping (codes 1..G): the m logical columns of the
+##       rows' flags. In memory flags[codes, j]; remotely one dmc_lookup()
+##       of the flags as 0/1 (the columns are on its frame: pass one of them
+##       as `along` to later lookups).
 ##   dmc_key(x, vars, data = NULL)
 ##       the values of variables (columns of the data, of any type) as a key
 ##       over the rows of design x: in memory a data frame (from `data`, or
@@ -108,6 +114,13 @@ dmc_lookup <- function(values, key, levels = NULL, along = list()) {
     dm_rcols(fr, sprintf("s.%s", q(col)))
 }
 
+dmc_lookup_flags <- function(flags, key, along = list()) {
+    if (dm_plain_codes(key)) return(lapply(seq_len(ncol(flags)), function(j) flags[, j][key$codes]))
+    storage.mode(flags) <- "double"
+    lk <- dmc_lookup(flags, key, along = along)
+    lapply(seq_len(ncol(flags)), function(j) dmc_col(lk, j) == 1)
+}
+
 ## The columns of the frame of a remote design (or column) plus the new
 ## columns `cols` (all of the prototype `type`): from the frame's
 ## prototype when it has one, else from the database (query `sql`).
@@ -173,6 +186,76 @@ dmc_dense_codes <- function(key, along = list()) {
     rownames(lv) <- NULL
     codes <- dmc_lookup(seq_len(nrow(lv)), key, lv, along)
     list(codes = dmc_codes(codes, nrow(lv)), levels = lv)
+}
+
+## ---- codes in memory (dmc_dense_codes()) ----
+
+## Integer codes 1..G of a vector without missing values, its levels (the
+## values that occur, sorted, or in level order for a factor) and the rows
+## per level (n), in one pass in C (dm_fe_code() in src/fe.c: direct
+## indexing for integer values with a compact range, hashing otherwise;
+## the levels are then sorted as sort(unique(v), method = "radix") sorts
+## them). Other types, and strings that occur in several encodings, as
+## sort(unique()) and match().
+dm_fe_code <- function(v) {
+    if (is.factor(v)) {
+        r <- .Call(C_dm_fe_code, as.integer(v), nlevels(v) + 1)
+        if (!is.null(r)) return(list(codes = r[[1L]], G = r[[2L]], levels = levels(v)[r[[3L]]], n = r[[4L]]))
+        cd <- dm_fe_compact(as.integer(v), nlevels(v))
+        return(list(codes = cd$codes, G = cd$G, levels = levels(v)[cd$used]))
+    }
+    if (is.logical(v)) v <- as.integer(v)
+    if (is.numeric(v) || (is.character(v) && is.null(attributes(v)))) {
+        r <- .Call(C_dm_fe_code, v, max(4 * length(v), 1e6))
+        if (!is.null(r)) {
+            if (length(r) == 4L) return(list(codes = r[[1L]], G = r[[2L]], levels = r[[3L]], n = r[[4L]]))
+            ## hashed: levels in order of first appearance, sorted here
+            ## (as plain values: not for a class with its own order)
+            u <- r[[3L]]
+            if (is.null(oldClass(v)) && (!is.character(u) || !anyDuplicated(u))) {
+                o <- order(u, method = "radix")
+                rank <- integer(length(o))
+                rank[o] <- seq_along(o)
+                return(list(codes = .Call(C_dm_fe_recode, r[[1L]], rank), G = r[[2L]], levels = u[o],
+                            n = r[[4L]][o]))
+            }
+        }
+    }
+    u <- sort(unique(v), method = "radix")
+    list(codes = match(v, u), G = length(u), levels = u)
+}
+
+## Renumber codes so that the levels that occur are 1..G.
+dm_fe_compact <- function(cd, G) {
+    used <- tabulate(cd, nbins = G) > 0L
+    if (all(used)) return(list(codes = cd, G = G, used = used))
+    map <- cumsum(used)
+    list(codes = map[cd], G = sum(used), used = used)
+}
+
+## Codes of an FE (one or several variables, columns of `d`), with its
+## levels as a data frame with one column per variable.
+dm_fe_code_term <- function(d, vars) {
+    if (length(vars) == 1L) {
+        cd <- dm_fe_code(d[[vars]])
+        lv <- list(cd$levels)
+        names(lv) <- vars
+        return(list(codes = cd$codes, G = cd$G, levels = as.data.frame(lv, stringsAsFactors = FALSE), n = cd$n))
+    }
+    parts <- lapply(vars, function(v) dm_fe_code(d[[v]]))
+    cd <- parts[[1L]]$codes
+    for (k in seq_along(parts)[-1L]) cd <- (cd - 1) * parts[[k]]$G + parts[[k]]$codes
+    comb <- dm_fe_code(cd)
+    ## the components of each combined level
+    code <- comb$levels - 1
+    lv <- vector("list", length(vars))
+    for (k in rev(seq_along(parts))) {
+        Gk <- parts[[k]]$G
+        lv[[k]] <- parts[[k]]$levels[code %% Gk + 1]
+        code <- code %/% Gk
+    }
+    names(lv) <- vars
+    list(codes = comb$codes, G = comb$G, levels = as.data.frame(lv, stringsAsFactors = FALSE), n = comb$n)
 }
 
 dmc_subset <- function(col, keep, x2) {

@@ -185,75 +185,8 @@ dm_fe_opts <- function() {
 }
 
 ## ---------------------------------------------------------------------------
-## Codes of fixed effects (in memory)
-
-## Integer codes 1..G of a vector without missing values, its levels (the
-## values that occur, sorted, or in level order for a factor) and the rows
-## per level (n), in one pass in C (dm_fe_code() in src/fe.c: direct
-## indexing for integer values with a compact range, hashing otherwise;
-## the levels are then sorted as sort(unique(v), method = "radix") sorts
-## them). Other types, and strings that occur in several encodings, as
-## sort(unique()) and match().
-dm_fe_code <- function(v) {
-    if (is.factor(v)) {
-        r <- .Call(C_dm_fe_code, as.integer(v), nlevels(v) + 1)
-        if (!is.null(r)) return(list(codes = r[[1L]], G = r[[2L]], levels = levels(v)[r[[3L]]], n = r[[4L]]))
-        cd <- dm_fe_compact(as.integer(v), nlevels(v))
-        return(list(codes = cd$codes, G = cd$G, levels = levels(v)[cd$used]))
-    }
-    if (is.logical(v)) v <- as.integer(v)
-    if (is.numeric(v) || (is.character(v) && is.null(attributes(v)))) {
-        r <- .Call(C_dm_fe_code, v, max(4 * length(v), 1e6))
-        if (!is.null(r)) {
-            if (length(r) == 4L) return(list(codes = r[[1L]], G = r[[2L]], levels = r[[3L]], n = r[[4L]]))
-            ## hashed: levels in order of first appearance, sorted here
-            ## (as plain values: not for a class with its own order)
-            u <- r[[3L]]
-            if (is.null(oldClass(v)) && (!is.character(u) || !anyDuplicated(u))) {
-                o <- order(u, method = "radix")
-                rank <- integer(length(o))
-                rank[o] <- seq_along(o)
-                return(list(codes = .Call(C_dm_fe_recode, r[[1L]], rank), G = r[[2L]], levels = u[o],
-                            n = r[[4L]][o]))
-            }
-        }
-    }
-    u <- sort(unique(v), method = "radix")
-    list(codes = match(v, u), G = length(u), levels = u)
-}
-
-## Renumber codes so that the levels that occur are 1..G.
-dm_fe_compact <- function(cd, G) {
-    used <- tabulate(cd, nbins = G) > 0L
-    if (all(used)) return(list(codes = cd, G = G, used = used))
-    map <- cumsum(used)
-    list(codes = map[cd], G = sum(used), used = used)
-}
-
-## Codes of an FE (one or several variables, columns of `d`), with its
-## levels as a data frame with one column per variable.
-dm_fe_code_term <- function(d, vars) {
-    if (length(vars) == 1L) {
-        cd <- dm_fe_code(d[[vars]])
-        lv <- list(cd$levels)
-        names(lv) <- vars
-        return(list(codes = cd$codes, G = cd$G, levels = as.data.frame(lv, stringsAsFactors = FALSE), n = cd$n))
-    }
-    parts <- lapply(vars, function(v) dm_fe_code(d[[v]]))
-    cd <- parts[[1L]]$codes
-    for (k in seq_along(parts)[-1L]) cd <- (cd - 1) * parts[[k]]$G + parts[[k]]$codes
-    comb <- dm_fe_code(cd)
-    ## the components of each combined level
-    code <- comb$levels - 1
-    lv <- vector("list", length(vars))
-    for (k in rev(seq_along(parts))) {
-        Gk <- parts[[k]]$G
-        lv[[k]] <- parts[[k]]$levels[code %% Gk + 1]
-        code <- code %/% Gk
-    }
-    names(lv) <- vars
-    list(codes = comb$codes, G = comb$G, levels = as.data.frame(lv, stringsAsFactors = FALSE), n = comb$n)
-}
+## Labels of fixed effects (their codes: dmc_dense_codes(), with
+## dm_fe_code_term() in memory, in primitives_lookup.R)
 
 ## Labels of FE levels, as fixest names them (a_b for interactions).
 dm_fe_labels <- function(lv) {
@@ -605,23 +538,14 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_f
     nfe <- length(G)
     n <- dm_nrows(x)
     ## moments
-    mem_resid <- !inherits(x, "dm_remote") && is.double(z) && is.null(dim(z)) &&
-        (is.null(w) || (is.double(w) && is.null(dim(w)) && length(w) == length(z))) &&
-        all(vapply(codes, function(g) is.integer(g$codes) && length(g$codes) == length(z), NA))
     wz <- if (is.null(w)) z else w * z
     xtx <- unname(if (is.null(w)) dmp_crossprod(x) else dmp_crossprod(x, dmp_scale(x, w)))
     xty <- unname(dmp_crossprod(x, wz))[, 1L]
-    if (mem_resid) {
-        ## in memory: the same sums in C, without the columns of the terms
-        sm <- .Call(C_dm_fe_moments, z, w)
-        tss <- sm[4L]
-    } else {
-        sm <- dmc_sums(wz * z, if (is.null(w)) 0 else w, wz)
-    }
+    sm <- dmc_moments(z, w, n)
     yty <- sm[1L]
     sw <- if (is.null(w)) n else sm[2L]
     ybar <- sm[3L] / sw
-    if (!mem_resid) tss <- dm_colsum(if (is.null(w)) (z - ybar)^2 else w * (z - ybar)^2)
+    tss <- sm[4L]
     if (!all(is.finite(xtx)) || !all(is.finite(xty))) stop("NA/NaN/Inf in 'x'", call. = FALSE)
     ## grouped sums and the FE system
     ## (with the crosstabs of the FE system: one or two passes in memory)
@@ -660,26 +584,9 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_f
         beta <- numeric(p)
         beta[xcols] <- b0
         ## (along z and w: remotely, on a frame that has their columns)
-        if (mem_resid && all(vapply(fe, function(v) is.double(v) && is.null(dim(v)), NA))) {
-            ## in memory: the fitted values, e, w e, their sums within the
-            ## FE levels and sum(w e^2) in one pass (C); w e comes as a
-            ## one-column matrix, which the product takes without a copy
-            xb <- dmp_mult(x, beta)
-            if (is.double(xb) && length(xb) == length(z)) {
-                r <- .Call(C_dm_fe_resid, z, xb, w, fe, lapply(codes, `[[`, "codes"), G)
-                we <- r[[1L]]
-                return(list(xte = unname(dmp_crossprod(x, we))[, 1L], Be = lapply(r[[2L]], function(m) m[, 1L]),
-                            rss = r[[3L]], we = drop(we)))
-            }
-        }
-        f <- dm_fe_fitted(x, beta, fe, codes, along = list(z, w))
-        e <- z - f
-        we <- if (is.null(w)) e else w * e
-        ## (F_k'We and the rss: one query remotely)
-        gs <- dmc_groupsums(we, codes, total = we * e)
-        list(xte = unname(dmp_crossprod(x, we))[, 1L],
-             Be = lapply(gs$groups, function(m) m[, 1L]),
-             rss = gs$total, we = we)
+        r <- dmc_fe_resid(z, dmp_mult(x, beta, along = list(z, w)), w, fe, codes)
+        list(xte = unname(dmp_crossprod(x, r[[1L]]))[, 1L], Be = lapply(r[[2L]], function(m) m[, 1L]),
+             rss = r[[3L]], we = drop(r[[1L]]))
     }
     r <- resid(b0, fe)
     refine_info <- "done"
@@ -789,15 +696,7 @@ dm_fe_cluster <- function(x, est, codes, cl) {
 ## FE, integer codes, or, with `levels`, key columns matched to levels).
 ## With beta a p x k matrix and each fe[[k]] a G_k x k matrix, k columns.
 dm_fe_fitted <- function(x, beta, fe, codes, levels = NULL, along = list()) {
-    f <- dmp_mult(x, beta, along = along)
-    ## in memory, one column: the lookups and sums in one pass (C)
-    if (is.null(levels) && is.double(f) && is.null(dim(f)) && length(fe) &&
-        all(vapply(fe, function(v) is.double(v) && is.null(dim(v)), NA)) &&
-        all(vapply(codes, function(g) dm_is_codes(g) && is.integer(g$codes), NA)))
-        return(.Call(C_dm_fe_fitted_add, f, fe, lapply(codes, `[[`, "codes")))
-    for (k in seq_along(fe))
-        f <- f + dmc_lookup(fe[[k]], codes[[k]], levels[[k]], along = list(f))
-    f
+    dmc_fe_add(dmp_mult(x, beta, along = along), fe, codes, levels)
 }
 
 ## Map a fit on the centered design X~ = X T back to X: b = T b~ (but the
@@ -1054,12 +953,12 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
             last <- list(cds[[k]]$codes$codes)
         }
         if (!rm_single && !rm0 && !rm1) break
-        ## per level: rows, rows with a response not 0, not 1 (in memory
-        ## without bounds, the counts of rows: no columns to form)
-        if (!rm0 && !rm1 && !dm_is_rcols(z)) {
-            ## (the rows per level come with the codes, dm_fe_code())
+        ## per level: rows, rows with a response not 0, not 1 (without
+        ## bounds, the rows per level: no columns to form; in memory they
+        ## come with the codes, dm_fe_code())
+        if (!rm0 && !rm1) {
             cnt <- lapply(cds, function(cd) {
-                m <- as.double(cd$n %||% tabulate(cd$codes$codes, nbins = cd$codes$G))
+                m <- dmp_groupcount(cd$codes, cd$n)
                 matrix(m, length(m), 3L)
             })
         } else {
@@ -1076,20 +975,13 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
             ## a level is perfectly fit (counted as such) or a singleton
             pf_k <- (rm0 & m[, 2L] == 0) | (rm1 & m[, 3L] == 0)
             sg_k <- rm_single & m[, 1L] == 1 & !pf_k
-            cc <- cds[[k]]$codes$codes
-            if (!dm_is_rcols(cc)) {
-                ## in memory: the flags of the rows' levels, indexed
-                p1 <- pf_k[cc]
-                s1 <- sg_k[cc]
-                lk <- p1
-            } else {
-                lk <- dmc_lookup(cbind(as.double(pf_k), as.double(sg_k)), cds[[k]]$codes, along = last)
-                p1 <- dmc_col(lk, 1L) == 1
-                s1 <- dmc_col(lk, 2L) == 1
-            }
+            ## (the flags of the rows' levels)
+            lk <- dmc_lookup_flags(cbind(pf_k, sg_k), cds[[k]]$codes, along = last)
+            p1 <- lk[[1L]]
+            s1 <- lk[[2L]]
             perfect <- if (is.null(perfect)) p1 else perfect | p1
             single <- if (is.null(single)) s1 else single | s1
-            last <- list(lk)
+            last <- list(p1)
         }
         drop <- perfect | single
         s <- dmc_sums(dmc_count(perfect), dmc_count(drop))

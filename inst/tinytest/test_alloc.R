@@ -127,6 +127,53 @@ expect_identical(unname(ns$dmc_poisson_dev(nmd(y), mu, W)), ns$dmc_poisson_dev(y
 expect_identical(ns$dmc_binomial_ll(tr, yb, W, p), .Call(cl("dm_binomial_ll"), tr, yb, W, p))
 expect_identical(unname(ns$dmc_binomial_ll(nmd(tr), yb, W, p)), ns$dmc_binomial_ll(tr, yb, W, p))
 expect_identical(ns$dmc_freeze_all(y, mu), list(y, mu))
+## the fused primitives of the FE fits: kernel on plain doubles, generic
+## code on named vectors (and on codes with attributes), same values
+gcodes <- Map(ns$dmc_codes, codes, G)
+gnamed <- lapply(gcodes, function(g) { g$codes <- nmd(g$codes); g })
+for (wt in list(NULL, ww)) {
+    m <- ns$dmc_moments(zz, wt, n)
+    expect_identical(m, .Call(cl("dm_fe_moments"), zz, wt))
+    expect_identical(m[2L], if (is.null(wt)) 0 else sum(wt))
+    expect_equal(ns$dmc_moments(nmd(zz), wt, n), m, tolerance = 1e-15)
+    r <- ns$dmc_fe_resid(zz, xb, wt, fe, gcodes)
+    expect_identical(r, .Call(cl("dm_fe_resid"), zz, xb, wt, fe, codes, G))
+    rg <- ns$dmc_fe_resid(nmd(zz), xb, wt, fe, gcodes)
+    expect_identical(unname(drop(rg[[1L]])), drop(r[[1L]]))
+    expect_equal(rg[[2L]], r[[2L]], tolerance = 1e-14)
+    expect_equal(rg[[3L]], r[[3L]], tolerance = 1e-14)
+    expect_identical(ns$dmc_fe_resid(zz, xb, wt, fe, gnamed)[[1L]], drop(r[[1L]]))
+}
+fa <- ns$dmc_fe_add(xb, fe, gcodes)
+expect_identical(fa, .Call(cl("dm_fe_fitted_add"), xb, fe, codes))
+expect_identical(unname(ns$dmc_fe_add(nmd(xb), fe, gcodes)), fa)
+expect_identical(ns$dmc_fe_add(xb, fe, gnamed), fa)
+expect_identical(ns$dmc_fe_add(xb, list(), list()), xb)
+## (k columns: the generic code)
+expect_identical(ns$dmc_fe_add(cbind(xb, xb), lapply(fe, function(v) cbind(v, 2 * v)), gcodes),
+                 cbind(xb, xb) + cbind(fe[[1L]][codes[[1L]]], 2 * fe[[1L]][codes[[1L]]]) +
+                 cbind(fe[[2L]][codes[[2L]]], 2 * fe[[2L]][codes[[2L]]]))
+for (k in 1:2) {
+    expect_identical(ns$dmp_groupcount(gcodes[[k]]), as.double(tabulate(codes[[k]], G[k])))
+    expect_identical(ns$dmp_groupcount(gnamed[[k]]), ns$dmp_groupcount(gcodes[[k]]))
+    expect_identical(ns$dmp_groupcount(gcodes[[k]], 1:3), c(1, 2, 3))
+}
+fl <- cbind(seq_len(7L) %% 2L == 0L, seq_len(7L) > 5L)
+lf <- ns$dmc_lookup_flags(fl, gcodes[[1L]])
+expect_identical(lf, list(fl[codes[[1L]], 1L], fl[codes[[1L]], 2L]))
+expect_identical(ns$dmc_lookup_flags(fl, gnamed[[1L]]), lf)
+## codes are checked before a kernel indexes by them (out of 1..G, NA)
+for (bad in list(c(codes[[1L]][-1L], 8L), c(codes[[1L]][-1L], 0L), c(codes[[1L]][-1L], NA))) {
+    expect_error(.Call(cl("dm_fe_resid"), zz, xb, NULL, fe, list(bad, codes[[2L]]), G), "outside 1..G")
+    expect_error(.Call(cl("dm_fe_gsum"), bad, 7L, zz, 1L), "outside 1..G")
+    expect_error(.Call(cl("dm_fe_crosstabs"), bad, list(codes[[2L]]), NULL, 7L, 4L, 1L), "outside 1..G")
+    expect_error(.Call(cl("dm_fe_crosstabs"), codes[[2L]], list(bad), NULL, 4L, 7L, 1L), "outside 1..G")
+    expect_error(.Call(cl("dm_fe_nested"), codes[[2L]], bad, 7L), "outside 1..G")
+    expect_error(.Call(cl("dm_fe_recode"), bad, 7:1), "outside 1..G")
+    ## (lookups give NA)
+    expect_true(is.na(ns$dmc_fe_add(xb, fe, list(ns$dmc_codes(bad, 7L), gcodes[[2L]]))[n]))
+}
+expect_error(.Call(cl("dm_fe_gsum"), codes[[1L]] + 0, 7L, zz, 1L), "integer")
 if (requireNamespace("duckdb", quietly = TRUE)) {
     ## (no missing values: SQL NULL is NA, not NaN, and the kernels count NaN)
     Wp <- abs(W)
@@ -154,6 +201,26 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
                  ns$dmc_poisson_dev(y, mu, Wp), tolerance = 1e-12)
     expect_equal(ns$dmp_collect(ns$dmc_binomial_ll(rc("tr"), rc("yb"), rc("pw"), rc("p"))),
                  ns$dmc_binomial_ll(tr, yb, Wp, p), tolerance = 1e-12)
+    ## the fused primitives of the FE fits on remote columns
+    DBI::dbWriteTable(con, "fzc", data.frame(zz = zz, xb = xb, w = ww, c1 = codes[[1L]], c2 = codes[[2L]]))
+    RC <- design_matrix(~ 1, con, table = "fzc")
+    rcc <- function(nm) ns$dmp_column(RC, sprintf('CAST(s."%s" AS DOUBLE)', nm))
+    rcodes <- list(ns$dmc_codes(ns$dmp_column(RC, 's."c1"'), G[1L]),
+                   ns$dmc_codes(ns$dmp_column(RC, 's."c2"'), G[2L]))
+    for (wt in list(NULL, "w")) {
+        wm <- if (!is.null(wt)) ww
+        wr <- if (!is.null(wt)) rcc(wt)
+        expect_equal(ns$dmc_moments(rcc("zz"), wr, n), ns$dmc_moments(zz, wm, n), tolerance = 1e-12)
+        rr <- ns$dmc_fe_resid(rcc("zz"), rcc("xb"), wr, fe, rcodes)
+        rm <- ns$dmc_fe_resid(zz, xb, wm, fe, gcodes)
+        expect_equal(ns$dmp_collect(rr[[1L]]), drop(rm[[1L]]), tolerance = 1e-12)
+        expect_equal(rr[[2L]], rm[[2L]], tolerance = 1e-12)
+        expect_equal(rr[[3L]], rm[[3L]], tolerance = 1e-12)
+    }
+    expect_equal(ns$dmp_collect(ns$dmc_fe_add(rcc("xb"), fe, rcodes)), fa, tolerance = 1e-14)
+    for (k in 1:2) expect_identical(ns$dmp_groupcount(rcodes[[k]]), ns$dmp_groupcount(gcodes[[k]]))
+    lr <- ns$dmc_lookup_flags(fl, rcodes[[1L]])
+    expect_identical(lapply(lr, function(v) as.logical(ns$dmp_collect(v))), lf)
     fa <- ns$dmc_freeze_all(rc("y") + 1, rc("mu"))
     expect_equal(ns$dmp_collect(fa[[1L]] * fa[[2L]]), (y + 1) * mu, tolerance = 1e-14)
     DBI::dbDisconnect(con, shutdown = TRUE)

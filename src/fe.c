@@ -29,6 +29,20 @@
 #include "dm.h"
 #include "structured.h"
 
+/* The kernels that index by code (accumulators, ranks, markers) check
+   the codes first: an integer vector with every value in 1..G (no NA).
+   One branch-free pass over the codes, small next to the kernels. */
+void dm_check_codes(SEXP codes_, int G)
+{
+    if (TYPEOF(codes_) != INTSXP) error("internal error: codes must be integer");
+    R_xlen_t n = XLENGTH(codes_);
+    const int *c = INTEGER_RO(codes_);
+    unsigned int g = G > 0 ? (unsigned int) G : 0u;
+    int ok = 1;
+    for (R_xlen_t i = 0; i < n; i++) ok &= ((unsigned int) c[i] - 1u) < g;
+    if (!ok) error("internal error: codes outside 1..G");
+}
+
 /* G x k matrix of sums of the columns of W (n x k) within codes 1..G.  On
    several threads: fixed row chunks with their own sums, added in chunk
    order (dm_reduce_threads()); one thread is the single-threaded pass. */
@@ -47,6 +61,7 @@ SEXP dm_fe_gsum(SEXP codes_, SEXP G_, SEXP W, SEXP nthreads_)
     R_xlen_t n = XLENGTH(codes_);
     int G = asInteger(G_), k = ncols(W);
     if (nrows(W) != n) error("non-conformable arguments");
+    dm_check_codes(codes_, G);
     const int *codes = INTEGER(codes_);
     const double *w = REAL(W);
     SEXP out = PROTECT(allocMatrix(REALSXP, G, k));
@@ -117,9 +132,13 @@ SEXP dm_fe_crosstabs(SEXP a_, SEXP bs_, SEXP w_, SEXP Ga_, SEXP Gb_, SEXP nthrea
     int Ga = asInteger(Ga_), K = LENGTH(bs_);
     const int *a = INTEGER(a_), *Gb = INTEGER(Gb_);
     const double *w = isNull(w_) ? NULL : REAL(w_);
+    if (w && XLENGTH(w_) != n) error("internal error: one weight per row");
+    if (LENGTH(Gb_) != K) error("internal error: one G per code vector");
+    dm_check_codes(a_, Ga);
     const int **b = (const int **) R_alloc(K > 0 ? K : 1, sizeof(int *));
     for (int k = 0; k < K; k++) {
 	if (XLENGTH(VECTOR_ELT(bs_, k)) != n) error("internal error: one code per row");
+	dm_check_codes(VECTOR_ELT(bs_, k), Gb[k]);
 	b[k] = INTEGER(VECTOR_ELT(bs_, k));
     }
     /* the rows by level of a: start[g] .. start[g + 1] in ord (or in the
@@ -237,6 +256,8 @@ SEXP dm_fe_nested(SEXP a_, SEXP b_, SEXP Gb_)
 {
     R_xlen_t n = XLENGTH(a_);
     int Gb = asInteger(Gb_);
+    if (XLENGTH(b_) != n) error("internal error: one code per row");
+    dm_check_codes(b_, Gb);
     const int *a = INTEGER(a_), *b = INTEGER(b_);
     int *first = (int *) R_alloc((size_t) Gb + 1, sizeof(int));
     for (int g = 0; g <= Gb; g++) first[g] = 0;
@@ -403,6 +424,7 @@ SEXP dm_fe_struct_gsum(SEXP setup, SEXP vars, SEXP w_, SEXP codes_, SEXP G_, SEX
     }
     R_xlen_t n = S.n;
     int nk = LENGTH(codes_);
+    if (LENGTH(G_) != nk) error("internal error: one G per code vector");
     const int *G = INTEGER(G_);
     const double *w = isNull(w_) ? NULL : REAL(w_);
     if (w && XLENGTH(w_) != n) error("internal error: one weight per row");
@@ -429,6 +451,7 @@ SEXP dm_fe_struct_gsum(SEXP setup, SEXP vars, SEXP w_, SEXP codes_, SEXP G_, SEX
     for (int k = 0; k < nk; k++) {
 	SEXP ck = VECTOR_ELT(codes_, k);
 	if (XLENGTH(ck) != n) error("internal error: one code per row");
+	dm_check_codes(ck, G[k]);
 	codes[k] = INTEGER(ck);
     }
     int *pa = (int *) R_alloc(np > 0 ? np : 1, sizeof(int)), *pb = (int *) R_alloc(np > 0 ? np : 1, sizeof(int));
@@ -749,6 +772,7 @@ SEXP dm_fe_code(SEXP v, SEXP maxrange_)
 SEXP dm_fe_recode(SEXP codes_, SEXP rank_)
 {
     R_xlen_t n = XLENGTH(codes_);
+    dm_check_codes(codes_, LENGTH(rank_));
     const int *c = INTEGER_RO(codes_), *rk = INTEGER_RO(rank_);
     SEXP out = PROTECT(allocVector(INTSXP, n));
     int *o = INTEGER(out);

@@ -101,6 +101,7 @@ SEXP dm_fe_resid(SEXP z_, SEXP xb_, SEXP w_, SEXP fe_, SEXP codes_, SEXP G_)
     const double *z = REAL_RO(z_), *xb = REAL_RO(xb_);
     const double *w = isNull(w_) ? NULL : REAL_RO(w_);
     if (XLENGTH(xb_) != n || (w && XLENGTH(w_) != n)) error("internal error: one value per row");
+    if (TYPEOF(G_) != INTSXP || LENGTH(G_) != K) error("internal error: one G per grouping");
     const int *G = INTEGER_RO(G_);
     SEXP out = PROTECT(allocVector(VECSXP, 3));
     SEXP we_ = SET_VECTOR_ELT(out, 0, allocMatrix(REALSXP, n, 1));
@@ -117,6 +118,8 @@ SEXP dm_fe_resid(SEXP z_, SEXP xb_, SEXP w_, SEXP fe_, SEXP codes_, SEXP G_)
 	fe[k] = REAL_RO(VECTOR_ELT(fe_, k));
 	nfe[k] = XLENGTH(VECTOR_ELT(fe_, k));
 	if (nfe[k] < G[k]) error("internal error: one FE value per level");
+	/* (the sums within levels index by code) */
+	dm_check_codes(ck, G[k]);
 	SEXP m = SET_VECTOR_ELT(Be, k, allocMatrix(REALSXP, G[k], 1));
 	acc[k] = REAL(m);
 	memset(acc[k], 0, sizeof(double) * (size_t) G[k]);

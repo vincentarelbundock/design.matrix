@@ -157,4 +157,6 @@ SEXP dm_fe_ichol(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_fe_pcg(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_fe_schur(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_omp_max_threads(void);
+/* error unless the integer vector codes is in 1..G (no NA), fe.c */
+void dm_check_codes(SEXP codes, int G);
 #endif
