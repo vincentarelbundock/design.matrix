@@ -1041,6 +1041,7 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
         if (dm_nrows(x) == 0) stop("0 (non-NA) cases", call. = FALSE)
         nd
     }
+    if (dm_nrows(x) == 0) stop("0 (non-NA) cases", call. = FALSE)
     keep <- dmc_is_finite(z)
     if (!is.null(w)) keep <- keep & dmc_is_finite(w) & w != 0
     for (k in c(keys, list(clkey))) if (!is.null(k)) keep <- keep & dmc_not_na(k)

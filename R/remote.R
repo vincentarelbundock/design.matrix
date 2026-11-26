@@ -465,7 +465,9 @@ dm_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(),
     for (nm in names(xlev)) xlevels[[nm]] <- xlev[[nm]]
     attr(tt, "predvars") <- as.call(c(list(as.name("list")), predvars))
     for (j in seq_along(predvars)) D$vars[[j]]$expr <- predvars[[j]]
-    if (!nrow(sample)) stop("The remote data has no complete rows.", call. = FALSE)
+    if (!nrow(sample))
+        stop(structure(class = c("dm_no_rows", "error", "condition"),
+                       list(message = "The remote data has no complete rows.", call = NULL)))
     D$plan <- design_plan.formula(tt, sample, contrasts.arg = contrasts.arg,
                                   xlev = if (length(xlevels)) xlevels else NULL)
     D$terms_full <- tt

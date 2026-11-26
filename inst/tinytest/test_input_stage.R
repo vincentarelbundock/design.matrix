@@ -6,8 +6,6 @@
 # * offsets: lm() says "is %d, should equal", glm() and FE "is %d should equal";
 # * weights: LM "missing or negative weights not allowed", GLM "negative
 #   weights not allowed";
-# * a two-column response, a subset leaving no rows: other errors remotely
-#   than in memory;
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
 library(design.matrix)
@@ -91,11 +89,17 @@ expect_error(design_lm(yna ~ x, con, table = "d", na.action = na.fail),
 expect_error(design_lm(ch ~ x, con, table = "d"),
              "`response` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
 expect_error(design_lm(cbind(y, x) ~ z, con, table = "d"),
-             "`cbind(y, x)` gives 80 values for 40 rows.", fixed = TRUE)
+             "Multivariate responses are not supported.", fixed = TRUE)
+expect_error(design_lm(cbind(y, x) ~ z, con, table = "d", weights = ch),
+             "Multivariate responses are not supported.", fixed = TRUE)
+expect_error(suppressMessages(design_lm(as.matrix(data.frame(y, x)) ~ z, con, table = "d")),
+             "Multivariate responses are not supported.", fixed = TRUE)
+expect_error(design_lm(as.matrix(data.frame(y, x)) ~ z, d),
+             "Multivariate responses are not supported.", fixed = TRUE)
 expect_error(design_lm(~ x, con, table = "d"),
              "The formula has no response.", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", subset = x > 100),
-             "The remote data has no complete rows.", fixed = TRUE)
+             "0 (non-NA) cases", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", subset = nosuch > 0),
              "object 'nosuch' not found", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", foo = 1),
@@ -109,7 +113,7 @@ expect_error(design_lm(y ~ x, con, table = "d", na.action = function(x) x, foo =
 expect_error(design_lm(~ x, con, table = "d", foo = 1),
              "The formula has no response.", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", weights = wneg, subset = x > 100),
-             "The remote data has no complete rows.", fixed = TRUE)
+             "0 (non-NA) cases", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", vcov = "hc1", compress = "no"),
              "`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", fixed = TRUE)
 
@@ -283,6 +287,8 @@ expect_error(design_lm(y ~ x | id, con, table = "d", foo = 1, weights = wneg),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", subset = x > 0),
              "`subset` is not supported with fixed effects.", fixed = TRUE)
+expect_error(design_lm(cbind(y, x) ~ z | id, con, table = "d"),
+             "Multivariate responses are not supported.", fixed = TRUE)
 expect_error(design_lm(y ~ x | nosuch, con, table = "d"),
              "No column `nosuch` in the remote data.", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", vcov = ~nosuch),
@@ -435,6 +441,18 @@ expect_error(design_lm(y ~ x | id, d, na.action = na.exclude, foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, weights = wzero),
              "0 (non-NA) cases", fixed = TRUE)
+# No complete rows: lm()'s error on every path
+d0 <- d
+d0$allna <- NA_real_
+DBI::dbWriteTable(con, "d0", d0)
+expect_error(design_lm(allna ~ x, d0), "0 (non-NA) cases", fixed = TRUE)
+expect_error(design_lm(allna ~ x, con, table = "d0"), "0 (non-NA) cases", fixed = TRUE)
+expect_error(design_glm(allna ~ x, gaussian, d0), "0 (non-NA) cases", fixed = TRUE)
+expect_error(design_glm(allna ~ x, gaussian, con, table = "d0"), "0 (non-NA) cases", fixed = TRUE)
+expect_error(design_lm(allna ~ x | id, d0), "0 (non-NA) cases", fixed = TRUE)
+expect_error(design_lm(allna ~ x | id, con, table = "d0"), "0 (non-NA) cases", fixed = TRUE)
+expect_error(design_glm(allna ~ x | id, poisson, d0), "0 (non-NA) cases", fixed = TRUE)
+expect_error(design_glm(allna ~ x | id, poisson, con, table = "d0"), "0 (non-NA) cases", fixed = TRUE)
 
 # What a fit keeps from its input, per path (names, not order).
 d2 <- d

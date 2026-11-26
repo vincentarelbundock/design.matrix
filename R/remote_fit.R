@@ -248,9 +248,15 @@ dm_problem_remote <- function(call, env, formula, source, contrasts, dots, famil
     }
     resp <- if (!is.null(family)) dmglm_remote_response(lhs, src$types, src$holder$con)
             else list(args = list(y = lhs), present = character(), cbind = FALSE)
+    ## a linear model has one response, as in memory (a matrix response
+    ## evaluated in R gives the same error, dm_remote_fit())
+    mresp <- if (is.null(family)) "Multivariate responses are not supported."
+    if (!is.null(mresp) && is.call(lhs) && identical(lhs[[1L]], as.name("cbind")) && length(lhs) > 2L)
+        stop(mresp, call. = FALSE)
     args <- c(resp$args, list(weights = call$weights, offset = call$offset, subset = if (is.null(family)) call$subset))
     r <- dm_remote_fit(formula, src, args, env, dots, contrasts, logical = "subset",
-                       present = unique(c(unlist(fe$fe, use.names = FALSE), clv, resp$present)), na = na)
+                       present = unique(c(unlist(fe$fe, use.names = FALSE), clv, resp$present)), na = na,
+                       mresp = mresp)
     D <- r$x
     ## an offset with several columns: its number of values, as in memory
     if (r$offk > 1L) dm_offset_length(r$offk * D$n, D$n, is.null(family) && is.null(fe))
@@ -276,6 +282,8 @@ dm_problem_remote <- function(call, env, formula, source, contrasts, dots, famil
 ##     factor response).
 ##   na: "omit" (or "exclude": the same rows), "fail" or "pass" (lm()'s
 ##     errors when a row has a missing value).
+##   mresp: the error for a response `y` evaluated in R that gives a
+##     matrix with several columns (NULL: no check).
 ## R expressions with no SQL translation are evaluated in R into a
 ## temporary table (`engine = "sql"` refuses). The
 ## rows used are those of the subset where no model variable, argument or
@@ -286,7 +294,7 @@ dm_problem_remote <- function(call, env, formula, source, contrasts, dots, famil
 ## argument) or NULL, offk = the largest number of columns of an offset
 ## evaluated in R (a matrix: the caller reports its length, as in memory)).
 dm_remote_fit <- function(formula, src, args, env, dots, contrasts = NULL, logical = character(),
-                          present = character(), na = "omit") {
+                          present = character(), na = "omit", mresp = NULL) {
     miss <- setdiff(present, names(src$types))
     if (length(miss)) stop(sprintf("No column `%s` in the remote data.", miss[1L]), call. = FALSE)
     tt <- stats::terms(formula, data = src$proto)
@@ -317,6 +325,7 @@ dm_remote_fit <- function(formula, src, args, env, dots, contrasts = NULL, logic
         items[[label(nm)]] <- a
         exprs[[col]] <- a$expr
         if (nm == "offset" || nm %in% names(offt)) mat[[col]] <- "offset"
+        if (nm == "y" && !is.null(mresp)) mat[[col]] <- mresp
         res[[nm]] <- list(sql = if (nm %in% logical) sprintf("s.%s", q(col)) else sprintf("CAST(s.%s AS DOUBLE)", q(col)),
                           inputs = col, logical = nm %in% logical)
     }
@@ -346,8 +355,10 @@ dm_remote_fit <- function(formula, src, args, env, dots, contrasts = NULL, logic
                                   env = environment(rhs))
     }
     sub <- if (any(logical %in% names(res))) paste(sprintf("(%s)", vapply(res[intersect(logical, names(res))], `[[`, "", "sql")), collapse = " AND ")
-    D <- dm_remote(rhs, src, contrasts, NULL, dots, drop_unused = TRUE, subset = sub, extra = extra,
-                   override = override)
+    ## (no rows left: the error of lm())
+    D <- tryCatch(dm_remote(rhs, src, contrasts, NULL, dots, drop_unused = TRUE, subset = sub, extra = extra,
+                            override = override),
+                  dm_no_rows = function(e) stop("0 (non-NA) cases", call. = FALSE))
     if (na %in% c("fail", "pass")) dm_remote_fit_na(D, res, na, nonlog, names(offt))
     cols <- lapply(names(args), function(nm) if (!is.null(res[[nm]])) dm_rcols(D, res[[nm]]$sql))
     names(cols) <- names(args)
