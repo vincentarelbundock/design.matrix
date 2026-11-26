@@ -218,9 +218,12 @@ dm_fe_components <- function(Nt) {
 ## `map`: Jacobi only). Z0: a starting value (a warm
 ## start; dropped for columns where it is worse than zero) or NULL. bmin: a
 ## floor for the norm of the right-hand sides in the stopping rule. The
-## preconditioner is built once per `cache`.
+## preconditioner is built once per `cache`. nthreads: threads for the
+## products and sums of the recursion (identical results for a given
+## number; one thread is the single-threaded code; small systems run on one
+## thread; a negative count -T forces T threads, for the tests).
 dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.env(), Z0 = NULL,
-                      bmin = 0) {
+                      bmin = 0, nthreads = design_threads()) {
     if (is.null(cache$A)) {
         if (inherits(R, "dm_fe_op")) {
             cache$A <- R$A
@@ -262,7 +265,7 @@ dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.e
     }
     r <- .Call(C_dm_fe_pcg, A@p, A@i, A@x, if (!is.null(N)) N@p, if (!is.null(N)) N@i,
                if (!is.null(N)) N@x, cache$map, cache$d, L$p, L$i, L$x, B, Z0,
-               as.double(bmin), as.double(tol), as.integer(maxit))
+               as.double(bmin), as.double(tol), as.integer(maxit), as.integer(nthreads))
     ## (nullv: on a breakdown, a direction close to a null vector of R)
     list(x = r[[1L]], iter = r[[2L]], resid = r[[3L]], converged = r[[3L]] <= tol,
          nullv = r[[4L]], precond = cache$precond)
