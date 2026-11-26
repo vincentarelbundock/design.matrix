@@ -268,6 +268,11 @@ dmfit_lm <- function(x, y, weights = NULL, offset = NULL, compress = "auto",
     g <- dmfit_groups(x, compress)
     if (!is.null(g)) {
         ss <- dmfit_suffstats(z, weights, g$map, length(g$first))
+        ## sums that overflow (w * z beyond the range of doubles) where the
+        ## fit on the rows is finite: fit on the rows instead
+        if (!all(is.finite(ss$w), is.finite(ss$mean), is.finite(ss$within))) g <- NULL
+    }
+    if (!is.null(g)) {
         keep <- ss$w > 0
         xs <- x[g$first[keep], ]
         zs <- ss$mean[keep]
@@ -500,7 +505,8 @@ predict.design_lm <- function(object, newdata, se.fit = FALSE,
     fit <- dmfit_linpred(object, D)
     if (!is.null(off)) fit <- fit + off
     names(fit) <- dimnames(D)[[1L]]
-    if (is.null(na_act) && object$rank < length(object$coefficients)) {
+    ## as predict.lm(), only predictions on new data are checked
+    if (!no_data && object$rank < length(object$coefficients)) {
         msg <- gettext("prediction from rank-deficient fit")
         if (rankdeficient == "simple") {
             warning(gettextf("%s; consider predict(., rankdeficient=\"NA\")", msg),

@@ -355,3 +355,23 @@ a <- lm(y ~ x, dr, offset = o)
 b <- design_lm(y ~ x, dr, offset = o)
 expect_equal(residuals(b), residuals(a))
 expect_equal(sum(residuals(b)^2), deviance(b))
+
+# predictions at the training rows are not checked for estimability, as in
+# predict.lm(): a zero-weight row outside the estimable space keeps its
+# fitted value with rankdeficient = "NA"
+dz <- data.frame(y = rnorm(12), f = factor(rep(c("a", "b", "c"), each = 4)))
+dz$g <- factor(ifelse(dz$f == "a", "u", "v"))
+dz$g[12] <- "u"
+w <- c(rep(1, 11), 0)
+a <- lm(y ~ f + g, dz, weights = w)
+b <- design_lm(y ~ f + g, dz, weights = w)
+expect_true(anyNA(coef(b)))
+expect_equal(predict(b, rankdeficient = "NA"), fitted(b))
+expect_equal(predict(b, rankdeficient = "NA"), predict(a, rankdeficient = "NA"))
+
+# compressed sums that overflow fall back to the fit on the rows
+dov <- data.frame(x = rep(2^-300, 4), y = rep(2^450, 4))
+fo <- design_lm(y ~ x - 1, dov, weights = rep(2^600, 4), compress = TRUE)
+expect_false(fo$compressed)
+expect_true(is.finite(coef(fo)))
+expect_equal(unname(coef(fo)), 2^750)
