@@ -12,7 +12,7 @@ z[c(3, 9)] <- c(NA, NaN)
 w <- runif(n)
 w[c(5, 7)] <- c(0, NA)
 
-## dmc_ifelse() (a missing test gives NA) and dmc_notnan() (a missing value
+## dmc_ifelse() (a missing test gives NA) and dmc_present() (a missing value
 ## gives FALSE, never NA)
 test <- z > 0
 r_ifelse <- function(test, yes, no) {
@@ -24,11 +24,11 @@ r_ifelse <- function(test, yes, no) {
 }
 expect_identical(ns$dmc_ifelse(test, w, 0), r_ifelse(test, w, 0))
 expect_identical(ns$dmc_ifelse(test, 2L, w), r_ifelse(test, 2L, w))
-expect_identical(ns$dmc_notnan(z), !is.na(z))
-expect_identical(ns$dmc_notnan(c(1, NA, NaN, Inf, -Inf)), c(TRUE, FALSE, FALSE, TRUE, TRUE))
-expect_identical(ns$dmc_notnan(c(1L, NA)), c(TRUE, FALSE))
-expect_identical(ns$dmc_notnan(c(TRUE, NA)), c(TRUE, FALSE))
-expect_identical(ns$dmc_notnan(matrix(c(1, NaN), 1L)), matrix(c(TRUE, FALSE), 1L))
+expect_identical(ns$dmc_present(z), !is.na(z))
+expect_identical(ns$dmc_present(c(1, NA, NaN, Inf, -Inf)), c(TRUE, FALSE, FALSE, TRUE, TRUE))
+expect_identical(ns$dmc_present(c(1L, NA)), c(TRUE, FALSE))
+expect_identical(ns$dmc_present(c(TRUE, NA)), c(TRUE, FALSE))
+expect_identical(ns$dmc_present(matrix(c(1, NaN), 1L)), matrix(c(TRUE, FALSE), 1L))
 
 ## residuals and moments of dm_fe_core()
 G <- c(7L, 4L)

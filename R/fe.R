@@ -1037,7 +1037,7 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
     if (dm_nrows(x) == 0) stop("0 (non-NA) cases", call. = FALSE)
     keep <- dmc_is_finite(z)
     if (!is.null(w)) keep <- keep & dmc_is_finite(w) & w != 0
-    for (k in c(keys, list(clkey))) if (!is.null(k)) keep <- keep & dmc_not_na(k)
+    for (k in c(keys, list(clkey))) if (!is.null(k)) keep <- keep & dmc_complete(k)
     restrict(keep)
     rm_single <- fixef.rm %in% c("singleton", "perfect_fit")
     rm0 <- isTRUE(bounds$zero) && fixef.rm %in% c("infinite_coef", "perfect_fit")

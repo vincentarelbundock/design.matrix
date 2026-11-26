@@ -188,7 +188,7 @@ dmfit_check <- function(n, y, weights, offset) {
     z <- if (is.null(offset)) y else y - offset
     w <- weights
     s <- dmc_sums(dmc_count(dmc_is_finite(z), negate = TRUE),
-                  if (!is.null(w)) dmc_count(dmc_notnan(w) & w >= 0, negate = TRUE) else 0,
+                  if (!is.null(w)) dmc_count(dmc_present(w) & w >= 0, negate = TRUE) else 0,
                   if (!is.null(w)) dmc_count(abs(w) == Inf) else 0,
                   if (!is.null(w)) dmc_count(w != 0) else 1)
     if (s[1L] > 0) stop("NA/NaN/Inf in 'y'", call. = FALSE)

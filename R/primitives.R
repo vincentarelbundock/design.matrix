@@ -45,7 +45,7 @@
 ##                         (Math group; log has one argument)
 ##   dmc_pmin dmc_pmax dmc_ifelse dmc_rowsums dmc_cbind dmc_col(x, j) dmc_ncol
 ##   dmc_const(like, value) dmc_lgamma dmc_round (half to even)
-##   dmc_is_finite (NaN-safe) dmc_notnan (not NA or NaN)
+##   dmc_is_finite (NaN-safe) dmc_present (not NA or NaN: !is.na)
 ##   dmc_on(col, x) (same SQL, rows of x)
 ##   dmc_count(cond, negate) (1 where cond is TRUE, to sum)
 ##   dmc_freeze(col, table) (computed once: remotely, columns of a new
@@ -546,7 +546,7 @@ Ops.design_column <- function(e1, e2) {
 ## TRUE for NA or NaN, is.nan for NaN only, is.finite FALSE for NA, NaN and
 ## +-Inf, is.infinite TRUE for +-Inf only. Never NA.
 #' @export
-is.na.design_column <- function(x) !dmc_notnan(x)
+is.na.design_column <- function(x) !dmc_present(x)
 
 #' @export
 is.nan.design_column <- function(x)
@@ -572,7 +572,8 @@ Math.design_column <- function(x, ...) {
         floor = sprintf("floor(%s)", a), ceiling = sprintf("ceil(%s)", a),
         ## (DuckDB's sign(NaN) is 0, R's NaN)
         sign = sprintf("CASE WHEN isnan(CAST(%s AS DOUBLE)) THEN CAST('NaN' AS DOUBLE) ELSE sign(%s) END", a, a),
-        stop(sprintf("%s() is not supported for remote columns.", .Generic), call. = FALSE))
+        ## (round, signif, trunc, gamma, lgamma and the errors: R/columns_public.R)
+        dm_math_sql(x, .Generic, ...))
     dm_column(unclass(x)$frame, sql)
 }
 
@@ -1323,9 +1324,10 @@ dmc_is_finite <- function(x) {
 }
 
 ## TRUE where x is not missing, FALSE where it is NA or NaN (NULL remotely);
-## infinite values count as present. Never NA, so that !dmc_notnan(x)
+## infinite values count as present (= !is.na(x); was dmc_notnan, renamed
+## in tapx: it never tested NaN alone. The key version is dmc_complete().) Never NA, so that !dmc_present(x)
 ## counts the missing values. (In memory one pass in C for a plain vector.)
-dmc_notnan <- function(x) {
+dmc_present <- function(x) {
     if (!dm_is_column(x)) {
         if (is.null(attributes(x)) && (is.double(x) || is.integer(x) || is.logical(x)))
             return(.Call(C_dm_notnan, x))

@@ -321,9 +321,9 @@ dmglm_cf <- function(k) {
                        mu = function(m) m, "mu^2" = function(m) m * m, "mu^3" = function(m) m^3)
     validmu <- switch(k$validmu, none = NULL,
                       unit = function(m) dmc_is_finite(m) & m > 0 & m < 1,
-                      unit_nf = function(m) dmc_notnan(m) & m > 0 & m < 1,
+                      unit_nf = function(m) dmc_present(m) & m > 0 & m < 1,
                       positive = function(m) dmc_is_finite(m) & m > 0,
-                      positive_nf = function(m) dmc_notnan(m) & m > 0)
+                      positive_nf = function(m) dmc_present(m) & m > 0)
     xlogx <- function(a, b) dmc_ifelse(a != 0, a * log(a / b), 0)
     dev <- switch(k$dev,
         gaussian = function(y, m, w) w * ((y - m)^2),
@@ -422,8 +422,8 @@ dmglm_mem_cols <- function(Y, w, off, k) {
 ## "negative weights not allowed" for negative weights.
 dmglm_check_design <- function(cols) {
     y <- if (cols$cbind) cols$a + cols$b else cols$y0
-    s <- dmc_sums(dmc_count(dmc_notnan(y), negate = TRUE),
-                  if (cols$weighted && !cols$cbind) dmc_count(dmc_notnan(cols$w), negate = TRUE) else 0,
+    s <- dmc_sums(dmc_count(dmc_present(y), negate = TRUE),
+                  if (cols$weighted && !cols$cbind) dmc_count(dmc_present(cols$w), negate = TRUE) else 0,
                   if (!is.null(cols$off)) dmc_count(dmc_is_finite(cols$off), negate = TRUE) else 0)
     bad <- is.na(s) | s > 0
     if (bad[1L]) stop("NA/NaN/Inf in 'y'", call. = FALSE)
@@ -852,7 +852,7 @@ dmglm_output <- function(x, cols, na_act, pad = stats::napredict) {
 }
 
 ## A linear predictor (with its NAs kept as NA by the inverse link).
-dmglm_response <- function(cf, eta) dmc_ifelse(dmc_notnan(eta), cf$linkinv(eta), eta)
+dmglm_response <- function(cf, eta) dmc_ifelse(dmc_present(eta), cf$linkinv(eta), eta)
 
 #' @export
 fitted.design_glm <- function(object, ...) {

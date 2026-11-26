@@ -31,7 +31,7 @@
 ##       over the rows of design x: in memory a data frame (from `data`, or
 ##       from the model frame the design keeps); remotely one SQL column per
 ##       variable.
-##   dmc_not_na(key)
+##   dmc_complete(key)
 ##       a logical column: no part of the key is missing.
 ##   dmc_dense_codes(key)
 ##       list(codes = dmc_codes(), levels = data frame): the levels of the
@@ -167,10 +167,11 @@ dmc_key <- function(x, vars, data = NULL) {
 }
 
 ## TRUE where no key column is missing: NA or NaN (as complete.cases() in
-## memory). Remotely, a key column of the data (s."v") that is not double
+## memory; was dmc_not_na, renamed in tapx: dmc_present() is the same rule
+## for one numeric column). Remotely, a key column of the data (s."v") that is not double
 ## cannot be NaN: only IS NOT NULL (isnan() would not take text); a double
 ## column, or any other expression, is NaN-checked as well.
-dmc_not_na <- function(key) {
+dmc_complete <- function(key) {
     if (!dm_is_column(key)) return(if (anyNA(key)) stats::complete.cases(key) else rep(TRUE, NROW(key)))
     frame <- unclass(key)$frame
     sql <- unclass(key)$sql

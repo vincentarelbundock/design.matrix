@@ -61,8 +61,8 @@ dmc_irls_working <- function(W, eta, mu, y, off, v, me, table = FALSE) {
                      table = isTRUE(table))
     w2 <- dmc_col(wz, 1L)
     z <- dmc_col(wz, 2L)
-    s <- dmc_sums(dmc_count((W > 0) & !dmc_notnan(v)), dmc_count((W > 0) & v == 0),
-                  dmc_count((W > 0) & !dmc_notnan(me)), dmc_count(good),
+    s <- dmc_sums(dmc_count((W > 0) & !dmc_present(v)), dmc_count((W > 0) & v == 0),
+                  dmc_count((W > 0) & !dmc_present(me)), dmc_count(good),
                   dmc_count(dmc_is_finite(w2) & dmc_is_finite(z), negate = TRUE))
     list(w2, z, s)
 }

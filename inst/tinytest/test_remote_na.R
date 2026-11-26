@@ -13,10 +13,10 @@ dmp_collect <- design.matrix:::dmp_collect
 dmc_cbind <- design.matrix:::dmc_cbind
 dmc_ifelse <- design.matrix:::dmc_ifelse
 dmc_count <- design.matrix:::dmc_count
-dmc_notnan <- design.matrix:::dmc_notnan
+dmc_present <- design.matrix:::dmc_present
 dmc_is_finite <- design.matrix:::dmc_is_finite
 dmc_key <- design.matrix:::dmc_key
-dmc_not_na <- design.matrix:::dmc_not_na
+dmc_complete <- design.matrix:::dmc_complete
 dm_colsum <- design.matrix:::dm_colsum
 
 vals <- c(NA, NaN, Inf, -Inf, 0, 1, -2.5)
@@ -52,7 +52,7 @@ check(is.nan(a), is.nan(d$a), "is.nan")
 check(is.finite(a), is.finite(d$a), "is.finite")
 check(is.infinite(a), is.infinite(d$a), "is.infinite")
 check(!is.na(a), !is.na(d$a), "!is.na")
-check(dmc_notnan(a), !is.na(d$a), "dmc_notnan")
+check(dmc_present(a), !is.na(d$a), "dmc_present")
 check(dmc_is_finite(a), is.finite(d$a), "dmc_is_finite")
 ## on a multi-column column, one column each
 ab <- dmc_cbind(a, b)
@@ -167,7 +167,7 @@ expect_equal(dm_colsum(dmc_count(is.na(a))), sum(is.na(d$a)))
 for (vars in list("a", c("a", "b"), "f", c("f", "i"), c("f", "b"))) {
     kl <- dmc_key(NULL, vars, data = d)
     kr <- dmc_key(R, vars)
-    check(dmc_not_na(kr), dmc_not_na(kl), paste("not_na", paste(vars, collapse = ",")))
+    check(dmc_complete(kr), dmc_complete(kl), paste("not_na", paste(vars, collapse = ",")))
 }
 
 test_con_done(con)
