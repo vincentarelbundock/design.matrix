@@ -284,16 +284,19 @@ dm_crossprod <- function(x, w) {
     }
     J <- as_jac(x)
     W <- w
-    if (!is.matrix(W)) W <- matrix(W, ncol = 1L)
-    storage.mode(W) <- "double"
+    if (!is.double(W)) storage.mode(W) <- "double"
     st <- dm_struct_single(J)
     out <- NULL
     if (!is.null(st) && dm_in_range(W, 1e-100, 1e100)) {
-        ## the scale moves to the weights (safe within the bounds)
+        ## the scale moves to the weights (safe within the bounds); a
+        ## vector becomes a one-column matrix after the product with the
+        ## scale (one copy, not two)
         sW <- if (is.null(st$scale)) W else st$scale * W
+        if (!is.matrix(sW)) dim(sW) <- c(n, 1L)
         out <- dm_struct_xty(st$design, sW)
         if (!dm_all_finite(out)) out <- NULL
     }
+    if (is.null(out) && !is.matrix(W)) dim(W) <- c(n, 1L)
     out <- if (!is.null(out)) {
         out
     } else if (jac_kernel_ok(J)) {
@@ -568,8 +571,10 @@ dm_gram <- function(x, y = NULL) {
             y <- NULL
         }
     }
-    if (is.null(y) && (is.null(w) || all(is.finite(w))) && dm_struct_ok(x)) {
-        out <- dm_struct_gram(x, if (is.null(w)) NULL else rep_len(as.double(w), n))
+    if (is.null(y) && (is.null(w) || dm_all_finite(w)) && dm_struct_ok(x)) {
+        out <- dm_struct_gram(x, if (is.null(w)) NULL
+                                 else if (is.double(w) && length(w) == n && is.null(attributes(w))) w
+                                 else rep_len(as.double(w), n))
         if (dm_all_finite(out)) {
             dimnames(out) <- nm
             return(out)

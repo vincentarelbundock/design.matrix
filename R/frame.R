@@ -241,6 +241,13 @@ dm_same_factor <- function(xi, xl) {
     .Call(C_dm_codes_ok, xi, length(xl))
 }
 
+## For drop.unused.levels: length(unique(x[!is.na(x)])) < length(levels(x))
+## for a factor x, from its codes in C when they are all NA or in range.
+dm_unused_levels <- function(x) {
+    r <- if (typeof(x) == "integer") .Call(C_dm_levels_unused, x, length(levels(x))) else NA
+    if (is.na(r)) length(unique(x[!is.na(x)])) < length(levels(x)) else r
+}
+
 ## Building the patched function -------------------------------------------
 
 ## The statements this code was written for. A version of R where one of
@@ -379,7 +386,8 @@ dm_make_frame <- function(f = get("model.frame.default", envir = asNamespace("st
     if (xlev && length(idx) == 1L) {
         c1 <- new.env(parent = emptyenv())
         c2 <- new.env(parent = emptyenv())
-        c1$n <- c2$n <- 0L
+        c3 <- new.env(parent = emptyenv())
+        c1$n <- c2$n <- c3$n <- 0L
         ## `.dm_same` is a variable of the patched function's frame; R's
         ## code runs unchanged whenever it is FALSE
         s <- dm_replace(stmts[[idx]], quote(xi <- xi[, drop = TRUE]),
@@ -388,7 +396,11 @@ dm_make_frame <- function(f = get("model.frame.default", envir = asNamespace("st
         s <- dm_replace(s, quote(data[[nm]] <- factor(xi, levels = xl, exclude = NULL)),
                         quote(data[[nm]] <- if (.dm_same) xi else factor(xi, levels = xl, exclude = NULL)),
                         c2)
-        if (c1$n == 1L && c2$n == 1L) {
+        ## (drop.unused.levels: whether a level is unused, from one pass
+        ## over the codes in C instead of unique() of a copy)
+        s <- dm_replace(s, quote(length(unique(x[!is.na(x)])) < length(levels(x))),
+                        quote(.dm_unused_levels(x)), c3)
+        if (c1$n == 1L && c2$n == 1L && c3$n == 1L) {
             stmts[[idx]] <- s
             has_xlev <- TRUE
         }
@@ -401,6 +413,7 @@ dm_make_frame <- function(f = get("model.frame.default", envir = asNamespace("st
     env <- new.env(parent = environment(f))
     env$.dm_na <- dm_na
     env$.dm_same_factor <- dm_same_factor
+    env$.dm_unused_levels <- dm_unused_levels
     environment(fun) <- env
     list(fun = compiler::cmpfun(fun), original = f, na = has_na, xlev = has_xlev)
 }
