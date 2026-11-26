@@ -721,38 +721,78 @@ D <- design_matrix(y ~ x + f, d)
 all.equal(coef(fit), qr.coef(qr(D), d$y))
 ```
 
-The benchmark below compares `qr()` on a design matrix with eight other implementations of least squares, on 200,000 rows and designs from 3 to 401 columns. It runs outside this README, because a fair comparison needs a fresh R process for each method and design: `bench/ols/run.sh` runs it and writes `bench/ols/results.csv`, which the tables below read. The protocol:
+The benchmarks below compare `qr()` on a design matrix with eight other implementations of least squares, on 200,000 rows. Each figure is one family of designs whose structure stays fixed while the number of columns grows, so that each line shows how a method scales with width. The benchmark runs outside this README, because a fair comparison needs a fresh R process for each method and design: `bench/ols/run.sh` runs it and writes `bench/ols/results.csv`, which the figures and tables read. The protocol:
 
 * Two comparisons. *From formula*: every method starts from the formula and the data, as a user would. *Prebuilt*: the model matrix (or design matrix) is built before timing, and only the fit is timed.
-* One thread everywhere, including the BLAS. The model frame is built exactly as `model.matrix()` builds it (option `design.matrix.skip_na_copy = FALSE`).
-* Memory is the peak resident memory of the first call in a fresh process, so it counts every allocation, including those made in C++.
-* Every result is compared with the coefficients of `lm()`, including which columns are aliased (`NA`). A method that gives a different answer is marked "no".
+* One thread everywhere, including the BLAS, and every process on the same fast core of the CPU (this machine has fast and compact cores). The model frame is built exactly as `model.matrix()` builds it (option `design.matrix.skip_na_copy = FALSE`).
+* Time is the median of 3 to 11 calls (up to about 3 seconds per method), each after a garbage collection, so that every call starts from the same state. Memory is the peak resident memory of the first call in a fresh process, so it counts every allocation, including those made in C++.
+* Every result is compared with the coefficients of `lm()`, including which columns are aliased (`NA`). Every method matches `lm()` on the designs in the figures; the rank-deficient design below is where they differ.
+
+```{r}
+#| include: false
+source("bench/ols/plot.R")
+ols_figures()
+```
+
+When most columns come from factors, the design matrix computes `X'X` from sums within factor levels and never touches the zeros of the dummy columns. Its time and memory barely grow with the number of levels:
+
+![Least squares with a numeric predictor and a factor.](bench/ols/fig-factor.png)
+
+![Least squares with a numeric predictor interacting with a factor.](bench/ols/fig-interaction.png)
+
+Numeric predictors have no such structure: `X'X` needs the same arithmetic however it is organized, and the design matrix hands it to the BLAS, block by block, without forming `X`. Times are close to those of the fastest dense methods, with less memory from formula:
+
+![Least squares with numeric predictors.](bench/ols/fig-numeric.png)
+
+![Least squares with numeric predictors and a factor.](bench/ols/fig-mixed.png)
+
+With 49 columns of which 6 are aliased (`y ~ x + f1 * f3`, where some combinations of levels never occur), the methods that match `lm()` are the design matrix, `speedglm`, `lm()` and `.lm.fit()`; the others stop with an error, drop the aliased columns, or return a different solution.
 
 ```{r}
 #| echo: false
 #| results: asis
 res <- read.csv("bench/ols/results.csv")
-res$p <- as.integer(res$p)
-show <- function(mode) {
-    x <- res[res$mode == mode, ]
+ali <- res[res$family == "aliased", ]
+ali$cell <- ifelse(is.na(ali$ms), paste("error:", ali$note),
+                   sprintf("%s ms, %s MB%s", format(ali$ms, big.mark = ",", trim = TRUE), round(ali$MB),
+                           ifelse(ali$matches_lm %in% TRUE, "", " (different answer)")))
+tab <- reshape(ali[, c("method", "mode", "cell")], idvar = "method", timevar = "mode", direction = "wide")
+names(tab) <- c("Method", "From formula", "Prebuilt")
+tab$Prebuilt[is.na(tab$Prebuilt)] <- "(no matrix interface)"
+tab <- tab[order(tab$Method != "design.matrix qr()", tab$Method), ]
+print(knitr::kable(tab, row.names = FALSE))
+```
+
+In short:
+
+* When most columns come from factors (the first two figures), `qr()` on a design matrix is 1.3 to 6 times faster than the fastest method that matches `lm()` from 20 columns on, from formula, and 1.7 to 2.6 times faster prebuilt, with flat memory.
+* With numeric predictors (the next two figures), from 20 columns on, it is never more than about 20% slower than the fastest method, and up to 1.7 times faster when a factor is added; from formula, it uses less memory.
+* On the smallest designs (5 or 6 columns), a fixed overhead of about 2 ms makes it slower than a dense Cholesky decomposition (`RcppEigen`), and `fixest` uses less memory from formula.
+* With aliased columns, it is 5 times faster than the fastest other method that matches `lm()` from formula (`speedglm`), and 2.6 times faster prebuilt.
+
+<details>
+<summary>All results</summary>
+
+```{r}
+#| echo: false
+#| results: asis
+res <- read.csv("bench/ols/results.csv")
+res <- res[res$family != "aliased", ]
+for (fam in names(ols_families)) for (md in c("formula", "prebuilt")) {
+    x <- res[res$family == fam & res$mode == md, ]
     x$cell <- ifelse(is.na(x$ms), "error",
-                     sprintf("%s ms, %s MB%s", format(x$ms, big.mark = ",", trim = TRUE),
-                             x$MB, ifelse(x$matches_lm %in% TRUE, "", " (no)")))
+                     sprintf("%s ms, %s MB%s", format(x$ms, big.mark = ",", trim = TRUE), round(x$MB),
+                             ifelse(x$matches_lm %in% TRUE, "", " (different answer)")))
     tab <- reshape(x[, c("method", "p", "cell")], idvar = "method", timevar = "p", direction = "wide")
     names(tab) <- c("Method", paste(sort(unique(x$p)), "columns"))
     tab <- tab[order(tab$Method != "design.matrix qr()", tab$Method), ]
+    cat(sprintf("\n**%s, %s**\n\n", ols_families[[fam]], if (md == "formula") "from formula" else "prebuilt"))
     print(knitr::kable(tab, row.names = FALSE))
 }
-cat("**From formula**\n\n")
-show("formula")
-cat("\n**Prebuilt**\n\n")
-show("prebuilt")
 cat("\n", paste(readLines("bench/ols/machine.txt"), collapse = "; "), "\n")
 ```
 
-From 21 columns up, `qr()` on a design matrix is the fastest method that matches `lm()` in both comparisons. From formula, with 21 to 119 columns, it is 2 to 11 times faster than the next method, and it uses the least memory, because it never builds the dense matrix. Prebuilt, it is 2 to 7 times faster, though some methods need even less memory, since they read the prebuilt matrix in place. At 401 columns, 21 of them aliased, the only other method that matches `lm()` is `.lm.fit()` (the same routine that `lm()` uses), 45 times slower from formula and 140 times slower prebuilt; the faster alternatives stop with an error, drop the aliased columns, or return a different solution.
-
-With 3 to 5 numeric columns, the dense matrix is small and the gains disappear. From formula, `qr()` ties for fastest with 3 columns and is about 4 ms slower than `RcppEigen`'s Cholesky decomposition with 5; `fixest`, which does not build a model frame, uses the least memory. Prebuilt, `RcppEigen` is faster by 1 to 3 ms.
+</details>
 
 ### Predictions
 
