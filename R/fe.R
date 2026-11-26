@@ -29,9 +29,12 @@
 ## weighted graph Laplacian (its rows sum to zero before the reference
 ## levels are removed), so the reduced system is a symmetric M-matrix. It is
 ## solved densely when small (at most 3000 levels), otherwise by conjugate
-## gradients preconditioned by the incomplete Cholesky factor IC(0) of R
-## (two FE) or of its block diagonal (three or more: block Jacobi over the
-## FEs, each block a Laplacian). Sparse Cholesky (CHOLMOD) is used only on
+## gradients preconditioned by the diagonal of R (Jacobi, default) or, on
+## request, by the incomplete Cholesky factor IC(0) of R (two FE) or of its
+## block diagonal (three or more: block Jacobi over the FEs, each block a
+## Laplacian). On worker x firm graphs (1e5 firms), IC(0) halves the
+## iterations (29 to 14) but each costs about twice as much, so Jacobi is
+## as fast or faster. Sparse Cholesky (CHOLMOD) is used only on
 ## request (option design.matrix.fe_solver = "chol"): on worker x firm
 ## graphs its fill is close to dense.
 ##
@@ -121,13 +124,13 @@ dm_fe_augment <- function(main, vars) {
 }
 
 ## Options of the solver: design.matrix.fe_solver ("auto", "dense", "chol"
-## or "pcg"), design.matrix.fe_precond ("ichol" or "jacobi") and
+## or "pcg"), design.matrix.fe_precond ("jacobi", default, or "ichol") and
 ## design.matrix.fe_refine (steps of iterative refinement, default 1).
 dm_fe_opts <- function() {
     solver <- getOption("design.matrix.fe_solver", "auto")
     if (!checkmate::test_choice(solver, c("auto", "dense", "chol", "pcg")))
         stop("Option `design.matrix.fe_solver` must be \"auto\", \"dense\", \"chol\" or \"pcg\".", call. = FALSE)
-    precond <- getOption("design.matrix.fe_precond", "ichol")
+    precond <- getOption("design.matrix.fe_precond", "jacobi")
     if (!checkmate::test_choice(precond, c("ichol", "jacobi")))
         stop("Option `design.matrix.fe_precond` must be \"ichol\" or \"jacobi\".", call. = FALSE)
     refine <- getOption("design.matrix.fe_refine", 1L)
@@ -225,7 +228,7 @@ dm_fe_components <- function(Nt) {
 ## Conjugate gradients for R Z = B, preconditioned by IC(0) of the block
 ## diagonal of R (blocks: the FEs; the whole of R with two FE), or by its
 ## diagonal when IC(0) breaks down or with precond = "jacobi".
-dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "ichol", cache = new.env()) {
+dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.env()) {
     if (is.null(cache$A)) {
         cache$A <- methods::as(methods::as(R, "generalMatrix"), "CsparseMatrix")
         cache$precond <- precond
@@ -812,7 +815,8 @@ dm_center_T <- function(X0, X1, shift) {
 #'   a SQL translation.
 #' * Options: `design.matrix.fe_solver` (`"auto"`, `"dense"`, `"pcg"`, or
 #'   `"chol"` for a sparse Cholesky factor), `design.matrix.fe_precond`
-#'   (`"ichol"` or `"jacobi"`), `design.matrix.fe_refine` (refinement steps,
+#'   (`"jacobi"`, default, or `"ichol"` for an incomplete Cholesky factor),
+#'   `design.matrix.fe_refine` (refinement steps,
 #'   default 1) and `design.matrix.fe_center` (default `TRUE`).
 #' @param vcov With fixed effects: `"iid"` or a one-sided formula naming a
 #'   cluster variable (`~firm`). Without fixed effects only `"iid"`.

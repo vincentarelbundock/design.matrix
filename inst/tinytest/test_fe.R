@@ -129,14 +129,24 @@ for (s in c("dense", "chol", "pcg")) {
     expect_equal(plain(vcov(a)), plain(vcov(b, cluster = ~b)), tolerance = TOL, info = s)
     options(op)
 }
-op <- options(design.matrix.fe_solver = "pcg", design.matrix.fe_precond = "jacobi")
+# conjugate gradients: Jacobi by default, IC(0) (block IC(0) for 3+ FE) on
+# request; the same fit either way
+op <- options(design.matrix.fe_solver = "pcg")
 a <- design_lm(y ~ x1 + x2 | a + b, d)
 expect_equal(a$fe_info$precond, "jacobi")
 expect_equal(unname(coef(a)), unname(coef(fx_fit(y ~ x1 + x2 | a + b, d))), tolerance = TOL)
 options(op)
-op <- options(design.matrix.fe_solver = "pcg")
-a <- design_lm(y ~ x1 + x2 | a + b, d)
-expect_equal(a$fe_info$precond, "ichol")
+for (f in list(y ~ x1 + x2 | a + b, y ~ x1 + x2 | a + b + c)) {
+    op <- options(design.matrix.fe_solver = "pcg", design.matrix.fe_precond = "ichol")
+    a <- design_lm(f, d, vcov = ~a)
+    options(op)
+    expect_equal(a$fe_info$precond, "ichol")
+    b <- fx_fit(f, d)
+    expect_equal(unname(coef(a)), unname(coef(b)), tolerance = TOL)
+    expect_equal(plain(vcov(a)), plain(vcov(b, cluster = ~a)), tolerance = TOL)
+}
+op <- options(design.matrix.fe_precond = "amg")
+expect_error(design_lm(y ~ x1 | a + b, d), "fe_precond")
 options(op)
 
 # Unbalanced: a few large levels, many small ones ----------------------------
