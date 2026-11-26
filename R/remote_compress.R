@@ -162,7 +162,7 @@ dm_sql_patterns <- function(D, z, w = NULL, keys = NULL, mode = dm_compress_mode
                      paste(c(paste0("b.", kq), "SUM(b.__dm_w * pow(b.__dm_y1 - p.__dm_m, 2)) AS __dm_within"),
                            collapse = ", "),
                      on, if (length(kc)) " GROUP BY ALL" else "")
-        wr <- dm_query(D, q)
+        wr <- dm_sql_decode(D, dm_query(D, q))
         ## in the order of the cells
         v <- as.double(wr$`__dm_within`)[if (length(kc)) dm_match_rows(res[kc], wr[kc]) else 1L]
         v[is.na(v)] <- 0
