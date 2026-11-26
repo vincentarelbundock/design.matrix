@@ -2,6 +2,8 @@
 % Please edit documentation in R/remote.R, R/remote_fit.R
 \name{design_remote}
 \alias{design_remote}
+\alias{coerce,dm_remote,CsparseMatrix-method}
+\alias{coerce,dm_remote,dgCMatrix-method}
 \alias{colSums,dm_remote-method}
 \alias{colMeans,dm_remote-method}
 \alias{rowSums,dm_remote-method}
@@ -35,13 +37,6 @@ its columns (\code{DBI::SQL()}).}
 \item{sql}{For \code{summary()}: also print the generated SQL (the query that
 computes the model variables and, for the SQL engine, the aggregates of
 \code{crossprod()}; for the chunked engine, the query that reads a batch).}
-
-\item{table, sql}{The remote rows: a table name, or a \code{SELECT} query.}
-
-\item{engine}{\code{"auto"}, \code{"sql"} or \code{"chunked"}.}
-
-\item{chunk_size}{Rows per batch for the chunked engine (default
-\code{getOption("design.matrix.chunk_size", 250000)}).}
 }
 \description{
 With a DBI connection to DuckDB, or the path of Parquet files, as \code{data},
@@ -179,6 +174,15 @@ agree with the in-memory computation up to floating point rounding. With
 infinite values in the data, the placement of \code{NaN} and \code{Inf} in sums can
 differ from the dense computation, and \code{NaN} may appear where the dense
 result has \code{NA}.
+}
+
+\section{Arguments of remote data}{
+
+With remote data, \code{\link[=design_matrix]{design_matrix()}}, \code{\link[=design_lm]{design_lm()}}, \code{\link[=design_glm]{design_glm()}} and
+\code{predict()} take, through \code{...}: \code{table} or \code{sql} (the remote rows: a
+table name, or a \code{SELECT} query; not with Parquet paths), \code{engine}
+(\code{"auto"}, \code{"sql"} or \code{"chunked"}) and \code{chunk_size} (rows per batch for
+the chunked engine, default \code{getOption("design.matrix.chunk_size", 250000)}).
 }
 
 \section{Linear models}{

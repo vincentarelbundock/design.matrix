@@ -142,10 +142,14 @@
 #' differ from the dense computation, and `NaN` may appear where the dense
 #' result has `NA`.
 #'
-#' @param table,sql The remote rows: a table name, or a `SELECT` query.
-#' @param engine `"auto"`, `"sql"` or `"chunked"`.
-#' @param chunk_size Rows per batch for the chunked engine (default
-#'   `getOption("design.matrix.chunk_size", 250000)`).
+#' @section Arguments of remote data:
+#' With remote data, [design_matrix()], [design_lm()], [design_glm()] and
+#' `predict()` take, through `...`: `table` or `sql` (the remote rows: a
+#' table name, or a `SELECT` query; not with Parquet paths), `engine`
+#' (`"auto"`, `"sql"` or `"chunked"`) and `chunk_size` (rows per batch for
+#' the chunked engine, default `getOption("design.matrix.chunk_size",
+#' 250000)`).
+#' @aliases coerce,dm_remote,CsparseMatrix-method coerce,dm_remote,dgCMatrix-method
 #' @examples
 #' if (requireNamespace("duckdb", quietly = TRUE)) {
 #'     con <- DBI::dbConnect(duckdb::duckdb())
