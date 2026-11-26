@@ -114,13 +114,13 @@
 #' * `summary(D)`: the engine and, for each term, whether SQL computes it.
 #'
 #' @section Compression:
-#' When the rows have few distinct *design patterns* (the same values in
-#' every input column of the design, as with factors and discrete numeric
-#' variables), `crossprod()`, `colSums()`, `colMeans()` and [design_lm()]
-#' run one `GROUP BY` over those columns, which returns
-#' each pattern with its number of rows and the sums of the weights and
-#' responses, and compute the result from the design of the patterns, in
-#' memory (a variable evaluated in R is evaluated on the patterns). The
+#' When the rows have few distinct *design patterns* (the same factor levels
+#' and the same values of the numeric variables of the design, as with
+#' factors and discrete numeric variables), `crossprod()`, `colSums()`,
+#' `colMeans()`, [design_lm()] and [design_glm()] compress: the one scan of
+#' the rows also groups by the numeric variables, which returns each pattern
+#' with its number of rows and the sums of the weights and responses, and
+#' the result is computed from the design of the patterns, in memory. The
 #' option `design.matrix.remote_compress`
 #' controls it. With `"auto"` (default), a design with a continuous
 #' numeric column (a `DOUBLE` column with many distinct values in a sample
@@ -131,8 +131,7 @@
 #' of rows and at most `getOption("design.matrix.remote_compress_max", 1e6)`.
 #' `TRUE` always compresses (unless every row is distinct); `FALSE` never
 #' does. Designs that keep rows with missing values
-#' (`na.action = na.pass`) are not compressed, nor are products with a
-#' column or row scale that has missing values.
+#' (`na.action = na.pass`) are not compressed.
 #'
 #' Remote designs keep only the *Algebra* promise of the package: results
 #' agree with the in-memory computation up to floating point rounding. With
@@ -741,7 +740,8 @@ dm_remote_extend <- function(D, exprs, what = "expression") {
 ## `ys`, `w`, `wy`: SQL expressions over the source (dm_remote_cols(),
 ## dm_sql_moments()).
 dm_remote_moments <- function(x, ys = character(), w = NULL, gram = TRUE, wy = NULL, compress = TRUE) {
-    out <- if (compress && is.null(wy)) dm_compressed_moments(x, ys, w, gram)
+    cap <- if (compress && is.null(wy)) dm_compress_cap(x)
+    out <- if (!is.null(cap)) dm_sql_moments(x, ys, w, gram, cap = cap)
     if (is.null(out)) out <- dm_sql_moments(x, ys, w, gram, wy = wy)
     out
 }
@@ -917,7 +917,8 @@ dm_remote_colsums <- function(x, group, reorder, mean) {
     }
     w <- x$scale
     x <- dm_remote_unscaled(x)
-    out <- dm_compressed_colsums(x, g, w, mean)
+    cap <- dm_compress_cap(x, group = g)
+    out <- if (!is.null(cap)) dm_sql_colsums(x, g, w, mean, cap = cap)
     if (is.null(out)) dm_sql_colsums(x, g, w, mean) else out
 }
 
