@@ -215,8 +215,10 @@ translation are evaluated in R, in batches).
 (\code{"auto"}, default: incomplete Cholesky when the reduced system is
 formed, Jacobi otherwise; \code{"jacobi"}; or \code{"ichol"}, which always forms
 it), \code{design.matrix.fe_form_max} (when to form the reduced system:
-default 25, \code{0} never, \code{Inf} always), \code{design.matrix.fe_refine} (refinement steps,
-default 1) and \code{design.matrix.fe_center} (default \code{TRUE}).
+default 25, \code{0} never, \code{Inf} always), \code{design.matrix.fe_refine} (refinement steps:
+\code{"auto"}, default, one step, after which the residuals are computed
+again unless the step's correction is negligible; or a count of steps,
+each followed by the residuals) and \code{design.matrix.fe_center} (default \code{TRUE}).
 }
 }
 

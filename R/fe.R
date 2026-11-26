@@ -161,7 +161,10 @@ dm_fe_augment <- function(main, vars) {
 ## reduced system is formed, Jacobi when it is applied matrix-free;
 ## "jacobi"; or "ichol", which forms it), design.matrix.fe_form_max (when
 ## to form the reduced system, see dm_fe_system()) and
-## design.matrix.fe_refine (steps of iterative refinement, default 1).
+## design.matrix.fe_refine (steps of iterative refinement: "auto", default,
+## one step whose final pass over the residuals is skipped when the step's
+## correction is negligible, see dm_fe_core(); or a count, steps always
+## followed by that pass).
 dm_fe_opts <- function() {
     solver <- getOption("design.matrix.fe_solver", "auto")
     if (!checkmate::test_choice(solver, c("auto", "dense", "chol", "pcg")))
@@ -172,11 +175,13 @@ dm_fe_opts <- function() {
     form_max <- getOption("design.matrix.fe_form_max", 25)
     if (!checkmate::test_number(form_max, lower = 0))
         stop("Option `design.matrix.fe_form_max` must be a non-negative number.", call. = FALSE)
-    refine <- getOption("design.matrix.fe_refine", 1L)
-    if (!checkmate::test_count(refine))
-        stop("Option `design.matrix.fe_refine` must be a count.", call. = FALSE)
+    refine <- getOption("design.matrix.fe_refine", "auto")
+    auto <- identical(refine, "auto")
+    if (!auto && !checkmate::test_count(refine))
+        stop("Option `design.matrix.fe_refine` must be \"auto\" or a count.", call. = FALSE)
     list(solver = solver, precond = precond, pcg_tol = 1e-12, pcg_maxit = 10000L,
-         refine = as.integer(refine), form_max = form_max, dense_max = 1000L)
+         refine = if (auto) 1L else as.integer(refine), refine_auto = auto, form_max = form_max,
+         dense_max = 1000L)
 }
 
 ## ---------------------------------------------------------------------------
@@ -674,6 +679,7 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_f
              rss = dm_colsum(we * e), we = we)
     }
     r <- resid(b0, fe)
+    refine_info <- "done"
     ## iterative refinement: the normal equations X'M e = 0 from residuals
     ## computed row by row correct the rounding of the one-pass aggregates
     for (it in seq_len(opts$refine)) {
@@ -690,6 +696,11 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_f
         }
         for (k in seq_len(nfe))
             fe[[k]] <- fe[[k]] + Ae[[k]][, 1L] - drop(ab$A[[k]][, kp, drop = FALSE] %*% delta)
+        if (it == opts$refine && isTRUE(opts$refine_auto) && dm_fe_negligible(r, Ae, delta, pc$R)) {
+            ## (the residuals of the last pass stand for those after the step)
+            refine_info <- "skipped"
+            break
+        }
         r <- if (resid_final || it < opts$refine) resid(b0, fe) else list(rss = NA_real_, we = NULL)
     }
     ## degrees of freedom (fixest: K.fixef = "nonnested", K.exact = FALSE)
@@ -711,10 +722,30 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_f
     out <- list(b = b, kp = kp, xcols = xcols, bread = bread, rss = r$rss, fe = fe,
                 rank = rank, G = G, fe_dof = fe_dof, fe_dof_exact = fe_dof_exact,
                 df.residual = n - rank - fe_dof, nobs = n, tss = tss,
-                tss_within = max(Mfull[px + 1L, px + 1L], 0), info = ab$info,
+                tss_within = max(Mfull[px + 1L, px + 1L], 0), info = c(ab$info, list(resid_pass = refine_info)),
                 we = r$we, A = lapply(ab$A, function(Ak) Ak[, seq_len(px), drop = FALSE]))
     if (cluster) out <- dm_fe_cluster(x, out, codes, cols$cl)
     out
+}
+
+## Is the correction of a refinement step negligible for the residuals,
+## so that the pass over the rows that recomputes them can be skipped?
+## The step moves the residuals e by d = F Ae + X delta (Ae = K^- F'We,
+## delta the change of b, `Rc` the Cholesky factor of X'MX on the kept
+## columns), which lowers sum(w e^2) by Be'Ae + delta' X'MX delta to first
+## order (Be = F'We: e is orthogonal to the columns of [X F] at the
+## solution) and changes e by about the square root of that, relative to
+## the residuals. Negligible: that decrease is below 1e-20 times the
+## residual sum of squares (residuals, hence sigma and the clustered
+## scores, accurate to 1e-10, the rss to 1e-20); otherwise (ill
+## conditioned or near collinear systems, uncentered variables, which the
+## step corrects) the residuals are recomputed. The coefficients and FE
+## values are those of the step either way.
+dm_fe_negligible <- function(r, Ae, delta, Rc) {
+    if (!is.finite(r$rss) || !(r$rss > 0)) return(FALSE)
+    q <- sum(vapply(seq_along(Ae), function(k) sum(r$Be[[k]] * Ae[[k]][, 1L]), 0))
+    if (length(delta)) q <- q + sum(drop(Rc %*% delta)^2)
+    is.finite(q) && abs(q) <= 1e-20 * r$rss
 }
 
 ## Clustered covariance of a fit of dm_fe_core() (`est`, which keeps the
@@ -883,8 +914,10 @@ dm_fe_center <- function(mt, mf, contrasts) {
 #'   (`"auto"`, default: incomplete Cholesky when the reduced system is
 #'   formed, Jacobi otherwise; `"jacobi"`; or `"ichol"`, which always forms
 #'   it), `design.matrix.fe_form_max` (when to form the reduced system:
-#'   default 25, `0` never, `Inf` always), `design.matrix.fe_refine` (refinement steps,
-#'   default 1) and `design.matrix.fe_center` (default `TRUE`).
+#'   default 25, `0` never, `Inf` always), `design.matrix.fe_refine` (refinement steps:
+#'   `"auto"`, default, one step, after which the residuals are computed
+#'   again unless the step's correction is negligible; or a count of steps,
+#'   each followed by the residuals) and `design.matrix.fe_center` (default `TRUE`).
 #' @param vcov With fixed effects: `"iid"` or a one-sided formula naming a
 #'   cluster variable (`~firm`). Without fixed effects only `"iid"`.
 #' @param fixef.rm With fixed effects: `"singleton"` (drop singletons

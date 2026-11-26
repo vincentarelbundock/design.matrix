@@ -154,3 +154,35 @@ if (.Call(ns$C_dm_omp_max_threads) > 1L) {
 }
 options(op)
 design_threads(old_threads)
+
+# ---- the refinement step (design.matrix.fe_refine = "auto", default): its
+# correction is always applied; the residuals are computed again only when
+# the correction is not negligible. Coefficients and FE values are those of
+# one step with the residuals recomputed (fe_refine = 1); the residual sum
+# of squares and the covariance agree to rounding.
+fd$big4 <- fd$x2 + 1e4
+fd$big6 <- fd$x2 + 1e6
+cases <- list(simple = list(y ~ x1 + x2 | id + firm + t, "iid", TRUE),
+              cluster = list(y ~ x1 + x2 | id + firm + t, ~firm, TRUE),
+              uncentered4 = list(y ~ x1 + big4 | id + firm + t, "iid", FALSE),
+              uncentered6 = list(y ~ x1 + big6 | id + firm + t, ~firm, FALSE))
+pass <- character()
+for (nm in names(cases)) {
+    cs <- cases[[nm]]
+    op <- options(design.matrix.fe_center = cs[[3]])
+    a <- design_lm(cs[[1]], fd, vcov = cs[[2]])
+    options(design.matrix.fe_refine = 1L)
+    b <- design_lm(cs[[1]], fd, vcov = cs[[2]])
+    options(op)
+    options(design.matrix.fe_refine = NULL)
+    expect_identical(coef(a), coef(b), info = nm)
+    expect_identical(a$fixef, b$fixef, info = nm)
+    expect_equal(a$rss, b$rss, tolerance = 1e-14, info = nm)
+    expect_equal(vcov(a), vcov(b), tolerance = 1e-10, info = nm)
+    expect_identical(b$fe_info$resid_pass, "done", info = nm)
+    pass[nm] <- a$fe_info$resid_pass
+}
+# skipped on the well-conditioned panels, not where the step corrects
+# much (variables far from zero, not centered: the one-pass aggregates
+# lose digits, b moves by 1e-6 and 4e-3 standard errors)
+expect_identical(unname(pass), c("skipped", "skipped", "done", "done"))
