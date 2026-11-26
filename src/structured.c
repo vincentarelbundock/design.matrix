@@ -22,16 +22,21 @@
  *  Copyright (C) 2026 Vincent Arel-Bundock.  GPL (>= 2).
  */
 
+#define USE_FC_LEN_T
 #include <string.h>
 #include <float.h>
 #include <math.h>
 #include <limits.h>
 #include <R.h>
 #include <Rinternals.h>
+#include <R_ext/BLAS.h>
 #include "dm.h"
+#ifndef FCONE
+# define FCONE
+#endif
 
 #define SMAXC 32
-#define BLOCK 1024
+#define BLOCK 2048
 #define SAFE (DBL_MAX / 16)
 
 typedef struct {
@@ -123,7 +128,10 @@ static void build_sctx(sctx *S, SEXP setup, SEXP vars)
     }
 }
 
-/* Combined levels and numeric products of rows i0 .. i0 + nb - 1. */
+/* Combined levels and numeric products of rows i0 .. i0 + nb - 1:
+   N[u * BLOCK + r] (column-major, leading dimension BLOCK), so that every
+   loop over rows reads contiguous memory and the dense terms' columns can
+   be passed to BLAS in place. */
 static void term_block(const sterm *T, R_xlen_t n, R_xlen_t i0, int nb, int *F, double *N)
 {
     for (int r = 0; r < nb; r++) F[r] = 0;
@@ -132,25 +140,27 @@ static void term_block(const sterm *T, R_xlen_t n, R_xlen_t i0, int nb, int *F, 
 	int a = T->adj[c] - 1, ls = T->lstride[c];
 	for (int r = 0; r < nb; r++) F[r] += (code[r] + a) * ls;
     }
-    int ns = T->ns;
     if (T->nn == 0) {
 	for (int r = 0; r < nb; r++) N[r] = 1.0;
 	return;
     }
-    /* N[r * ns + u], built component by component, first fastest */
+    /* built component by component, first fastest; columns of later
+       components are written from the highest down, so that each product
+       reads columns not yet overwritten */
     int len = 1;
     for (int c = 0; c < T->nn; c++) {
 	int nc = T->nnc[c];
 	const double *v = T->num[c] + i0;
 	if (c == 0) {
 	    for (int j = 0; j < nc; j++)
-		for (int r = 0; r < nb; r++) N[r * ns + j] = v[r + (R_xlen_t) j * n];
+		memcpy(N + (size_t) j * BLOCK, v + (R_xlen_t) j * n, sizeof(double) * nb);
 	} else {
-	    for (int r = 0; r < nb; r++) {
-		double *Nr = N + (size_t) r * ns;
-		for (int j = nc - 1; j >= 0; j--) {
-		    double x = v[r + (R_xlen_t) j * n];
-		    for (int u = 0; u < len; u++) Nr[u + len * j] = Nr[u] * x;
+	    for (int j = nc - 1; j >= 0; j--) {
+		const double *x = v + (R_xlen_t) j * n;
+		for (int u = len - 1; u >= 0; u--) {
+		    double *dst = N + (size_t) (u + len * j) * BLOCK;
+		    const double *src = N + (size_t) u * BLOCK;
+		    for (int r = 0; r < nb; r++) dst[r] = src[r] * x[r];
 		}
 	    }
 	}
@@ -163,12 +173,37 @@ typedef struct {
     double *N;
 } tblock;
 
-static tblock *alloc_blocks(const sctx *S)
+/* The dense part of a design: the terms with a single level (the
+   intercept and products of numeric variables). Their block columns are
+   stored side by side in one BLOCK x q buffer (leading dimension BLOCK),
+   so that their products with each other, with Y and with B use BLAS
+   (cache blocking and vector instructions) in place. */
+typedef struct {
+    int q;          /* columns of the dense part */
+    int *off;       /* per term: first column in the buffer, or -1 */
+    double *buf;
+} dpart;
+
+static dpart dense_part(const sctx *S)
+{
+    dpart P;
+    P.off = (int *) R_alloc(S->nt > 0 ? S->nt : 1, sizeof(int));
+    P.q = 0;
+    for (int t = 0; t < S->nt; t++) {
+	if (S->t[t].L == 1) { P.off[t] = P.q; P.q += S->t[t].ns; }
+	else P.off[t] = -1;
+    }
+    P.buf = P.q > 0 ? (double *) R_alloc((size_t) BLOCK * P.q, sizeof(double)) : NULL;
+    return P;
+}
+
+static tblock *alloc_blocks(const sctx *S, const dpart *P)
 {
     tblock *B = (tblock *) R_alloc(S->nt > 0 ? S->nt : 1, sizeof(tblock));
     for (int t = 0; t < S->nt; t++) {
 	B[t].F = (int *) R_alloc(BLOCK, sizeof(int));
-	B[t].N = (double *) R_alloc((size_t) BLOCK * S->t[t].ns, sizeof(double));
+	B[t].N = P->off[t] >= 0 ? P->buf + (size_t) BLOCK * P->off[t]
+	    : (double *) R_alloc((size_t) BLOCK * S->t[t].ns, sizeof(double));
     }
     return B;
 }
@@ -306,11 +341,32 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
 	    acc[q] = REAL(m);
 	    memset(acc[q], 0, sizeof(double) * (size_t) len);
 	}
-    tblock *Bk = alloc_blocks(&S);
+    dpart P = dense_part(&S);
+    tblock *Bk = alloc_blocks(&S, &P);
     double *wN = (double *) R_alloc(BLOCK, sizeof(double));
+    int qd = P.q;
+    double *Gd = NULL, *WB = NULL;
+    if (qd > 0) {
+	Gd = (double *) R_alloc((size_t) qd * qd, sizeof(double));
+	memset(Gd, 0, sizeof(double) * (size_t) qd * qd);
+	if (w) WB = (double *) R_alloc((size_t) BLOCK * qd, sizeof(double));
+    }
     for (R_xlen_t i0 = 0; i0 < S.n; i0 += BLOCK) {
 	int nb = (int) (S.n - i0 < BLOCK ? S.n - i0 : BLOCK);
 	for (int t = 0; t < S.nt; t++) term_block(&S.t[t], S.n, i0, nb, Bk[t].F, Bk[t].N);
+	if (qd > 0) {
+	    double one = 1.0;
+	    int ld = BLOCK;
+	    if (w) {
+		for (int c = 0; c < qd; c++)
+		    for (int r = 0; r < nb; r++)
+			WB[r + (size_t) BLOCK * c] = w[i0 + r] * P.buf[r + (size_t) BLOCK * c];
+		F77_CALL(dgemm)("T", "N", &qd, &qd, &nb, &one, P.buf, &ld, WB, &ld,
+				&one, Gd, &qd FCONE FCONE);
+	    } else {
+		F77_CALL(dsyrk)("U", "T", &qd, &nb, &one, P.buf, &ld, &one, Gd, &qd FCONE FCONE);
+	    }
+	}
 	q = 0;
 	for (int t = 0; t < S.nt; t++) {
 	    const sterm *B = &S.t[t];
@@ -318,6 +374,7 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
 	    const double *Nt = Bk[t].N;
 	    int nt = B->ns;
 	    for (int s = 0; s <= t; s++, q++) {
+		if (P.off[s] >= 0 && P.off[t] >= 0) continue; /* dense part: BLAS */
 		const sterm *A = &S.t[s];
 		const int *Fs = Bk[s].F;
 		const double *Ns = Bk[s].N;
@@ -325,16 +382,16 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
 		double *M = acc[q];
 		if (s == t) {
 		    for (int u = 0; u < ns; u++) {
-			if (w) for (int r = 0; r < nb; r++) wN[r] = w[i0 + r] * Ns[r * ns + u];
-			else for (int r = 0; r < nb; r++) wN[r] = Ns[r * ns + u];
+			if (w) for (int r = 0; r < nb; r++) wN[r] = w[i0 + r] * Ns[(size_t) u * BLOCK + r];
+			else for (int r = 0; r < nb; r++) wN[r] = Ns[(size_t) u * BLOCK + r];
 			for (int v = 0; v < ns; v++) {
 			    double *Muv = M + (R_xlen_t) Ls * (u + ns * v);
 			    if (Ls == 1) {
 				double sum = 0.0;
-				for (int r = 0; r < nb; r++) sum += wN[r] * Ns[r * ns + v];
+				for (int r = 0; r < nb; r++) sum += wN[r] * Ns[(size_t) v * BLOCK + r];
 				Muv[0] += sum;
 			    } else {
-				for (int r = 0; r < nb; r++) Muv[Fs[r]] += wN[r] * Ns[r * ns + v];
+				for (int r = 0; r < nb; r++) Muv[Fs[r]] += wN[r] * Ns[(size_t) v * BLOCK + r];
 			    }
 			}
 		    }
@@ -342,27 +399,43 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
 		    int Lt = B->L;
 		    R_xlen_t LL = (R_xlen_t) Ls * Lt;
 		    for (int u = 0; u < ns; u++) {
-			if (w) for (int r = 0; r < nb; r++) wN[r] = w[i0 + r] * Ns[r * ns + u];
-			else for (int r = 0; r < nb; r++) wN[r] = Ns[r * ns + u];
+			if (w) for (int r = 0; r < nb; r++) wN[r] = w[i0 + r] * Ns[(size_t) u * BLOCK + r];
+			else for (int r = 0; r < nb; r++) wN[r] = Ns[(size_t) u * BLOCK + r];
 			for (int v = 0; v < nt; v++) {
 			    double *Muv = M + LL * (u + ns * v);
 			    if (LL == 1) {
 				double sum = 0.0;
-				for (int r = 0; r < nb; r++) sum += wN[r] * Nt[r * nt + v];
+				for (int r = 0; r < nb; r++) sum += wN[r] * Nt[(size_t) v * BLOCK + r];
 				Muv[0] += sum;
 			    } else if (Lt == 1) {
-				for (int r = 0; r < nb; r++) Muv[Fs[r]] += wN[r] * Nt[r * nt + v];
+				for (int r = 0; r < nb; r++) Muv[Fs[r]] += wN[r] * Nt[(size_t) v * BLOCK + r];
 			    } else if (Ls == 1) {
-				for (int r = 0; r < nb; r++) Muv[Ft[r]] += wN[r] * Nt[r * nt + v];
+				for (int r = 0; r < nb; r++) Muv[Ft[r]] += wN[r] * Nt[(size_t) v * BLOCK + r];
 			    } else {
 				for (int r = 0; r < nb; r++)
-				    Muv[Fs[r] + (R_xlen_t) Ls * Ft[r]] += wN[r] * Nt[r * nt + v];
+				    Muv[Fs[r] + (R_xlen_t) Ls * Ft[r]] += wN[r] * Nt[(size_t) v * BLOCK + r];
 			    }
 			}
 		    }
 		}
 	    }
 	}
+    }
+    /* moments of pairs of dense terms, from the BLAS accumulation (upper
+       triangle without weights) */
+    if (qd > 0) {
+	q = 0;
+	for (int t = 0; t < S.nt; t++)
+	    for (int s = 0; s <= t; s++, q++) {
+		if (P.off[s] < 0 || P.off[t] < 0) continue;
+		int ns = S.t[s].ns, nt = S.t[t].ns;
+		for (int u = 0; u < ns; u++)
+		    for (int v = 0; v < nt; v++) {
+			int i = P.off[s] + u, j = P.off[t] + v;
+			double g = (w || i <= j) ? Gd[i + (size_t) qd * j] : Gd[j + (size_t) qd * i];
+			acc[q][u + ns * v] = g;
+		    }
+	    }
     }
     UNPROTECT(2);
     return out;
@@ -384,12 +457,26 @@ SEXP dm_struct_xty(SEXP setup, SEXP vars, SEXP Y_)
 	acc[t] = REAL(SET_VECTOR_ELT(out, t, allocVector(REALSXP, len)));
 	memset(acc[t], 0, sizeof(double) * (size_t) len);
     }
-    tblock *Bk = alloc_blocks(&S);
+    dpart P = dense_part(&S);
+    tblock *Bk = alloc_blocks(&S, &P);
+    int qd = P.q;
+    double *Rd = NULL;
+    if (qd > 0) {
+	Rd = (double *) R_alloc((size_t) qd * K, sizeof(double));
+	memset(Rd, 0, sizeof(double) * (size_t) qd * K);
+    }
     for (R_xlen_t i0 = 0; i0 < S.n; i0 += BLOCK) {
 	int nb = (int) (S.n - i0 < BLOCK ? S.n - i0 : BLOCK);
+	for (int t = 0; t < S.nt; t++) term_block(&S.t[t], S.n, i0, nb, Bk[t].F, Bk[t].N);
+	if (qd > 0) {
+	    double one = 1.0;
+	    int ldy = (int) S.n, ld = BLOCK;
+	    F77_CALL(dgemm)("T", "N", &qd, &K, &nb, &one, P.buf, &ld, Y + i0, &ldy,
+			    &one, Rd, &qd FCONE FCONE);
+	}
 	for (int t = 0; t < S.nt; t++) {
+	    if (P.off[t] >= 0) continue; /* dense part: BLAS */
 	    const sterm *T = &S.t[t];
-	    term_block(T, S.n, i0, nb, Bk[t].F, Bk[t].N);
 	    const int *F = Bk[t].F;
 	    const double *N = Bk[t].N;
 	    int ns = T->ns, L = T->L;
@@ -399,13 +486,22 @@ SEXP dm_struct_xty(SEXP setup, SEXP vars, SEXP Y_)
 		    double *M = acc[t] + (R_xlen_t) L * (u + (R_xlen_t) ns * k);
 		    if (L == 1) {
 			double sum = 0.0;
-			for (int r = 0; r < nb; r++) sum += N[r * ns + u] * y[r];
+			for (int r = 0; r < nb; r++) sum += N[(size_t) u * BLOCK + r] * y[r];
 			M[0] += sum;
 		    } else {
-			for (int r = 0; r < nb; r++) M[F[r]] += N[r * ns + u] * y[r];
+			for (int r = 0; r < nb; r++) M[F[r]] += N[(size_t) u * BLOCK + r] * y[r];
 		    }
 		}
 	    }
+	}
+    }
+    if (qd > 0) {
+	for (int t = 0; t < S.nt; t++) {
+	    if (P.off[t] < 0) continue;
+	    int ns = S.t[t].ns;
+	    for (int k = 0; k < K; k++)
+		for (int u = 0; u < ns; u++)
+		    acc[t][u + (R_xlen_t) ns * k] = Rd[P.off[t] + u + (size_t) qd * k];
 	}
     }
     UNPROTECT(2);
@@ -423,12 +519,34 @@ SEXP dm_struct_mult(SEXP setup, SEXP vars, SEXP P, SEXP K_)
     SEXP out = PROTECT(allocMatrix(REALSXP, S.n, K));
     double *o = REAL(out);
     memset(o, 0, sizeof(double) * (size_t) S.n * K);
-    tblock *Bk = alloc_blocks(&S);
+    dpart DP = dense_part(&S);
+    tblock *Bk = alloc_blocks(&S, &DP);
+    int qd = DP.q;
+    double *Pd = NULL;
+    if (qd > 0) {
+	/* the dense terms' tables, stacked: qd x K */
+	Pd = (double *) R_alloc((size_t) qd * K, sizeof(double));
+	for (int t = 0; t < S.nt; t++) {
+	    if (DP.off[t] < 0) continue;
+	    int ns = S.t[t].ns;
+	    const double *p = REAL(VECTOR_ELT(P, t));
+	    for (int k = 0; k < K; k++)
+		for (int u = 0; u < ns; u++)
+		    Pd[DP.off[t] + u + (size_t) qd * k] = p[u + (R_xlen_t) ns * k];
+	}
+    }
     for (R_xlen_t i0 = 0; i0 < S.n; i0 += BLOCK) {
 	int nb = (int) (S.n - i0 < BLOCK ? S.n - i0 : BLOCK);
+	for (int t = 0; t < S.nt; t++) term_block(&S.t[t], S.n, i0, nb, Bk[t].F, Bk[t].N);
+	if (qd > 0) {
+	    double one = 1.0;
+	    int ldo = (int) S.n, ld = BLOCK;
+	    F77_CALL(dgemm)("N", "N", &nb, &K, &qd, &one, DP.buf, &ld, Pd, &qd,
+			    &one, o + i0, &ldo FCONE FCONE);
+	}
 	for (int t = 0; t < S.nt; t++) {
+	    if (DP.off[t] >= 0) continue; /* dense part: BLAS */
 	    const sterm *T = &S.t[t];
-	    term_block(T, S.n, i0, nb, Bk[t].F, Bk[t].N);
 	    const int *F = Bk[t].F;
 	    const double *N = Bk[t].N;
 	    const double *p = REAL(VECTOR_ELT(P, t));
@@ -439,9 +557,9 @@ SEXP dm_struct_mult(SEXP setup, SEXP vars, SEXP P, SEXP K_)
 		    const double *pu = p + (R_xlen_t) L * (u + (R_xlen_t) ns * k);
 		    if (L == 1) {
 			double c = pu[0];
-			for (int r = 0; r < nb; r++) ok[r] += N[r * ns + u] * c;
+			for (int r = 0; r < nb; r++) ok[r] += N[(size_t) u * BLOCK + r] * c;
 		    } else {
-			for (int r = 0; r < nb; r++) ok[r] += N[r * ns + u] * pu[F[r]];
+			for (int r = 0; r < nb; r++) ok[r] += N[(size_t) u * BLOCK + r] * pu[F[r]];
 		    }
 		}
 	    }
