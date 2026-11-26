@@ -243,7 +243,7 @@ expect_true(same(p$.fitted, drop(M %*% beta)))
 ps <- as.data.frame((DBI::SQL("2 * x1") * D / "w") %*% beta)
 ps <- ps[order(ps$id), ]
 expect_true(same(ps$.fitted, drop(M %*% beta) * 2 * ps$x1 / ps$w))
-expect_equal(unname(as.matrix(-D)), -unname(as.matrix(M)))
+expect_equal(unname(as.matrix(-D)), unname(as.matrix(-M)))
 
 ## several prediction columns; a fitted model scored with `newdata`
 fit <- lm(y ~ x1 + f1 + splines::ns(z, 2), dd)

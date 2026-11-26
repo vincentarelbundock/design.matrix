@@ -151,25 +151,25 @@
 ##                                use a column or s * D
 ##   colSums/colMeans(s * D,      vectors / G x p matrices          done
 ##     group = col)
-##   rowSums/rowMeans(D)          table (column .rowsum / .rowmean) to do
-##   quadratic_diagonal(D, V)     table (column .quad), dmp_quad    to do
-##   qr(D)                        Cholesky of X'X with lm()'s rule, to do (WIP)
-##                                suspects judged from products
-##   qr.coef, qr.R, solve         numbers (as in memory)            to do
-##   qr.fitted, qr.resid, qr.qy,  tables (row-wise results)         to do
-##     qr.Q
-##   qr.qty                       as in memory (p values)           to do
-##   as(D, "CsparseMatrix")       collected, same guard as          to do
-##                                as.matrix
-##   D[i, ]                       i a logical remote column or a    to do
-##                                DBI::SQL() predicate: a remote
-##                                design over those rows; numeric
-##                                indices refused (no row order)
+##   rowSums/rowMeans(D)          table (column .rowsum / .rowmean) done
+##   quadratic_diagonal(D, V)     table (column .quad)              done
+##   qr(D)                        dmqr_chol on X'X with lm()'s      done
+##                                rule, suspects from products
+##   qr.coef, qr.qty, qr.R, solve numbers (as in memory)            done
+##   qr.fitted, qr.resid, qr.qy,  tables (.fitted, .resid, .qy,     done
+##     qr.Q                       .Q1...)
+##   as(D, "CsparseMatrix")       collected, same guard as          done
+##                                as.matrix (option to raise)
+##   D[i, ]                       i a logical remote column or a    done
+##                                DBI::SQL() predicate; numeric or
+##                                logical vectors refused
 ##   s * D, D / s, -D             row scaling (number, column       done
 ##                                name, SQL(), column)
-##   D1 + D2, D1 - D2             proposal: refused (combinations of to decide
-##                                two remote designs)
-##   finite_rows(D) (internal)    a logical column                  to do
+##   D1 + D2, D1 - D2             refused (operator decision)       done (error)
+##   finite_rows(D) (internal)    a logical column                  done
+##
+## Tests: test_primitives.R (the layer), test_parity_ops.R (every operation
+## above on the same data, in memory and remote: SQL, chunked, Parquet).
 
 ## ---- remote columns ----
 

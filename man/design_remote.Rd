@@ -4,12 +4,18 @@
 \alias{design_remote}
 \alias{colSums,dm_remote-method}
 \alias{colMeans,dm_remote-method}
+\alias{rowSums,dm_remote-method}
+\alias{rowMeans,dm_remote-method}
 \alias{summary.dm_remote}
 \title{Out-of-core designs on DuckDB}
 \usage{
 \S4method{colSums}{dm_remote}(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE)
 
 \S4method{colMeans}{dm_remote}(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE)
+
+\S4method{rowSums}{dm_remote}(x, na.rm = FALSE, dims = 1, ...)
+
+\S4method{rowMeans}{dm_remote}(x, na.rm = FALSE, dims = 1, ...)
 
 \method{summary}{dm_remote}(object, sql = FALSE, ...)
 }
