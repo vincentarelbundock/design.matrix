@@ -105,6 +105,60 @@ expect_identical(.Call(cl("dm_binomial_ll"), tr, yb, W, p),
                                                  r_ifelse(kk > 0, kk * log(p), 0) +
                                                  r_ifelse(mm - kk > 0, (mm - kk) * log(1 - p), 0)))
 
+## The fused primitives (primitives_fused.R): the kernels on plain doubles,
+## the generic code on other vectors (here named ones) and on remote
+## columns, with the same values
+nmd <- function(x) stats::setNames(x, seq_along(x))
+for (wt in list(NULL, w)) for (icpt in c(TRUE, FALSE)) {
+    s <- ns$dmc_ls_sums(zz, xb, wt, icpt)
+    expect_identical(s, .Call(cl("dm_ls_sums"), zz, xb, wt, icpt))
+    expect_identical(s, ns$dmc_ls_sums(nmd(zz), xb, wt, icpt))
+}
+expect_error(ns$dmc_ls_sums(zz, xb[-1L], NULL, TRUE), "one value per row")
+k <- ns$dmc_irls_working(W, eta, mu, y, 0, v2, me2)
+expect_identical(k, .Call(cl("dm_glm_working"), W, eta, mu, y, 0, v2, me2))
+kg <- ns$dmc_irls_working(nmd(W), eta, mu, y, 0, v2, me2)
+expect_identical(unname(kg[[1L]]), k[[1L]])
+expect_identical(unname(kg[[2L]]), k[[2L]])
+expect_identical(kg[[3L]], k[[3L]])
+expect_error(ns$dmc_irls_working(W, eta, mu[-1L], y, 0, v, me), "lengths")
+expect_identical(ns$dmc_poisson_dev(y, mu, W), .Call(cl("dm_poisson_dev"), y, mu, W))
+expect_identical(unname(ns$dmc_poisson_dev(nmd(y), mu, W)), ns$dmc_poisson_dev(y, mu, W))
+expect_identical(ns$dmc_binomial_ll(tr, yb, W, p), .Call(cl("dm_binomial_ll"), tr, yb, W, p))
+expect_identical(unname(ns$dmc_binomial_ll(nmd(tr), yb, W, p)), ns$dmc_binomial_ll(tr, yb, W, p))
+expect_identical(ns$dmc_freeze_all(y, mu), list(y, mu))
+if (requireNamespace("duckdb", quietly = TRUE)) {
+    ## (no missing values: SQL NULL is NA, not NaN, and the kernels count NaN)
+    Wp <- abs(W)
+    Wp[!is.finite(Wp)] <- 0
+    wp <- w
+    wp[is.na(wp)] <- 0
+    df <- data.frame(zz = zz, xb = xb, w = wp, pw = Wp, eta = eta, mu = mu, y = y, v = v, me = me,
+                     tr = tr, yb = yb, p = p)
+    con <- DBI::dbConnect(duckdb::duckdb())
+    DBI::dbWriteTable(con, "fz", df)
+    R <- design_matrix(~ 1, con, table = "fz")
+    rc <- function(nm) ns$dmp_column(R, sprintf('CAST(s."%s" AS DOUBLE)', nm))
+    for (wt in list(NULL, "w")) for (icpt in c(TRUE, FALSE)) {
+        expect_equal(ns$dmc_ls_sums(rc("zz"), rc("xb"), if (!is.null(wt)) rc(wt), icpt),
+                     ns$dmc_ls_sums(zz, xb, if (!is.null(wt)) wp, icpt), tolerance = 1e-10)
+    }
+    km <- ns$dmc_irls_working(Wp, eta, mu, y, 0, v, me)
+    for (tb in c(FALSE, TRUE)) {
+        kr <- ns$dmc_irls_working(rc("pw"), rc("eta"), rc("mu"), rc("y"), 0, rc("v"), rc("me"), table = tb)
+        expect_equal(ns$dmp_collect(kr[[1L]]), km[[1L]], tolerance = 1e-12)
+        expect_equal(ns$dmp_collect(kr[[2L]]), km[[2L]], tolerance = 1e-12)
+        expect_identical(kr[[3L]], km[[3L]])
+    }
+    expect_equal(ns$dmp_collect(ns$dmc_poisson_dev(rc("y"), rc("mu"), rc("pw"))),
+                 ns$dmc_poisson_dev(y, mu, Wp), tolerance = 1e-12)
+    expect_equal(ns$dmp_collect(ns$dmc_binomial_ll(rc("tr"), rc("yb"), rc("pw"), rc("p"))),
+                 ns$dmc_binomial_ll(tr, yb, Wp, p), tolerance = 1e-12)
+    fa <- ns$dmc_freeze_all(rc("y") + 1, rc("mu"))
+    expect_equal(ns$dmp_collect(fa[[1L]] * fa[[2L]]), (y + 1) * mu, tolerance = 1e-14)
+    DBI::dbDisconnect(con, shutdown = TRUE)
+}
+
 ## unused factor levels, and ALTREP variables copied once
 f <- factor(c("a", "b", NA), levels = c("a", "b", "c"))
 expect_true(.Call(cl("dm_levels_unused"), f, 3L))

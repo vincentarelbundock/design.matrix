@@ -359,9 +359,6 @@ dmfit_ls <- function(x, z, w, tol, intercept, sums = TRUE) {
     ## (the weighted least squares steps of a GLM need only the solution)
     if (!sums) return(list(coefficients = coef, rank = q$rank, pivot = q$pivot, R = q$R, tol = tol))
     f <- dmp_mult(x, beta, along = list(z, w))
-    ## (in memory, the residual sums in one pass in C)
-    mem <- is.double(f) && is.null(dim(f)) && is.double(z) && is.null(dim(z)) && length(z) == length(f) &&
-        (is.null(w) || (is.double(w) && is.null(dim(w)) && length(w) == length(z)))
     ww <- if (is.null(w)) 1 else w
     ## w v^2, 0 for rows with zero weight (whose squares can overflow)
     wsq <- function(v) if (is.null(w)) v^2 else dmc_ifelse(w > 0, w * v^2, 0)
@@ -371,8 +368,8 @@ dmfit_ls <- function(x, z, w, tol, intercept, sums = TRUE) {
         ## from the moments of the solution, when the factorization has them
         ## (a remote design: no pass over its products): rss = z'Wz - b.h,
         ## mss = b'Gb - (sum w f)^2 / sum w, with the intercept column of G
-        ## giving sum w f; the passes below when cancellation would cost
-        ## accuracy
+        ## giving sum w f; dmc_ls_sums() below when cancellation would
+        ## cost accuracy
         zz <- dmc_sums(wsq(z), ww + 0 * z)
         bh <- sum(mo$b * mo$h)
         rss_m <- zz[1L] - bh
@@ -383,20 +380,11 @@ dmfit_ls <- function(x, z, w, tol, intercept, sums = TRUE) {
             mss <- max(mss, 0)
         }
     }
-    if (is.null(rss) && mem) {
-        s <- .Call(C_dm_ls_sums, z, f, w, isTRUE(intercept))
+    if (is.null(rss)) {
+        ## (primitives_fused.R: in memory one pass in C)
+        s <- dmc_ls_sums(z, f, w, intercept)
         rss <- s[1L]
         mss <- s[2L]
-    }
-    if (is.null(rss)) {
-        r <- z - f
-        rss <- dm_colsum(wsq(r))
-        mss <- if (intercept) {
-            fbar <- if (is.null(w)) dmc_mean(f) else dm_colsum(w * f) / dm_colsum(w)
-            dm_colsum(ww * (f - fbar)^2)
-        } else {
-            dm_colsum(ww * f^2)
-        }
     }
     R <- q$R
     list(coefficients = coef, rank = q$rank, pivot = q$pivot, R = R, tol = tol,
