@@ -454,28 +454,14 @@ dm_with_columns <- function(x, col, nm) {
 }
 
 dmp_crossprod <- function(x, y = NULL) {
-    if (!inherits(x, "dm_remote")) return(if (is.null(y)) crossprod(x) else crossprod(x, y))
     if (is.null(y)) return(crossprod(x))
-    if (inherits(y, "dm_remote")) {
-        if (dm_frame_depth(y) > dm_frame_depth(x)) x <- dm_rebase(x, y)
-        if (dm_frame_depth(x) > dm_frame_depth(y)) y <- dm_rebase(y, x)
-        return(crossprod(x, y))
-    }
-    if (!dm_is_rcols(y)) stop("`y` must be a design or a column.", call. = FALSE)
-    nm <- paste0("__dm_y", seq_along(y))
-    out <- crossprod(dm_with_columns(x, y, nm), nm)
-    dimnames(out) <- list(colnames(x), NULL)
-    out
+    if (inherits(x, "dm_remote") && !inherits(y, "dm_remote") && !dm_is_rcols(y))
+        stop("`y` must be a design or a column.", call. = FALSE)
+    crossprod(x, y)
 }
 
 dmp_colsums <- function(x, group = NULL) {
-    if (!inherits(x, "dm_remote")) {
-        if (is.null(group)) return(colSums(x))
-        return(colSums(x, group = group))
-    }
-    if (is.null(group)) return(colSums(x))
-    if (!dm_is_rcols(group)) stop("`group` of a remote design must be a remote column.", call. = FALSE)
-    colSums(dm_with_columns(x, group, "__dm_g"), group = "__dm_g")
+    if (is.null(group)) colSums(x) else colSums(x, group = group)
 }
 
 ## SQL GROUP BY over the frame of columns: list(groups (a data frame of the
@@ -577,15 +563,11 @@ dmp_quad <- function(x, V, along = list()) {
 dmp_patterns <- function(x, z, w = NULL, compress = "auto", keys = NULL) {
     if (inherits(x, "dm_remote")) {
         mode <- if (isTRUE(compress)) TRUE else if (isFALSE(compress)) FALSE else dm_compress_mode()
-        if (!is.null(keys)) {
-            ## extra key columns: added to the source, and to the GROUP BY
-            nm <- paste0("__dm_key", seq_along(keys))
-            x <- dm_with_columns(x, keys, nm)
-            z <- dm_rcols(x, unclass(z)$sql)
-            if (!is.null(w)) w <- dm_rcols(x, unclass(w)$sql)
-        }
+        ## (extra key columns: more keys of the GROUP BY)
+        nm <- if (!is.null(keys)) paste0("__dm_g", seq_along(keys))
+        if (!is.null(keys)) x <- dm_remote_cols(x, keys, "keys")$D
         pt <- dm_remote_patterns(x, unclass(z)$sql, if (!is.null(w)) unclass(w)$sql, within = TRUE,
-                                 mode = mode, group = if (!is.null(keys)) nm)
+                                 mode = mode, group = if (!is.null(keys)) unclass(keys)$sql)
         if (is.null(pt)) return(NULL)
         pd <- dm_pattern_design(x, pt$P[dm_compress_keys(x)])
         k <- pd$keep

@@ -46,16 +46,16 @@ dm_compress_mode <- function(mode = getOption("design.matrix.remote_compress", "
 ##     1e6).
 ## The real GROUP BY gives up as well when it returns more patterns than
 ## that (dm_remote_patterns()).
-dm_compress_worth <- function(D, keys, n) {
+dm_compress_worth <- function(D, keys, n, group = character()) {
     ## (asked once for the rows of a design and a set of keys)
-    ck <- paste(c(D$filter, keys), collapse = "\r")
+    ck <- paste(c(D$filter, keys, group), collapse = "\r")
     if (!is.null(D$cache$worth[[ck]])) return(D$cache$worth[[ck]])
-    D$cache$worth[[ck]] <- out <- dm_compress_worth_ask(D, keys, n)
+    D$cache$worth[[ck]] <- out <- dm_compress_worth_ask(D, keys, n, group)
     out
 }
 
-dm_compress_worth_ask <- function(D, keys, n) {
-    qk <- paste0("s.", dm_qi(D, keys))
+dm_compress_worth_ask <- function(D, keys, n, group = character()) {
+    qk <- c(if (length(keys)) paste0("s.", dm_qi(D, keys)), sprintf("(%s)", group))
     dbl <- keys[D$src$types[keys] == "double"]
     if (length(dbl)) {
         from <- if (!is.null(D$src$base_table)) sprintf("%s AS s", D$src$base_table)
@@ -90,26 +90,30 @@ dm_compress_keys <- function(D) {
 }
 
 ## Per-pattern sums, or NULL when compression does not pay.
-##   ys: SQL expressions over `s` for the responses (named), or empty;
+##   ys: SQL expressions over `s` for the responses, or empty;
 ##   w: SQL expression over `s` for the weights, or NULL;
-##   group: a column added to the patterns;
+##   group: SQL expressions over `s` added to the keys of the patterns
+##     (returned as the columns __dm_g1, ... of P);
 ##   within: also the weighted sum of squares of the first response around
 ##     its pattern means (for design_lm()).
 ## Returns list(P = input values, n, sw, sy (patterns x K), yy (K x K),
-## within, rows).
+## within, rows, missing = the number of missing responses and weights).
 dm_remote_patterns <- function(D, ys = character(), w = NULL, group = NULL, within = FALSE,
                                mode = dm_compress_mode()) {
     if (isFALSE(mode) || !identical(D$na, "omit")) return(NULL)
-    keys <- unique(c(dm_compress_keys(D), group))
+    cols <- dm_compress_keys(D)
+    gn <- if (length(group)) paste0("__dm_g", seq_along(group)) else character()
+    keys <- c(cols, gn)
     n <- D$cache$n %||% D$n
     if (n < 2) return(NULL)
     src <- sprintf("(%s) AS s", D$src$select)
-    qk <- if (length(keys)) paste0("s.", dm_qi(D, keys)) else character()
-    if (identical(mode, "auto") && length(keys) && !dm_compress_worth(D, keys, n)) return(NULL)
+    qk <- c(if (length(cols)) paste0("s.", dm_qi(D, cols)), if (length(group)) sprintf("(%s) AS %s", group, gn))
+    if (identical(mode, "auto") && length(keys) && !dm_compress_worth(D, cols, n, group)) return(NULL)
     cap <- if (isTRUE(mode)) n else min(n / 2, getOption("design.matrix.remote_compress_max", 1e6))
     K <- length(ys)
     wf <- if (is.null(w)) "" else " * __dm_w"
-    inner <- c(qk, if (K) sprintf("%s AS __dm_y%d", ys, seq_len(K)), if (!is.null(w)) sprintf("%s AS __dm_w", w))
+    inner <- c(qk, if (K) sprintf("CAST((%s) AS DOUBLE) AS __dm_y%d", ys, seq_len(K)),
+               if (!is.null(w)) sprintf("CAST((%s) AS DOUBLE) AS __dm_w", w))
     if (!length(inner)) inner <- "1 AS __dm_one"
     idx <- expand.grid(k = seq_len(K), l = seq_len(K))
     idx <- idx[idx$k <= idx$l, , drop = FALSE]
@@ -117,6 +121,8 @@ dm_remote_patterns <- function(D, ys = character(), w = NULL, group = NULL, with
               sprintf("SUM(CAST(1 AS DOUBLE)%s) AS __dm_sw", wf),
               if (K) sprintf("SUM(__dm_y%d%s) AS __dm_sy%d", seq_len(K), wf, seq_len(K)),
               if (K) sprintf("SUM(__dm_y%d * __dm_y%d%s) AS __dm_yy%d_%d", idx$k, idx$l, wf, idx$k, idx$l),
+              sprintf("SUM(%s) AS __dm_na%d", dm_sql_missing(c(if (K) paste0("__dm_y", seq_len(K)), if (!is.null(w)) "__dm_w")),
+                      seq_len(K + !is.null(w)))[seq_len(K + !is.null(w))],
               if (within && is.null(w)) "var_pop(__dm_y1) * COUNT(*) AS __dm_within",
               if (!is.null(w)) c("SUM(CASE WHEN __dm_w <> 0 THEN 1 ELSE 0 END) AS __dm_nz",
                                  "SUM(CASE WHEN __dm_w <> 0 THEN ln(__dm_w) ELSE 0 END) AS __dm_slw"))
@@ -134,6 +140,7 @@ dm_remote_patterns <- function(D, ys = character(), w = NULL, group = NULL, with
         x
     }
     out <- list(P = res[keys], n = num(res$`__dm_n`), sw = num(res$`__dm_sw`), rows = sum(num(res$`__dm_n`)))
+    out$missing <- sum(vapply(seq_len(K + !is.null(w)), function(j) sum(num(res[[paste0("__dm_na", j)]])), 0))
     out$nz <- if (is.null(w)) out$n else num(res$`__dm_nz`)
     out$slw <- if (is.null(w)) numeric(G) else num(res$`__dm_slw`)
     out$sy <- matrix(vapply(seq_len(K), function(k) num(res[[paste0("__dm_sy", k)]]), numeric(G)), G, K)
@@ -203,42 +210,24 @@ dm_pattern_design <- function(D, P) {
     list(design = design, keep = keep)
 }
 
-## Responses as SQL over `s`: the response of the formula, or columns.
-dm_compress_ys <- function(D, yy) {
-    if (is.null(yy)) return(character())
-    if (yy$response) {
-        v <- D$vars[[yy$cols]]
-        if (v$kind != "numeric") return(NULL)
-        return(v$sql)
-    }
-    dm_numeric_cols(D, yy$cols)
-    sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, yy$cols))
-}
-
-## Moments from patterns (dm_remote_moments()), or NULL.
-dm_compressed_moments <- function(D, yy, weights, gram = TRUE) {
+## Moments from patterns (dm_remote_moments()), or NULL. `ys`, `w`: SQL
+## expressions over the source `s`.
+dm_compressed_moments <- function(D, ys = character(), w = NULL, gram = TRUE) {
     if (isFALSE(dm_compress_mode()) || !identical(D$na, "omit")) return(NULL)
-    ys <- dm_compress_ys(D, yy)
-    if (is.null(ys)) return(NULL)
-    ## missing responses or weights give NA (the uncompressed path does that)
-    na_cols <- c(if (!is.null(yy) && !yy$response) yy$cols, weights)
-    if (length(na_cols) && any(dm_sql_count_na(D, na_cols) > 0)) return(NULL)
-    w <- if (is.null(weights)) NULL else sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, weights))
     pt <- dm_remote_patterns(D, ys, w)
-    if (is.null(pt)) return(NULL)
+    ## missing responses or weights give NA (the uncompressed path does that)
+    if (is.null(pt) || pt$missing > 0) return(NULL)
     pd <- dm_pattern_design(D, pt$P[dm_compress_keys(D)])
     k <- pd$keep
     X <- pd$design
     sw <- pt$sw[k]
     xtx <- if (gram) crossprod(X, sw * X) else NULL
     K <- length(ys)
-    yn <- if (K) yy$cols
     xty <- yty <- NULL
     if (K) {
         xty <- crossprod(X, pt$sy[k, , drop = FALSE])
         yty <- matrix(colSums(matrix(pt$yy[k, , , drop = FALSE], length(k), K * K)), K, K)
-        dimnames(xty) <- list(D$colnames, yn)
-        dimnames(yty) <- list(yn, yn)
+        dimnames(xty) <- list(D$colnames, NULL)
     }
     if (gram) dimnames(xtx) <- list(D$colnames, D$colnames)
     n <- sum(pt$n[k])
@@ -248,12 +237,10 @@ dm_compressed_moments <- function(D, yy, weights, gram = TRUE) {
 }
 
 ## colSums()/colMeans() from patterns (with the group in the key), or NULL.
-dm_compressed_colsums <- function(D, group, weights, mean) {
+dm_compressed_colsums <- function(D, group, w, mean) {
     if (isFALSE(dm_compress_mode()) || !identical(D$na, "omit")) return(NULL)
-    if (!is.null(weights) && dm_sql_count_na(D, weights) > 0) return(NULL)
-    w <- if (is.null(weights)) NULL else sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, weights))
     pt <- dm_remote_patterns(D, character(), w, group = group)
-    if (is.null(pt)) return(NULL)
+    if (is.null(pt) || pt$missing > 0) return(NULL)
     pd <- dm_pattern_design(D, pt$P[dm_compress_keys(D)])
     k <- pd$keep
     X <- pt$sw[k] * pd$design
@@ -263,7 +250,7 @@ dm_compressed_colsums <- function(D, group, weights, mean) {
         names(out) <- D$colnames
         return(if (mean) out / sum(cnt) else out)
     }
-    g <- pt$P[[group]][k]
+    g <- pt$P[["__dm_g1"]][k]
     out <- colSums(X, group = g)
     if (mean) out <- out / drop(rowsum(cnt, g, reorder = TRUE))
     dimnames(out) <- list(rownames(out), D$colnames)

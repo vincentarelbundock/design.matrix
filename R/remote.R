@@ -693,17 +693,29 @@ dm_remote_column <- function(D, x, what, several = FALSE) {
     x
 }
 
-## A `weights` or `group` argument: a column name, or a SQL expression
-## (`DBI::SQL()`) over the columns of the remote data. An expression is
-## computed as an extra column of the source, so that the engine (and the
-## handling of missing values) treats it as any other column.
-## Returns list(D = the design to use, col = the column name, or NULL).
-dm_remote_arg <- function(D, x, what) {
-    if (is.null(x)) return(list(D = D, col = NULL))
-    if (!inherits(x, "SQL")) return(list(D = D, col = dm_remote_column(D, x, what)))
-    checkmate::assert_string(as.character(x), .var.name = what)
-    col <- paste0("__dm_arg_", what)
-    list(D = dm_remote_extend(D, stats::setNames(as.character(x), col), what), col = col)
+## Columns of a remote design as SQL expressions over its source `s`, the
+## one form in which the products take them: from the names of columns of
+## the remote data, a DBI::SQL() expression over them (checked here), or
+## remote columns of the fitting core (primitives.R; the design is then
+## moved to their frame). Returns list(D = the design to use, sql, names).
+## `numeric`: named columns must be numeric.
+dm_remote_cols <- function(D, x, what, several = FALSE, numeric = TRUE) {
+    if (dm_is_rcols(x)) {
+        fr <- unclass(x)$frame
+        if (dm_frame_depth(D) > dm_frame_depth(fr)) fr <- D
+        return(list(D = dm_rebase(D, fr), sql = unclass(x)$sql, names = NULL))
+    }
+    if (inherits(x, "SQL")) {
+        checkmate::assert_string(as.character(x), .var.name = what)
+        e <- sprintf("(%s)", as.character(x))
+        tryCatch(dm_query(D, sprintf("SELECT %s FROM (%s) AS s LIMIT 0", e, D$src$select)),
+                 error = function(err) stop(sprintf("`%s`: invalid SQL expression: %s", what, conditionMessage(err)),
+                                            call. = FALSE))
+        return(list(D = D, sql = e, names = as.character(x)))
+    }
+    dm_remote_column(D, x, what, several)
+    if (numeric) dm_numeric_cols(D, x)
+    list(D = D, sql = sprintf("s.%s", dm_qi(D, x)), names = x)
 }
 
 ## The design over the same rows, with extra columns `exprs` (named SQL
@@ -723,26 +735,21 @@ dm_remote_extend <- function(D, exprs, what = "expression") {
     D
 }
 
-## The response column of a formula design.
-dm_remote_y <- function(D, y) {
-    if (!is.null(y)) return(list(cols = dm_remote_column(D, y, "y", several = TRUE), response = FALSE))
-    if (is.null(D$response)) return(NULL)
-    list(cols = D$response, response = TRUE)
+## X'WX, X'WY, Y'WY, the number of rows and the sum of the weights of an
+## unscaled remote design: from its patterns when that pays (see
+## *Compression*; not with `wy`, or with compress = FALSE), else one scan.
+## `ys`, `w`, `wy`: SQL expressions over the source (dm_remote_cols(),
+## dm_sql_moments()).
+dm_remote_moments <- function(x, ys = character(), w = NULL, gram = TRUE, wy = NULL, compress = TRUE) {
+    out <- if (compress && is.null(wy)) dm_compressed_moments(x, ys, w, gram)
+    if (is.null(out)) out <- dm_sql_moments(x, ys, w, gram, wy = wy)
+    out
 }
 
-## X'WX, X'Wy, y'Wy, n and the sum of the weights of a remote design, in
-## one pass (compressed, or one scan). `weights`: a column
-## name, a DBI::SQL() expression or NULL; `y`: columns, or NULL for the
-## response of the formula.
-dm_remote_moments <- function(x, y = NULL, weights = NULL) {
-    yy <- dm_remote_y(x, y)
-    wa <- dm_remote_arg(x, weights, "weights")
-    x <- wa$D
-    weights <- wa$col
-    out <- dm_compressed_moments(x, yy, weights)
-    if (is.null(out)) out <- dm_sql_moments(x, yy, weights)
-    x$cache$n <- out$n
-    out
+## The product of row scales (SQL expressions, or NULL), or NULL.
+dm_sql_times <- function(...) {
+    w <- c(...)
+    if (length(w)) paste(sprintf("(%s)", w), collapse = " * ")
 }
 
 ## X'X of a remote design (rows possibly scaled) and, with the remote
@@ -750,19 +757,9 @@ dm_remote_moments <- function(x, y = NULL, weights = NULL) {
 ## crossprod(x), and xty NULL.)
 dm_remote_gram_xty <- function(x, Y = NULL) {
     if (is.null(Y) || !length(Y)) return(list(xtx = crossprod(x), xty = NULL))
-    nm <- paste0("__dm_y", seq_along(Y))
-    D <- dm_with_columns(x, Y, nm)
-    sc <- D$scale
-    yy <- list(cols = nm, response = FALSE)
-    D <- dm_remote_unscaled(D)
-    mo <- if (is.null(sc)) {
-        dm_sql_moments(D, yy)
-    } else {
-        D <- dm_remote_extend(D, c(`__dm_w2` = sprintf("(%s) * (%s)", sc, sc), `__dm_w1` = sc), "scale")
-        dm_sql_moments(D, yy, "__dm_w2", wy = "__dm_w1")
-    }
-    dimnames(mo$xty) <- list(colnames(x), NULL)
-    mo[c("xtx", "xty")]
+    yc <- dm_remote_cols(x, Y, "y")
+    sc <- yc$D$scale
+    dm_remote_moments(dm_remote_unscaled(yc$D), yc$sql, dm_sql_times(sc, sc), wy = sc, compress = FALSE)[c("xtx", "xty")]
 }
 
 ## X %*% beta written to a temporary view, or to the table `name`, with
@@ -871,13 +868,6 @@ dm_remote_unscaled <- function(D) {
     D
 }
 
-## A remote design and its scale as a weights argument (DBI::SQL() or NULL).
-dm_remote_weights <- function(D, extra = NULL) {
-    w <- c(D$scale, extra)
-    list(D = dm_remote_unscaled(D),
-         w = if (length(w)) DBI::SQL(paste(w, collapse = " * ")) else NULL)
-}
-
 ## Is `b` the same remote design as `a` (up to the row scale)?
 dm_remote_same <- function(a, b) identical(a$id, b$id)
 
@@ -902,57 +892,33 @@ crossprod.dm_remote <- function(x, y = NULL, ...) {
             stop("`crossprod(x, y)` of remote designs needs the same design, possibly with scaled rows.", call. = FALSE)
         ## (scales can read columns of a later frame: the products of the fit)
         if (!is.null(y) && dm_frame_depth(y) > dm_frame_depth(x)) x <- dm_rebase(x, y)
-        sy <- if (is.null(y)) x$scale else y$scale
-        dw <- dm_remote_weights(x, sy)
-        if (is.null(dw$w)) {
-            D <- dw$D
-            out <- dm_compressed_moments(D, NULL, NULL)
-            if (!is.null(out)) return(out$xtx)
-            return(dm_sql_gram(D))
-        }
-        return(dm_remote_moments(dw$D, NULL, dw$w)$xtx)
+        w <- dm_sql_times(x$scale, if (is.null(y)) x$scale else y$scale)
+        return(dm_remote_moments(dm_remote_unscaled(x), w = w)$xtx)
     }
-    ## columns of the fitting core (primitives.R): X' c, on their frame
-    if (dm_is_rcols(y)) return(dmp_crossprod(x, y))
-    if (inherits(y, "SQL")) {
-        D <- dm_remote_extend(dm_remote_unscaled(x), c(`__dm_y` = as.character(y)), "y")
-        D$scale <- x$scale
-        out <- crossprod(D, "__dm_y")
-        colnames(out) <- as.character(y)
-        return(out)
-    }
-    if (!is.character(y))
+    ## X' diag(s_x) Y for columns: names, a DBI::SQL() expression, or the
+    ## remote columns of the fitting core (primitives.R)
+    if (!dm_is_rcols(y) && !inherits(y, "SQL") && !is.character(y))
         stop("For a remote design, `y` must be another remote design, column names or a DBI::SQL() expression.",
              call. = FALSE)
-    dm_remote_column(x, y, "y", several = TRUE)
-    dw <- dm_remote_weights(x)
-    if (!is.null(dw$w)) {
-        wa <- dm_remote_arg(dw$D, dw$w, "weights")
-        D <- wa$D
-        yy <- list(cols = y, response = FALSE)
-        out <- dm_compressed_moments(D, yy, wa$col, gram = FALSE)
-        if (is.null(out)) out <- list(xty = dm_sql_xty(D, yy, wa$col))
-        return(out$xty)
-    }
-    D <- dw$D
-    yy <- list(cols = y, response = FALSE)
-    out <- dm_compressed_moments(D, yy, NULL, gram = FALSE)
-    if (!is.null(out)) return(out$xty)
-    dm_sql_xty(D, yy)
+    yc <- dm_remote_cols(x, y, "y", several = TRUE)
+    out <- dm_remote_moments(dm_remote_unscaled(yc$D), yc$sql, yc$D$scale, gram = FALSE)$xty
+    colnames(out) <- yc$names
+    out
 }
 
 dm_remote_colsums <- function(x, group, reorder, mean) {
     if (!isTRUE(reorder))
         stop("Remote designs support only `reorder = TRUE`.", call. = FALSE)
-    dw <- dm_remote_weights(x)
-    wa <- dm_remote_arg(dw$D, dw$w, "weights")
-    ga <- dm_remote_arg(wa$D, group, "group")
-    x <- ga$D
-    weights <- wa$col
-    group <- ga$col
-    out <- dm_compressed_colsums(x, group, weights, mean)
-    if (!is.null(out)) return(out)
-    dm_sql_colsums(x, group, weights, mean)
+    g <- NULL
+    if (!is.null(group)) {
+        gc <- dm_remote_cols(x, group, "group", numeric = FALSE)
+        x <- gc$D
+        g <- gc$sql
+    }
+    w <- x$scale
+    x <- dm_remote_unscaled(x)
+    out <- dm_compressed_colsums(x, g, w, mean)
+    if (is.null(out)) dm_sql_colsums(x, g, w, mean) else out
 }
 
 setOldClass("dm_remote")
@@ -1044,7 +1010,7 @@ summary.dm_remote <- function(object, sql = FALSE, ...) {
     attr(tab, "scale") <- x$scale
     if (sql) {
         attr(tab, "sql") <- c(paste0("-- model variables\n", dm_sql_base(x)),
-                              paste0("-- crossprod\n", dm_sql_moments(x, NULL, sql_only = TRUE)))
+                              paste0("-- crossprod\n", dm_sql_moments(x, sql_only = TRUE)))
     }
     class(tab) <- c("summary.dm_remote", class(tab))
     tab

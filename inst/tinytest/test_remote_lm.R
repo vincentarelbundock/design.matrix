@@ -176,8 +176,8 @@ expect_true(same(p2$.fitted[order(p2$id)], ref))
 ## compressed products agree with the uncompressed ones
 for (engine in "auto") {
     D <- suppressMessages(design_matrix(y ~ poly(xd, 2) * f2 + f1, con, table = "d", engine = engine))
-    m1 <- design.matrix:::dm_remote_moments(D, weights = "w")
-    m0 <- no_compress(design.matrix:::dm_remote_moments(D, weights = "w"))
+    m1 <- design.matrix:::dm_remote_moments(D, ys = "s.y", w = "s.w")
+    m0 <- no_compress(design.matrix:::dm_remote_moments(D, ys = "s.y", w = "s.w"))
     expect_true(same(m1$xtx, m0$xtx) && same(m1$xty, m0$xty) && same(m1$yty, m0$yty), info = engine)
     expect_equal(m1$n, m0$n, info = engine)
     expect_true(same(m1$sumw, m0$sumw), info = engine)
