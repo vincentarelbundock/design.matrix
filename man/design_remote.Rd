@@ -177,23 +177,43 @@ result has \code{NA}.
 
 \section{Linear models}{
 
-\code{\link[=design_lm]{design_lm()}} accepts remote data like \code{\link[=design_matrix]{design_matrix()}}:
-\code{design_lm(y ~ x + f, con, table = "flights", weights = "w")}, with
-\code{weights} the name of a column (a string, or a bare name), and a remote
-design: \code{design_lm(D, y = "col", weights = "w")}. With few design
-patterns, the fit is compressed (see \emph{Compression}): coefficients,
-covariance, residual standard error and degrees of freedom are those of
-\code{\link[=lm]{lm()}} on the same rows, up to rounding. Otherwise it is computed from
-\verb{X'WX}, \verb{X'Wy} and \verb{y'Wy} with \code{\link[=lm]{lm()}}'s column selection; numeric
-variables are centered when that is an exact transform of the design,
-and the accuracy is that of the normal equations on the centered design.
-The response must have a SQL translation; \code{subset} and offsets are not
-supported. \code{predict(fit, newdata = con, table = ...)} returns the name of
-a temporary view or table of predictions, as \code{D \%*\% beta}; standard
-errors and intervals are not available there. \code{residuals(fit)} returns
-the remote design with two more columns, \code{.fitted} and \code{.resid}, which
-can scale its rows: for heteroskedasticity-consistent and clustered
-standard errors,
+\code{\link[=design_lm]{design_lm()}} works on remote data as on a data frame:
+\code{design_lm(y ~ x + f, con, table = "flights", weights = w, subset = year > 2000)},
+or on a remote design: \code{design_lm(D, y = "col", weights = "w")}.
+\code{weights}, \code{offset}, \code{subset} and \code{y} are column names (strings or bare
+names), \code{DBI::SQL()} expressions, or R expressions over the columns, as
+are the response and \code{offset()} terms of the formula. R expressions with
+a SQL translation (arithmetic as for the SQL engine; for \code{subset}, also
+comparisons, \code{&}, \code{|}, \code{!}, \code{\%in\%} with constants and \code{is.na()}) run in
+the database. Any other R expression, such as \code{weights = myfun(x)}, is
+evaluated in R, batch by batch, and its values are written with the
+columns of the remote data to a temporary table, on which the fit runs
+(one more pass over the data; with \code{engine = "auto"}, the chunked engine
+is used, with a message naming the expression, and \code{engine = "sql"}
+refuses). Compression stays exact, since the computed values are columns
+of that table. \code{na.action} can be \code{\link[=na.omit]{na.omit()}} (default), \code{\link[=na.exclude]{na.exclude()}},
+\code{\link[=na.fail]{na.fail()}} or \code{\link[=na.pass]{na.pass()}}, with the results or errors of \code{\link[=lm]{lm()}}.
+
+With few design patterns, the fit is compressed (see \emph{Compression});
+otherwise it is computed from \verb{X'WX}, \verb{X'Wy} and \verb{y'Wy} with \code{\link[=lm]{lm()}}'s
+column selection, numeric variables centered when that is an exact
+transform of the design. Coefficients, covariance, residual standard
+error, degrees of freedom, \code{logLik()}, \code{AIC()}, \code{BIC()} and \code{summary()}
+are those of \code{\link[=lm]{lm()}} on the same rows, up to rounding.
+
+Results that have one value per row are tables in the database (names of
+temporary views, of class \code{dm_remote_table}, with all the columns of the
+remote data): \code{fitted(fit)} (columns \code{.fitted} and \code{.resid}; with
+\code{na.exclude}, the rows with missing values too, with \code{NULL}), and
+\code{predict(fit)} or \code{predict(fit, newdata = con, table = ...)} (column
+\code{.fitted}; with \code{se.fit = TRUE}, \code{.se.fit}, and the attributes \code{df} and
+\code{residual.scale}; with intervals, \code{.lwr} and \code{.upr}; for a rank-deficient
+fit, \code{.nonestim}, the non-estimable cases flagged by \code{rankdeficient} as in
+\code{\link[stats:predict.lm]{stats::predict.lm()}}, with its warnings). Standard errors, intervals and
+non-estimability are computed in batches of rows; the fit alone in SQL.
+\code{residuals(fit)} returns the remote design of the fit with two more
+columns, \code{.fitted} and \code{.resid}, which can scale its rows: for
+heteroskedasticity-consistent and clustered standard errors,
 
 \if{html}{\out{<div class="sourceCode">}}\preformatted{R <- residuals(fit)
 meat_hc1 <- crossprod(R, DBI::SQL('".resid" * ".resid"') * R)
@@ -203,6 +223,26 @@ meat_cl <- crossprod(scores)
 
 (with \code{bread <- vcov(fit) / sigma(fit)^2}, the HC1 covariance is
 \code{n / (n - k) * bread \%*\% meat_hc1 \%*\% bread}).
+
+\strong{Differences from in-memory fits.}
+\itemize{
+\item \code{model.frame()} is not available for a remote fit, and \code{model} is
+ignored: the data stay in the database (\code{fit$remote_design} is the
+remote design of the fit).
+\item Results with one value per row are tables in the database, not
+vectors: \code{fitted()} (\code{.fitted}, \code{.resid}), \code{predict()} (\code{.fitted};
+\code{se.fit} as a column \code{.se.fit} with attributes \code{df} and
+\code{residual.scale}, instead of a list; \code{.nonestim} instead of the
+attribute \code{"non-estim"}), and \code{residuals()}, a remote design.
+\item These tables have no row order: rows are matched to the data through
+its columns, which every table keeps.
+\item \code{compress = "auto"} decides from other evidence than in memory (see
+\emph{Compression}); the results are the same either way.
+\item Without compression, aliased columns are detected from the centered
+\verb{X'WX}, with \code{\link[=lm]{lm()}}'s rule but without a refinement from the data: the
+same columns as \code{\link[=lm]{lm()}} unless a column's residual is within rounding
+of \code{tol}.
+}
 }
 
 \examples{

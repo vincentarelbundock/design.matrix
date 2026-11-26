@@ -465,3 +465,100 @@ dm_sql_predict <- function(D, B, name, outcols, keep, overwrite) {
     }
     name
 }
+
+## Translate a logical R expression (for `subset`) into SQL over `s`:
+## comparisons, &, |, !, %in% with constants, is.na(), logical columns and
+## constants; numeric operands as in dm_sql_num(). R's three-valued logic
+## with NA is SQL's with NULL, and rows where the condition is NULL are
+## dropped, as subset() drops rows where it is NA. Returns list(sql = ) or
+## list(reason = ).
+dm_sql_bool <- function(expr, types, con) {
+    fail <- function(msg) {
+        stop(structure(class = c("dm_untranslatable", "error", "condition"),
+                       list(message = msg, call = NULL)))
+    }
+    col <- function(nm) sprintf("s.%s", DBI::dbQuoteIdentifier(con, nm))
+    ## an operand of a comparison: a string, a text column, or a number
+    operand <- function(e) {
+        if (is.character(e) && length(e) == 1L && !is.na(e)) return(as.character(DBI::dbQuoteString(con, e)))
+        if (is.name(e) && isTRUE(types[as.character(e)] %in% c("character", "factor")))
+            return(sprintf("CAST(%s AS VARCHAR)", col(as.character(e))))
+        tr <- dm_sql_num(e, types, con)
+        if (is.null(tr$sql)) fail(tr$reason)
+        tr$sql
+    }
+    tr <- function(e) {
+        if (is.logical(e) && length(e) == 1L && !is.na(e)) return(if (e) "TRUE" else "FALSE")
+        if (is.name(e)) {
+            nm <- as.character(e)
+            if (isTRUE(types[nm] == "logical")) return(col(nm))
+            fail(sprintf("`%s` is not a logical column of the remote data", nm))
+        }
+        if (!is.call(e) || !is.name(e[[1L]])) fail("an unsupported expression")
+        fn <- as.character(e[[1L]])
+        args <- as.list(e)[-1L]
+        if (fn == "(" && length(args) == 1L) return(sprintf("(%s)", tr(args[[1L]])))
+        if (fn == "!" && length(args) == 1L) return(sprintf("(NOT %s)", tr(args[[1L]])))
+        if (fn %in% c("&", "&&") && length(args) == 2L) return(sprintf("(%s AND %s)", tr(args[[1L]]), tr(args[[2L]])))
+        if (fn %in% c("|", "||") && length(args) == 2L) return(sprintf("(%s OR %s)", tr(args[[1L]]), tr(args[[2L]])))
+        ops <- c("==" = "=", "!=" = "<>", "<" = "<", ">" = ">", "<=" = "<=", ">=" = ">=")
+        if (fn %in% names(ops) && length(args) == 2L)
+            return(sprintf("(%s %s %s)", operand(args[[1L]]), ops[[fn]], operand(args[[2L]])))
+        if (fn == "%in%" && length(args) == 2L) {
+            v <- args[[2L]]
+            if (is.call(v) && identical(v[[1L]], as.name("c"))) v <- unlist(as.list(v)[-1L])
+            if (!(is.numeric(v) || is.character(v)) || anyNA(v) || !length(v))
+                fail("%in% needs a vector of constants")
+            vals <- if (is.character(v)) DBI::dbQuoteString(con, v) else dm_sql_double(v)
+            return(sprintf("COALESCE(%s IN (%s), FALSE)", operand(args[[1L]]), paste(vals, collapse = ", ")))
+        }
+        if (fn == "is.na" && length(args) == 1L) {
+            a <- args[[1L]]
+            if (is.name(a) && isTRUE(types[as.character(a)] %in% c("character", "factor", "logical", "integer")))
+                return(sprintf("(%s IS NULL)", col(as.character(a))))
+            x <- operand(a)
+            return(sprintf("(%s IS NULL OR isnan(%s))", x, x))
+        }
+        fail(sprintf("%s() has no SQL translation", fn))
+    }
+    tryCatch(list(sql = tr(expr)), dm_untranslatable = function(e) list(reason = conditionMessage(e)))
+}
+
+## A `weights`, `offset` or `subset` argument for remote data, as SQL over
+## the columns of the source `s`: NULL; the name of a column (a string, or
+## a bare name that is a column); a DBI::SQL() expression; or an R
+## expression with a SQL translation (dm_sql_num(), or dm_sql_bool() for
+## `subset`). A bare name that is not a column is evaluated in `env`, and
+## its value resolved in turn (a string, DBI::SQL()). Returns NULL or
+## list(sql, inputs).
+dm_resolve_arg <- function(x, env, types, con, what, bool = FALSE) {
+    if (is.null(x)) return(NULL)
+    wrap <- function(sql) if (bool) sprintf("(%s)", sql) else sprintf("CAST((%s) AS DOUBLE)", sql)
+    if (inherits(x, "SQL")) return(list(sql = wrap(as.character(x)), inputs = character()))
+    if (is.character(x)) {
+        if (length(x) != 1L || !x %in% names(types))
+            stop(sprintf("`%s`: no column %s in the remote data.", what, paste0("`", x, "`", collapse = ", ")),
+                 call. = FALSE)
+        if (bool && types[[x]] != "logical")
+            stop(sprintf("`%s`: column `%s` is not logical.", what, x), call. = FALSE)
+        if (!bool && !types[[x]] %in% c("double", "integer", "logical"))
+            stop(sprintf("`%s`: column `%s` is not numeric.", what, x), call. = FALSE)
+        q <- sprintf("s.%s", DBI::dbQuoteIdentifier(con, x))
+        return(list(sql = if (bool) q else sprintf("CAST(%s AS DOUBLE)", q), inputs = x))
+    }
+    if (is.name(x) && !as.character(x) %in% names(types)) {
+        val <- tryCatch(eval(x, env), error = function(e) NULL)
+        if (inherits(val, "SQL") || is.character(val)) return(dm_resolve_arg(val, env, types, con, what, bool))
+        stop(sprintf("`%s` must name a column of the remote data, or be a DBI::SQL() or R expression over its columns.",
+                     what), call. = FALSE)
+    }
+    if (is.call(x) && deparse2(x[[1L]]) %in% c("SQL", "DBI::SQL"))
+        return(dm_resolve_arg(eval(x, env), env, types, con, what, bool))
+    if (!is.language(x))
+        stop(sprintf("`%s` must name a column of the remote data, or be a DBI::SQL() or R expression over its columns (values in R cannot be used).",
+                     what), call. = FALSE)
+    tr <- if (bool) dm_sql_bool(x, types, con) else dm_sql_num(x, types, con)
+    if (is.null(tr$sql))
+        stop(sprintf("`%s` has no SQL translation: %s.", what, tr$reason), call. = FALSE)
+    list(sql = tr$sql, inputs = intersect(all.vars(x), names(types)))
+}

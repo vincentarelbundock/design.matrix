@@ -160,8 +160,6 @@ expect_error(design_lm(D2, y = "xc"), "NA/NaN/Inf in 'y'")
 ## errors as lm()
 DBI::dbWriteTable(con, "negw", transform(dd, w = -w))
 expect_error(design_lm(y ~ xd, con, table = "negw", weights = "w"), "negative weights")
-expect_error(design_lm(y ~ xd, con, table = "d", subset = xd > 2), "subset")
-expect_error(design_lm(y ~ xd + offset(xc), con, table = "d"), "Offsets")
 
 ## predictions written to the database
 f <- design_lm(y ~ xd + f1 + f2, con, table = "d")
@@ -170,7 +168,6 @@ p <- as.data.frame(predict(f, newdata = con, table = "d"))
 p <- p[order(p$id), ]
 ref <- predict(l, newdata = dd)
 expect_true(same(p$.fitted, ref))
-expect_error(predict(f, newdata = con, table = "d", se.fit = TRUE), "fit only")
 ## an in-memory fit scored in the database
 fm <- design_lm(y ~ xd + f1 + f2, dd)
 p2 <- as.data.frame(predict(fm, newdata = con, table = "d"))
