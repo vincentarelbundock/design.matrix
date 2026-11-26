@@ -30,9 +30,10 @@
 ## The aggregates `what` of every SQL expression of the remote columns in
 ## `cols` (a list; same design), from one query: a data frame with one row
 ## per expression and columns na (NULL values), nan (NaN values), and as
-## asked: sum, prod, min, max (over the values that are neither), fmin,
-## fmax (over the finite values), n (values that are neither), rows (all
-## rows), ntrue, nfalse (values that are neither, nonzero / zero).
+## asked: sum, prod, min, max (over the values that are neither; 0, 1,
+## NA, NA over no value), fmin, fmax (over the finite values), n (values
+## that are neither), rows (all rows), ntrue, nfalse (values that are
+## neither, nonzero / zero).
 dm_column_aggregates <- function(cols, what) {
     x <- do.call(dmc_cbind, cols)
     fr <- dm_frame_bind(unclass(x)$frame)
@@ -44,8 +45,8 @@ dm_column_aggregates <- function(cols, what) {
     agg <- list(
         na = sprintf("SUM(CASE WHEN %s IS NULL THEN 1 ELSE 0 END)", sql),
         nan = sprintf("SUM(CASE WHEN isnan(%s) THEN 1 ELSE 0 END)", d),
-        sum = sprintf("SUM(%s)", v),
-        prod = sprintf("PRODUCT(%s)", v),
+        sum = sprintf("COALESCE(SUM(%s), 0)", v),
+        prod = sprintf("COALESCE(PRODUCT(%s), 1)", v),
         min = sprintf("MIN(%s)", v),
         max = sprintf("MAX(%s)", v),
         fmin = sprintf("MIN(CASE WHEN isfinite(%1$s) THEN %1$s END)", d),
@@ -73,8 +74,7 @@ dm_value_aggregates <- function(x, what) {
     ok <- x[!miss]
     fin <- x[is.finite(x)]
     out <- list(na = sum(miss & !is.nan(x)), nan = sum(is.nan(x)),
-                sum = if (length(ok)) sum(ok) else NA_real_,
-                prod = if (length(ok)) prod(ok) else NA_real_,
+                sum = sum(ok), prod = prod(ok),
                 min = if (length(ok)) min(ok) else NA_real_,
                 max = if (length(ok)) max(ok) else NA_real_,
                 fmin = if (length(fin)) min(fin) else NA_real_,
@@ -239,8 +239,9 @@ Summary.design_column <- function(..., na.rm = FALSE) {
         if (f == "min") min(v) else max(v)
     }
     switch(gen,
-        sum = if (miss) missing_value else sum(s$sum, na.rm = TRUE),
-        prod = if (miss) missing_value else prod(s$prod, na.rm = TRUE),
+        ## (not na.rm: a sum of Inf and -Inf is a NaN to keep, as in R)
+        sum = if (miss) missing_value else sum(s$sum),
+        prod = if (miss) missing_value else prod(s$prod),
         min = extreme(s$min, "min", Inf),
         max = extreme(s$max, "max", -Inf),
         range = if (finite) c(extreme(s$fmin, "min", Inf), extreme(s$fmax, "max", -Inf))
@@ -259,8 +260,8 @@ mean.design_column <- function(x, trim = 0, na.rm = FALSE, ...) {
         if (sum(s$na) > 0) return(NA_real_)
         if (sum(s$nan) > 0) return(NaN)
     }
-    ## (an empty mean is NaN, as in R; a sum over no value is NULL: 0)
-    total <- sum(s$sum, na.rm = TRUE)
+    ## (an empty mean is NaN, as in R: 0 / 0; Inf and -Inf give NaN)
+    total <- sum(s$sum)
     total / (if (isTRUE(na.rm)) sum(s$n) else sum(s$rows))
 }
 
@@ -442,7 +443,7 @@ col_sums <- function(..., na.rm = FALSE) {
             r <- s[idx == i, , drop = FALSE]
             if (!na.rm && sum(r$na) > 0) return(NA_real_)
             if (!na.rm && sum(r$nan) > 0) return(NaN)
-            sum(r$sum, na.rm = TRUE)
+            sum(r$sum)
         }, 0)
     }
     out[!remote] <- vapply(args[!remote], function(v) as.double(sum(v, na.rm = na.rm)), 0)
