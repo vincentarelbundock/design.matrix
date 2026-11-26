@@ -40,8 +40,9 @@ design_lm(
 With a design matrix, \code{weights} and \code{offset} are numeric vectors with one
 value per row, and \code{data}, \code{subset}, \code{na.action} and \code{contrasts} do not
 apply. \code{data} can also be remote (a DuckDB connection with \code{table} or
-\code{sql}, or Parquet paths; see \link{design_remote}); \code{weights} then names a
-column, as with a remote design.}
+\code{sql}, or Parquet paths; see \link{design_remote}); \code{weights}, \code{offset} and
+\code{subset} are then columns, \code{DBI::SQL()} or R expressions with a SQL
+translation, as \code{y}, \code{weights} and \code{offset} with a remote design.}
 
 \item{compress}{\code{"auto"}, \code{TRUE} or \code{FALSE}: fit on the sufficient
 statistics of rows that share a design pattern (see Details).}
@@ -55,8 +56,9 @@ rank-deficient fit, as in \code{\link[stats:predict.lm]{stats::predict.lm()}}.}
 \code{\link[=residuals]{residuals()}}, \code{\link[=fitted]{fitted()}} and \code{\link[=model.frame]{model.frame()}}.}
 
 \item{y}{With a design matrix as first argument, the numeric response,
-one value per row. With a remote design (see \link{design_remote}), the name
-of the response column (default: the response of its formula).}
+one value per row. With a remote design (see \link{design_remote}), a
+column, \code{DBI::SQL()} or R expression over its data (default: the
+response of its formula).}
 
 \item{...}{For remote data (a DuckDB connection or Parquet paths as
 \code{data}, or as \code{newdata} in \code{predict()}): \code{table}, \code{sql}, \code{engine} and
@@ -141,6 +143,11 @@ weighted fit and \code{sigma^2} for new observations, with the warnings of
 \code{predict.lm()}; its \code{weights}, \code{pred.var} and \code{scale} arguments are not
 supported. With \code{na.action = na.omit}, offsets of \code{newdata} are taken
 for the rows kept (\code{predict.lm()} would recycle them).
+
+\strong{Remote data.} \code{design_lm()} also fits remote data (a DuckDB table or
+query, or Parquet files) and remote designs, with the same arguments and
+methods; see the \emph{Linear models} section of \link{design_remote} for how, and
+for the differences from in-memory fits.
 }
 \examples{
 set.seed(1)

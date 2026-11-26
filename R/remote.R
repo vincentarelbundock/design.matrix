@@ -177,11 +177,16 @@ dm_need_duckdb <- function() {
 
 
 ## Entry point from design_matrix().
-## `weights` (a column name) and `drop_unused` are for design_lm(): rows with
-## a missing weight are dropped, and factor levels absent from the rows used
-## are dropped, as lm() builds its model frame.
+## `weights`, `offset`, `subset` (see dm_resolve_arg(), resolved in `env`)
+## and `drop_unused` are for design_lm(): the rows are those of `subset`;
+## rows with a missing weight or offset are dropped; factor levels absent
+## from the rows used are dropped, as lm() builds its model frame.
+## `source` can also be an opened source (dm_remote_source()); `override`
+## gives SQL for model variables whose values were computed in R
+## (dm_materialize()).
 dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = stats::na.pass,
-                      weights = NULL, drop_unused = FALSE) {
+                      weights = NULL, drop_unused = FALSE, subset = NULL, offset = NULL,
+                      env = parent.frame(), override = list()) {
     dm_need_duckdb()
     keys <- c("table", "sql", "engine", "chunk_size")
     nms <- names(dots)
@@ -192,7 +197,19 @@ dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = sta
     checkmate::assert_choice(engine, c("auto", "sql", "chunked"), .var.name = "engine")
     chunk_size <- ra$chunk_size %||% getOption("design.matrix.chunk_size", 250000)
     checkmate::assert_number(chunk_size, lower = 1, finite = TRUE, .var.name = "chunk_size")
-    src <- dm_remote_source(source, ra$table, ra$sql)
+    src <- if (inherits(source, "dm_src")) source else dm_remote_source(source, ra$table, ra$sql)
+    con <- src$holder$con
+    if (!is.null(subset)) {
+        sub <- dm_resolve_arg(subset, env, src$types, con, "subset", bool = TRUE)
+        src$select <- sprintf("SELECT s.* FROM (%s) AS s WHERE %s", src$select, sub$sql)
+        src$base_table <- NULL
+        src$label <- paste(src$label, "(subset)")
+    }
+    extra <- list()
+    w <- dm_resolve_arg(weights, env, src$types, con, "weights")
+    if (!is.null(w)) extra[["(weights)"]] <- w
+    o <- dm_resolve_arg(offset, env, src$types, con, "offset")
+    if (!is.null(o)) extra[["(offset)"]] <- o
 
     if (inherits(object, "design_formula")) {
         contrasts.arg <- object$contrasts
@@ -201,7 +218,7 @@ dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = sta
     }
     if (inherits(object, "formula")) {
         if (length(rest)) stop("Unknown arguments: ", paste(names(rest), collapse = ", "), call. = FALSE)
-        D <- dm_remote_formula(object, src, contrasts.arg, xlev, weights, drop_unused)
+        D <- dm_remote_formula(object, src, contrasts.arg, xlev, extra, drop_unused, override)
     } else {
         if (!is.null(contrasts.arg) || !is.null(xlev))
             stop("`contrasts.arg` and `xlev` apply only to a formula.", call. = FALSE)
@@ -270,8 +287,8 @@ dm_remote_source <- function(source, table, sql) {
     }
     proto <- DBI::dbGetQuery(con, sprintf("SELECT * FROM (%s) AS s LIMIT 0", select))
     types <- vapply(proto, dm_col_type, "")
-    list(holder = holder, select = select, base_table = base_table, label = label,
-         proto = proto, types = types)
+    structure(list(holder = holder, select = select, base_table = base_table, label = label,
+         proto = proto, types = types), class = "dm_src")
 }
 
 dm_con <- function(D) D$src$holder$con
@@ -337,7 +354,9 @@ dm_remote_var <- function(name, expr, types, D, xlevels, formula_case) {
         v$reason <- sprintf("`%s` is a factor in the specification", name)
         return(v)
     }
-    tr <- dm_sql_num(expr, types, dm_con(D))
+    ## offset(e): a numeric variable in no term
+    e <- if (is.call(expr) && identical(expr[[1L]], as.name("offset")) && length(expr) == 2L) expr[[2L]] else expr
+    tr <- dm_sql_num(e, types, dm_con(D))
     if (is.null(tr$sql)) {
         v$reason <- tr$reason
     } else {
@@ -383,22 +402,27 @@ dm_terms_vars <- function(tt) {
 
 ## A remote design from a formula: learn levels and transformations from the
 ## remote data.
-dm_remote_formula <- function(formula, src, contrasts.arg, xlev, weights = NULL, drop_unused = FALSE) {
+dm_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(), drop_unused = FALSE,
+                              override = list()) {
     D <- list(src = src, na = "omit")
     tt <- stats::terms(formula, data = src$proto)
     tv <- dm_terms_vars(tt)
     types <- src$types
     D$vars <- Map(function(nm, e) dm_remote_var(nm, e, types, D, NULL, TRUE), tv$names, tv$exprs)
     names(D$vars) <- tv$names
-    if (!is.null(weights)) {
-        ## a variable in no term: it only selects rows (and feeds the fit)
-        if (!isTRUE(types[weights] %in% c("double", "integer", "logical")))
-            stop("'weights' must be a numeric vector", call. = FALSE)
-        D$vars[["(weights)"]] <- list(name = "(weights)", expr = as.name(weights), inputs = weights,
-                                      kind = "numeric", reason = NULL, col = NULL, levels = NULL,
-                                      sql = sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, weights)))
+    ## variables computed in R into columns of the source
+    for (nm in names(override)) {
+        D$vars[[nm]]$kind <- "numeric"
+        D$vars[[nm]]$sql <- override[[nm]]$sql
+        D$vars[[nm]]$reason <- NULL
+        D$vars[[nm]]$inputs <- unique(c(D$vars[[nm]]$inputs, override[[nm]]$inputs))
     }
-    D$weights <- weights
+    ## weights and offset argument: variables in no term, which select rows
+    ## (and feed the fit)
+    for (nm in names(extra)) {
+        D$vars[[nm]] <- list(name = nm, expr = NULL, inputs = extra[[nm]]$inputs, kind = "numeric",
+                             reason = NULL, col = NULL, levels = NULL, sql = extra[[nm]]$sql)
+    }
     D$filter <- dm_remote_filter(D)
 
     ## a sample of the rows used, to see what the R expressions return
@@ -516,8 +540,11 @@ dm_remote_finish <- function(D, engine) {
     resp_bad <- !is.null(D$response) && D$vars[[D$response]]$kind == "other"
     ## variables in no term (an offset, say) decide which rows are used
     used <- unique(unlist(lapply(D$terms, function(t) t$vars)))
+    ## (offset() terms are not in the design: a fit or a prediction
+    ## evaluates them, in R if need be)
+    offs <- dm_terms_vars(D$plan$terms)$names[attr(D$plan$terms, "offset")]
     loose <- setdiff(names(D$vars)[vapply(D$vars, function(v) v$kind == "other", NA)],
-                     c(names(D$vars)[used], D$response))
+                     c(names(D$vars)[used], D$response, offs))
     short <- if (length(bad)) {
         sprintf("term `%s` is evaluated in R", bad[[1L]]$label)
     } else if (resp_bad) {
@@ -667,24 +694,32 @@ dm_remote_extend <- function(D, exprs, what = "expression") {
 ## response minus `.fitted`), usable as any column, for instance to scale
 ## the design (`".resid" * R`) for sandwich covariance matrices. The
 ## predictions live in a temporary view (SQL engine) or table (chunked).
-dm_remote_residuals <- function(x, beta, y = NULL) {
+dm_remote_residuals <- function(x, beta, y = NULL, z = NULL, off = NULL) {
     checkmate::assert_class(x, "dm_remote")
     checkmate::assert_numeric(beta, len = x$p, any.missing = FALSE)
     x <- dm_remote_unscaled(x)
-    yy <- dm_remote_y(x, y)
-    if (is.null(yy)) stop("Give `y`: the design has no response.", call. = FALSE)
-    if (length(yy$cols) != 1L) stop("`y` must be a single column.", call. = FALSE)
-    ysql <- if (yy$response) x$vars[[yy$cols]]$sql else sprintf("CAST(s.%s AS DOUBLE)", dm_qi(x, yy$cols))
-    if (is.null(ysql))
-        stop("The response has no SQL translation; give `y`, a column of the remote data.", call. = FALSE)
+    if (is.null(z)) {
+        yy <- dm_remote_y(x, y)
+        if (is.null(yy)) stop("Give `y`: the design has no response.", call. = FALSE)
+        if (length(yy$cols) != 1L) stop("`y` must be a single column.", call. = FALSE)
+        z <- if (yy$response) x$vars[[yy$cols]]$sql else sprintf("CAST(s.%s AS DOUBLE)", dm_qi(x, yy$cols))
+        if (is.null(z))
+            stop("The response has no SQL translation; give `y`, a column of the remote data.", call. = FALSE)
+    }
     taken <- intersect(c(".fitted", ".resid"), names(x$src$types))
     if (length(taken))
         stop(sprintf("The remote data already has a column `%s`.", taken[1L]), call. = FALSE)
     view <- dm_remote_predict(x, beta, column = ".fitted")
     out <- x
-    out$src$select <- sprintf("SELECT * FROM %s", dm_qi(x, unclass(view)[1L]))
+    ## (z and the offset are expressions over the columns of the data, which
+    ## the view keeps; .fitted there is X beta)
+    out$src$select <- sprintf("SELECT s.* EXCLUDE (\".fitted\"), %s AS \".fitted\", (%s) - s.\".fitted\" AS \".resid\" FROM %s AS s",
+                              if (is.null(off)) "s.\".fitted\"" else sprintf("s.\".fitted\" + (%s)", off),
+                              z, dm_qi(x, unclass(view)[1L]))
     out$src$base_table <- NULL
-    out <- dm_remote_extend(out, c(.resid = sprintf("%s - s.\".fitted\"", ysql)))
+    proto <- DBI::dbGetQuery(dm_con(x), sprintf("SELECT * FROM (%s) AS s LIMIT 0", out$src$select))
+    out$src$proto <- proto
+    out$src$types <- vapply(proto, dm_col_type, "")
     out$src$view <- view
     out
 }
