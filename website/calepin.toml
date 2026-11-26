@@ -39,6 +39,9 @@ title = "Recipes"
   [[sidebar.section.item]]
   target = "recipes/prediction.typ"
 
+  [[sidebar.section.item]]
+  target = "recipes/out-of-core.typ"
+
 [[sidebar.section]]
 title = "Reference"
 

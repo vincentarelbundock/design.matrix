@@ -29,6 +29,24 @@ d <- data.frame(
 
 The benchmarks run on top of the #link("../operations.html#data")[benchmark setup], in a fresh R process each.
 
+= Fitting linear models
+
+`design_lm()` fits a linear model like `lm()`, without the dense model matrix: the coefficients, covariance matrix, residual standard error and degrees of freedom agree with those of `lm()`, aliased columns included. `summary()`, `predict()`, `residuals()`, `fitted()`, `vcov()` and `logLik()` work as for `lm()`.
+
+```r
+fit <- design_lm(y ~ x + f, d)
+all.equal(coef(fit), coef(lm(y ~ x + f, d)))
+all.equal(vcov(fit), vcov(lm(y ~ x + f, d)))
+summary(fit)
+```
+
+When many rows share a design pattern (factors and discrete numeric variables), the fit runs on the patterns, with their counts and the sums of the response, and gives the same results as the fit on every row. With a design matrix instead of a formula, give the response as `y`; with remote data (a DuckDB table or Parquet files), see #link("out-of-core.html")[out-of-core data].
+
+```r
+D <- design_matrix(~ x + f, d)
+all.equal(coef(design_lm(D, y = d$y)), coef(fit))
+```
+
 = Least squares
 
 Least squares coefficients only need `X'X` and `X'y`, so `qr()` on a design matrix gives them without forming the dense matrix. With weights, use `qr(sqrt(w) * D)` and `sqrt(w) * y`.
