@@ -190,6 +190,25 @@ if (length(modes) > 1L) {
                  coef(glm(yp ~ x + g, poisson, dd, offset = le)))
 }
 
+## glm.fit()'s "NAs in V(mu)" and "NAs in d(mu)/d(eta)": an infinite x
+## with a zero start slope gives eta = Inf * 0 = NaN on that row, so NaN
+## variances (inverse.gaussian, identity link: mu^3) or NaN d mu / d eta
+## (gaussian, log link), in memory and remotely, compressed or not
+dn <- data.frame(x = c(Inf, seq(-1, 1, length.out = 19)), y = seq(1, 2, length.out = 20))
+if (length(modes) > 1L) DBI::dbWriteTable(con, "dn", dn)
+nan_cases <- list(list(fam = inverse.gaussian("identity"), msg = "NAs in V(mu)"),
+                  list(fam = gaussian("log"), msg = "NAs in d(mu)/d(eta)"))
+for (cs in nan_cases) {
+    expect_error(glm(y ~ x, cs$fam, dn, start = c(1, 0)), cs$msg, fixed = TRUE)
+    for (cp in c(FALSE, TRUE)) {
+        info <- sprintf("%s %s, compress = %s", cs$fam$family, cs$fam$link, cp)
+        expect_error(design_glm(y ~ x, cs$fam, dn, start = c(1, 0), compress = cp), cs$msg, fixed = TRUE, info = info)
+        if (length(modes) > 1L)
+            expect_error(design_glm(y ~ x, cs$fam, con, table = "dn", start = c(1, 0), compress = cp),
+                         cs$msg, fixed = TRUE, info = info)
+    }
+}
+
 ## what design_glm() does not support (both modes)
 fam_other <- poisson()
 fam_other$family <- "other"

@@ -391,15 +391,24 @@ SEXP dm_setup(SEXP terms, SEXP vars, SEXP rho)
 }
 
 /* The variables as the fill and the kernels read them: numeric (non-factor
-   integer or double) variables coerced to double, exactly as R does. */
+   integer or double) variables coerced to double, exactly as R does.  A
+   variable that no term uses (the response) is not read: it is left as it
+   is, without a coerced copy at every call. */
 SEXP dm_vars(SEXP setup, SEXP vars)
 {
     int nVar = asInteger(VECTOR_ELT(setup, 10));
     const int *nlevs = INTEGER(VECTOR_ELT(setup, 3));
+    const int *count = INTEGER(VECTOR_ELT(setup, 5));
+    int rhs_response = asInteger(VECTOR_ELT(setup, 6)),
+	nterms = asInteger(VECTOR_ELT(setup, 11));
+    const int *fac = nterms > 0 ? INTEGER(VECTOR_ELT(setup, 0)) : NULL;
     SEXP variable = PROTECT(allocVector(VECSXP, nVar));
     for (int i = 0; i < nVar; i++) {
 	SEXP v = VECTOR_ELT(vars, i);
-	if (!nlevs[i] && !isLogical(v) && isNumeric(v) && TYPEOF(v) != REALSXP)
+	int used = 0;
+	for (int k = 0; k < nterms && !used; k++)
+	    if (k != rhs_response && count[k] > 0 && fac[i + k * nVar]) used = 1;
+	if (used && !nlevs[i] && !isLogical(v) && isNumeric(v) && TYPEOF(v) != REALSXP)
 	    v = coerceVector(v, REALSXP);
 	SET_VECTOR_ELT(variable, i, v);
     }

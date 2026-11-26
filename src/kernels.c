@@ -475,12 +475,50 @@ SEXP dm_jac_mult(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
     return out;
 }
 
+/* Mean number of entries of the first rows (at most 64), for the work
+   estimates of the reductions.  Computing a row's entries costs about as
+   much as JAC_ROW_COST multiply-adds. */
+#define JAC_ROW_COST 32.0
+static double jac_head_entries(const jctx *J, const int *rows, R_xlen_t n, scratch *S)
+{
+    R_xlen_t k = n < 64 ? n : 64;
+    double tot = 0.0;
+    for (R_xlen_t r = 0; r < k; r++) tot += jac_entries(J, row_at(rows, r), 0, S);
+    return k > 0 ? tot / (double) k : 0.0;
+}
+
+/* Rows i0 .. i1 - 1 of t(J) %*% W, added to o (p x (K * G)). */
+static void jac_crossprod_rows(const jctx *J, const int *rows, const double *w,
+			       const int *grp, R_xlen_t n, int K, int p,
+			       R_xlen_t i0, R_xlen_t i1, scratch *S, double *o)
+{
+    for (R_xlen_t i = i0; i < i1; i++) {
+	int g = 0;
+	if (grp) {
+	    g = grp[i];
+	    if (g == NA_INTEGER) continue;
+	    g -= 1;
+	}
+	int force = 0;
+	for (int k = 0; k < K; k++)
+	    if (!R_FINITE(w[i + (R_xlen_t)k * n])) force = 1;
+	int m = jac_entries(J, row_at(rows, i), force, S);
+	for (int k = 0; k < K; k++) {
+	    double wik = w[i + (R_xlen_t)k * n];
+	    double *ok = o + (R_xlen_t)(k + K * g) * p;
+	    for (int u = 0; u < m; u++) ok[S->cols[u]] += S->vals[u] * wik;
+	}
+    }
+}
+
 /* t(J) %*% W, W is n x K; with `group` (codes 1..G), sums within groups:
    returns p x (K * G), column k + K * g.  A row with a non-finite weight
-   lists every column (0 * NA is NA in the dense product).  Single-threaded:
-   the order of the sums is fixed. */
+   lists every column (0 * NA is NA in the dense product).  On several
+   threads, fixed chunks of rows with their own sums, added in order (see
+   dm_reduce_threads()). */
 SEXP dm_jac_crossprod(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2,
-		      SEXP vars2, SEXP s2, SEXP W, SEXP group, SEXP G_, SEXP rows_)
+		      SEXP vars2, SEXP s2, SEXP W, SEXP group, SEXP G_, SEXP rows_,
+		      SEXP nthreads_)
 {
     jctx J;
     build_jac(&J, setup1, vars1, s1, setup2, vars2, s2);
@@ -491,28 +529,37 @@ SEXP dm_jac_crossprod(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2,
     const double *w = REAL(W);
     const int *grp = isNull(group) ? NULL : INTEGER(group);
     if (grp && XLENGTH(group) != n) error("'group' must have one value per row");
+    if (grp) {
+	for (R_xlen_t i = 0; i < n; i++)
+	    if (grp[i] != NA_INTEGER && (grp[i] < 1 || grp[i] > G))
+		error("internal error: group code out of range");
+    }
+    R_xlen_t len = (R_xlen_t) p * K * G;
     SEXP out = PROTECT(allocMatrix(REALSXP, p, (R_xlen_t)K * G));
     double *o = REAL(out);
-    memset(o, 0, sizeof(double) * (size_t)p * K * G);
-    scratch *S = alloc_scratch(1, p, J.nd);
-    for (R_xlen_t i = 0; i < n; i++) {
-	int g = 0;
-	if (grp) {
-	    g = grp[i];
-	    if (g == NA_INTEGER) continue;
-	    g -= 1;
-	    if (g < 0 || g >= G) error("internal error: group code out of range");
-	}
-	int force = 0;
-	for (int k = 0; k < K; k++)
-	    if (!R_FINITE(w[i + (R_xlen_t)k * n])) force = 1;
-	int m = jac_entries(&J, row_at(rows, i), force, S);
-	for (int k = 0; k < K; k++) {
-	    double wik = w[i + (R_xlen_t)k * n];
-	    double *ok = o + (R_xlen_t)(k + K * g) * p;
-	    for (int u = 0; u < m; u++) ok[S->cols[u]] += S->vals[u] * wik;
-	}
+    memset(o, 0, sizeof(double) * (size_t) len);
+    int T = 1, req = asInteger(nthreads_);
+    if (req > 1 && n >= 2 * DM_RED_MIN_ROWS) {
+	scratch *S0 = alloc_scratch(1, p, J.nd);
+	double work = (double) n * (JAC_ROW_COST + (K + 1.0) * jac_head_entries(&J, rows, n, S0));
+	T = dm_reduce_threads(req, n, work, (double) len);
     }
+    scratch *S = alloc_scratch(T, p, J.nd);
+    if (T == 1) {
+	jac_crossprod_rows(&J, rows, w, grp, n, K, p, 0, n, S, o);
+	UNPROTECT(1 + J.nd);
+	return out;
+    }
+    double **acc = dm_chunk_acc(o, T, len);
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(T) schedule(static)
+#endif
+    for (int t = 0; t < T; t++) {
+	if (t > 0) dm_zero(acc[t], len);
+	jac_crossprod_rows(&J, rows, w, grp, n, K, p, dm_chunk_start(n, T, t, 1),
+			   dm_chunk_start(n, T, t + 1, 1), &S[t], acc[t]);
+    }
+    dm_combine(acc, T, len);
     UNPROTECT(1 + J.nd);
     return out;
 }
@@ -735,16 +782,57 @@ static int any_nonfinite(const double *vals, int m)
     return 0;
 }
 
+/* Rows r0 .. r1 - 1 of t(A) %*% diag(w) %*% B, added to o (pa x pb; the
+   upper triangle only when B is missing, sym). */
+static void jac_gram_rows(const jctx *A, const jctx *B, int sym, const int *rows,
+			  const double *w, int pa, R_xlen_t r0, R_xlen_t r1,
+			  scratch *SA, scratch *SB, double *o)
+{
+    for (R_xlen_t r = r0; r < r1; r++) {
+	R_xlen_t i = row_at(rows, r);
+	double wi = w ? w[r] : 1.0;
+	int badw = !R_FINITE(wi);
+	int ma = jac_entries(A, i, badw, SA);
+	if (sym) {
+	    if (!badw && any_nonfinite(SA->vals, ma))
+		ma = jac_entries(A, i, 1, SA);
+	    const int *c = SA->cols;
+	    const double *v = SA->vals;
+	    for (int u = 0; u < ma; u++) {
+		double wu = w ? wi * v[u] : v[u];
+		for (int t = 0; t < ma; t++) {
+		    if (c[t] < c[u]) continue;
+		    o[c[u] + (R_xlen_t) c[t] * pa] += wu * v[t];
+		}
+	    }
+	} else {
+	    int mb = jac_entries(B, i, badw, SB);
+	    if (!badw) {
+		int bada = any_nonfinite(SA->vals, ma);
+		int badb = any_nonfinite(SB->vals, mb);
+		if (bada) mb = jac_entries(B, i, 1, SB);
+		if (badb) ma = jac_entries(A, i, 1, SA);
+	    }
+	    for (int u = 0; u < ma; u++) {
+		double wu = w ? wi * SA->vals[u] : SA->vals[u];
+		int cu = SA->cols[u];
+		for (int t = 0; t < mb; t++)
+		    o[cu + (R_xlen_t) SB->cols[t] * pa] += wu * SB->vals[t];
+	    }
+	}
+    }
+}
+
 /* t(A) %*% diag(w) %*% B, where A and B are Jacobians with the same rows
    (B missing: B = A, and only the upper triangle is accumulated, then
    mirrored).  w is NULL (all ones) or one weight per computed row.  A
    row with a non-finite entry or weight lists every column of the other
    factor (and of itself, when symmetric), so that NA * 0 and Inf * 0 are
-   seen as in the dense product.  Single-threaded: the order of the sums is
-   fixed. */
+   seen as in the dense product.  On several threads, fixed chunks of rows
+   with their own sums, added in order (see dm_reduce_threads()). */
 SEXP dm_jac_gram(SEXP a1, SEXP av1, SEXP as1, SEXP a2, SEXP av2, SEXP as2,
 		 SEXP b1, SEXP bv1, SEXP bs1, SEXP b2, SEXP bv2, SEXP bs2,
-		 SEXP W, SEXP rows_)
+		 SEXP W, SEXP rows_, SEXP nthreads_)
 {
     jctx A, B;
     build_jac(&A, a1, av1, as1, a2, av2, as2);
@@ -760,44 +848,37 @@ SEXP dm_jac_gram(SEXP a1, SEXP av1, SEXP as1, SEXP a2, SEXP av2, SEXP as2,
     int pa = A.p, pb = sym ? A.p : B.p;
     const double *w = isNull(W) ? NULL : REAL(W);
     if (w && XLENGTH(W) != n) error("internal error: one weight per row");
+    R_xlen_t len = (R_xlen_t) pa * pb;
     SEXP out = PROTECT(allocMatrix(REALSXP, pa, pb));
     double *o = REAL(out);
-    memset(o, 0, sizeof(double) * (size_t) pa * pb);
-    scratch *SA = alloc_scratch(1, pa, A.nd);
-    scratch *SB = sym ? NULL : alloc_scratch(1, pb, B.nd);
-
-    for (R_xlen_t r = 0; r < n; r++) {
-	R_xlen_t i = row_at(rows, r);
-	double wi = w ? w[r] : 1.0;
-	int badw = !R_FINITE(wi);
-	int ma = jac_entries(&A, i, badw, SA);
-	if (sym) {
-	    if (!badw && any_nonfinite(SA->vals, ma))
-		ma = jac_entries(&A, i, 1, SA);
-	    const int *c = SA->cols;
-	    const double *v = SA->vals;
-	    for (int u = 0; u < ma; u++) {
-		double wu = w ? wi * v[u] : v[u];
-		for (int t = 0; t < ma; t++) {
-		    if (c[t] < c[u]) continue;
-		    o[c[u] + (R_xlen_t) c[t] * pa] += wu * v[t];
-		}
-	    }
-	} else {
-	    int mb = jac_entries(&B, i, badw, SB);
-	    if (!badw) {
-		int bada = any_nonfinite(SA->vals, ma);
-		int badb = any_nonfinite(SB->vals, mb);
-		if (bada) mb = jac_entries(&B, i, 1, SB);
-		if (badb) ma = jac_entries(&A, i, 1, SA);
-	    }
-	    for (int u = 0; u < ma; u++) {
-		double wu = w ? wi * SA->vals[u] : SA->vals[u];
-		int cu = SA->cols[u];
-		for (int t = 0; t < mb; t++)
-		    o[cu + (R_xlen_t) SB->cols[t] * pa] += wu * SB->vals[t];
-	    }
+    memset(o, 0, sizeof(double) * (size_t) len);
+    int T = 1, req = asInteger(nthreads_);
+    if (req > 1 && n >= 2 * DM_RED_MIN_ROWS) {
+	scratch *S0 = alloc_scratch(1, pa, A.nd);
+	double ma = jac_head_entries(&A, rows, n, S0), mb = ma;
+	if (!sym) {
+	    scratch *S1 = alloc_scratch(1, pb, B.nd);
+	    mb = jac_head_entries(&B, rows, n, S1);
 	}
+	double work = (double) n * ((sym ? 1 : 2) * JAC_ROW_COST + (sym ? ma * (ma + 1) / 2 : ma * mb));
+	T = dm_reduce_threads(req, n, work, (double) len);
+    }
+    scratch *SA = alloc_scratch(T, pa, A.nd);
+    scratch *SB = sym ? NULL : alloc_scratch(T, pb, B.nd);
+    if (T == 1) {
+	jac_gram_rows(&A, sym ? NULL : &B, sym, rows, w, pa, 0, n, SA, SB, o);
+    } else {
+	double **acc = dm_chunk_acc(o, T, len);
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(T) schedule(static)
+#endif
+	for (int t = 0; t < T; t++) {
+	    if (t > 0) dm_zero(acc[t], len);
+	    jac_gram_rows(&A, sym ? NULL : &B, sym, rows, w, pa,
+			  dm_chunk_start(n, T, t, 1), dm_chunk_start(n, T, t + 1, 1),
+			  &SA[t], sym ? NULL : &SB[t], acc[t]);
+	}
+	dm_combine(acc, T, len);
     }
     if (sym) {
 	for (int j = 0; j < pa; j++)
