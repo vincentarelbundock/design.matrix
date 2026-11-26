@@ -47,8 +47,10 @@ design_lm_fit(
 \item{compress}{\code{"auto"}, \code{TRUE} or \code{FALSE}: fit on the sufficient
 statistics of rows that share a design pattern (see Details).}
 
-\item{tol}{The tolerance for detecting aliased columns, as in
-\code{\link[stats:lm.fit]{stats::lm.fit()}}.}
+\item{tol}{In \code{design_lm()} and \code{design_lm_fit()}, the tolerance for
+detecting aliased columns, as in \code{\link[stats:lm.fit]{stats::lm.fit()}}. In \code{predict()}, the
+tolerance of the check for non-estimable predictions from a
+rank-deficient fit, as in \code{\link[stats:predict.lm]{stats::predict.lm()}}.}
 
 \item{model}{Keep the model frame and its design matrix, for
 \code{\link[=residuals]{residuals()}}, \code{\link[=fitted]{fitted()}} and \code{\link[=model.frame]{model.frame()}}.}
@@ -69,7 +71,7 @@ are the fitted values (which need \code{model = TRUE}).}
 
 \item{level}{Confidence level of the intervals.}
 
-\item{rankdeficient, tol}{For a rank-deficient fit, how predictions on
+\item{rankdeficient}{For a rank-deficient fit, how predictions on
 \code{newdata} that are not estimable are flagged, as in
 \code{\link[stats:predict.lm]{stats::predict.lm()}}.}
 
@@ -131,9 +133,12 @@ coefficient table, R-squared and F statistic, as \code{summary.lm()}).
 has no \code{qr}, \code{effects}, \code{assign} or \code{residuals} components, so functions
 that expect those (such as \code{plot.lm()} or \code{anova.lm()}) do not apply.
 In \code{predict()}, aliased coefficients count as zero and non-estimable
-predictions on new data are flagged, as in \code{predict.lm()}; prediction
-intervals assume a constant variance
-\code{sigma^2} for new observations, also for a weighted fit.
+predictions on new data are flagged, as in \code{predict.lm()}. Prediction
+intervals use the variance \code{sigma^2 / w} at the training rows of a
+weighted fit and \code{sigma^2} for new observations, with the warnings of
+\code{predict.lm()}; its \code{weights}, \code{pred.var} and \code{scale} arguments are not
+supported. With \code{na.action = na.omit}, offsets of \code{newdata} are taken
+for the rows kept (\code{predict.lm()} would recycle them).
 }
 \examples{
 set.seed(1)

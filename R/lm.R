@@ -64,16 +64,21 @@
 #' has no `qr`, `effects`, `assign` or `residuals` components, so functions
 #' that expect those (such as `plot.lm()` or `anova.lm()`) do not apply.
 #' In `predict()`, aliased coefficients count as zero and non-estimable
-#' predictions on new data are flagged, as in `predict.lm()`; prediction
-#' intervals assume a constant variance
-#' `sigma^2` for new observations, also for a weighted fit.
+#' predictions on new data are flagged, as in `predict.lm()`. Prediction
+#' intervals use the variance `sigma^2 / w` at the training rows of a
+#' weighted fit and `sigma^2` for new observations, with the warnings of
+#' `predict.lm()`; its `weights`, `pred.var` and `scale` arguments are not
+#' supported. With `na.action = na.omit`, offsets of `newdata` are taken
+#' for the rows kept (`predict.lm()` would recycle them).
 #'
 #' @param formula,data,subset,weights,na.action,offset,contrasts As in
 #'   [stats::lm()].
 #' @param compress `"auto"`, `TRUE` or `FALSE`: fit on the sufficient
 #'   statistics of rows that share a design pattern (see Details).
-#' @param tol The tolerance for detecting aliased columns, as in
-#'   [stats::lm.fit()].
+#' @param tol In `design_lm()` and `design_lm_fit()`, the tolerance for
+#'   detecting aliased columns, as in [stats::lm.fit()]. In `predict()`, the
+#'   tolerance of the check for non-estimable predictions from a
+#'   rank-deficient fit, as in [stats::predict.lm()].
 #' @param model Keep the model frame and its design matrix, for
 #'   [residuals()], [fitted()] and [model.frame()].
 #' @param x A `design_matrix`.
@@ -235,12 +240,20 @@ dmfit_suffstats <- function(z, w, map, G) {
         sw <- tabulate(map, nbins = G)
         swz <- drop(rowsum(z, map, reorder = TRUE))
     } else {
+        ## doubles: integer weights could overflow in the sums
+        w <- as.double(w)
         sw <- drop(rowsum(w, map, reorder = TRUE))
         swz <- drop(rowsum(w * z, map, reorder = TRUE))
     }
     m <- ifelse(sw > 0, swz / sw, 0)
-    dev2 <- (z - m[map])^2
-    within <- if (is.null(w)) sum(dev2) else sum(w * dev2)
+    within <- if (is.null(w)) {
+        sum((z - m[map])^2)
+    } else {
+        ## rows with zero weight do not enter the fit (their squared
+        ## deviation can overflow, and 0 * Inf is NaN)
+        pos <- w > 0
+        sum(w[pos] * (z[pos] - m[map[pos]])^2)
+    }
     list(w = as.double(sw), mean = m, within = within)
 }
 
@@ -432,10 +445,9 @@ model.frame.design_lm <- function(formula, ...) {
 residuals.design_lm <- function(object, ...) {
     dat <- dmfit_data(object, "residuals()")
     D <- dat$design
-    y <- dat$y
-    r <- y - dmfit_linpred(object, D)
-    if (!is.null(dat$offset)) r <- r - dat$offset
-    r <- as.vector(r)
+    ## (y - offset) - X b, in the order of the fit
+    z <- if (is.null(dat$offset)) dat$y else dat$y - dat$offset
+    r <- as.vector(z - dmfit_linpred(object, D))
     names(r) <- dimnames(D)[[1L]]
     stats::naresid(object$na.action, r)
 }
@@ -457,7 +469,7 @@ fitted.design_lm <- function(object, ...) {
 #' @param interval Type of interval: `"none"`, `"confidence"` or
 #'   `"prediction"`.
 #' @param level Confidence level of the intervals.
-#' @param rankdeficient,tol For a rank-deficient fit, how predictions on
+#' @param rankdeficient For a rank-deficient fit, how predictions on
 #'   `newdata` that are not estimable are flagged, as in
 #'   [stats::predict.lm()].
 #' @param ... Not used.
@@ -472,7 +484,8 @@ predict.design_lm <- function(object, newdata, se.fit = FALSE,
     rankdeficient <- match.arg(rankdeficient)
     checkmate::assert_flag(se.fit)
     checkmate::assert_number(level, lower = 0, upper = 1)
-    if (missing(newdata) || is.null(newdata)) {
+    no_data <- missing(newdata) || is.null(newdata)
+    if (no_data) {
         dat <- dmfit_data(object, "predict() without `newdata`")
         D <- dat$design
         off <- dat$offset
@@ -481,7 +494,7 @@ predict.design_lm <- function(object, newdata, se.fit = FALSE,
         if (is.null(object$spec))
             stop("This design cannot be applied to new data.", call. = FALSE)
         D <- design_matrix(object$spec, newdata, na.action = na.action)
-        off <- dmfit_new_offset(object, newdata, na.action)
+        off <- dmfit_new_offset(object, newdata, D)
         na_act <- NULL
     }
     fit <- dmfit_linpred(object, D)
@@ -512,14 +525,34 @@ predict.design_lm <- function(object, newdata, se.fit = FALSE,
     if (!se.fit && interval == "none") {
         return(if (is.null(na_act)) fit else stats::napredict(na_act, fit))
     }
-    V <- vcov(object)
+    ## the unscaled covariance with aliased rows and columns zeroed, then the
+    ## residual variance (NaN for a saturated fit, as in predict.lm())
+    res_var <- object$sigma^2
+    V <- dmfit_vcov(object, 1)
     V[is.na(V)] <- 0
-    se <- if (ncol(D) == 0L) rep(0, nrow(D)) else sqrt(quadratic_diagonal(D, V))
+    ip <- if (ncol(D) == 0L) rep(0, nrow(D)) else quadratic_diagonal(D, V)
+    se <- sqrt(ip * res_var)
     names(se) <- names(fit)
     res <- fit
     if (interval != "none") {
+        pred_var <- res_var
+        if (interval == "prediction") {
+            ## the warnings and weights of predict.lm()
+            if (no_data) {
+                warning("predictions on current data refer to _future_ responses\n",
+                        call. = FALSE)
+                if (!is.null(dat$weights)) {
+                    pred_var <- res_var / dat$weights
+                    warning("assuming prediction variance inversely proportional to weights used for fitting\n",
+                            call. = FALSE)
+                }
+            } else if (object$weighted) {
+                warning("Assuming constant prediction variance even though model fit is weighted\n",
+                        call. = FALSE)
+            }
+        }
         tq <- stats::qt((1 - level) / 2, object$df.residual)
-        hw <- tq * if (interval == "confidence") se else sqrt(se^2 + object$sigma^2)
+        hw <- tq * if (interval == "confidence") se else sqrt(se^2 + pred_var)
         res <- cbind(fit = fit, lwr = fit + hw, upr = fit - hw)
     }
     if (!is.null(na_act)) {
@@ -553,18 +586,34 @@ dmfit_nonestimable <- function(object, D, tol) {
 }
 
 ## The offset of new data: offset() terms of the formula and the `offset`
-## argument of the call, as predict.lm() evaluates them.
-dmfit_new_offset <- function(object, newdata, na.action) {
+## argument of the call, evaluated on `newdata` as predict.lm() evaluates
+## them, for the rows of `D`, the design of `newdata` (which can omit rows
+## with missing values).
+dmfit_new_offset <- function(object, newdata, D) {
     tt <- object$terms
+    if (is.null(tt)) return(NULL)
     off <- NULL
-    if (!is.null(tt) && !is.null(attr(tt, "offset"))) {
-        mf <- stats::model.frame(stats::delete.response(tt), newdata,
-                                 na.action = na.action, xlev = object$xlevels)
-        off <- as.vector(stats::model.offset(mf))
+    env <- environment(tt)
+    vars <- attr(tt, "variables")
+    for (i in attr(tt, "offset")) {
+        o <- eval(vars[[i + 1L]], newdata, env)
+        off <- if (is.null(off)) o else off + o
     }
     if (!is.null(object$offset_call)) {
-        o <- eval(object$offset_call, newdata, environment(tt))
+        o <- eval(object$offset_call, newdata, env)
         off <- if (is.null(off)) o else off + o
+    }
+    if (is.null(off)) return(NULL)
+    off <- as.vector(off)
+    n <- nrow(D)
+    if (length(off) != n) {
+        ## rows omitted by na.action: keep the offsets of the rows of D,
+        ## which carry the row names of newdata
+        rn <- if (is.data.frame(newdata)) row.names(newdata) else as.character(seq_along(off))
+        if (length(rn) != length(off))
+            stop(gettextf("number of offsets is %d, should equal %d (number of observations)",
+                          length(off), n), call. = FALSE)
+        off <- off[match(dimnames(D)[[1L]], rn)]
     }
     off
 }

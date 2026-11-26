@@ -61,8 +61,19 @@ check_all <- function(a, b, nd = d[1:10, ]) {
     expect_equal(unname(pb$se.fit), unname(pa$se.fit))
     expect_equal(pb$df, pa$df)
     expect_equal(pb$residual.scale, pa$residual.scale)
-    expect_equal(predict(b, nd, interval = "prediction"),
-                 suppressWarnings(predict(a, nd, interval = "prediction")))
+    ## same values and warnings, on new data and on the training rows
+    pa <- capture(function() predict(a, nd, interval = "prediction"))
+    pb <- capture(function() predict(b, nd, interval = "prediction"))
+    expect_equal(pb$value, pa$value)
+    expect_equal(pb$warnings, pa$warnings)
+    ## (with na.exclude and weights, predict.lm() recycles the weights of
+    ## the complete rows against the padded predictions: no reference)
+    if (!inherits(a$na.action, "exclude")) {
+        pa <- capture(function() predict(a, interval = "prediction"))
+        pb <- capture(function() predict(b, interval = "prediction"))
+        expect_equal(pb$value, pa$value)
+        expect_equal(pb$warnings, pa$warnings)
+    }
     expect_equal(formula(b), formula(a))
 }
 
@@ -263,3 +274,84 @@ expect_true(same_fit(lm(y ~ x * f, dd), b))
 op <- options(design.matrix.dedup = FALSE)
 expect_false(design_lm(y ~ x * f, transform(dd))$compressed)
 options(op)
+
+# Review findings (Roborev job 1273) ---------------------------------------------
+
+# new data whose variables have another type than in training: the error of
+# predict.lm(), from the plan (general and fast paths) and from predict()
+dt <- data.frame(y = rnorm(20), x = rnorm(20), f = gl(2, 10),
+                 ch = rep(c("u", "v"), 10), lg = rep(c(TRUE, FALSE), 10),
+                 stringsAsFactors = FALSE)
+nd_bad <- data.frame(x = factor(c("a", "b")), f = factor(c("1", "2")),
+                     ch = c("u", "v"), lg = c(TRUE, FALSE))
+msg <- tryCatch(predict(lm(y ~ x + f, dt), nd_bad), error = conditionMessage)
+expect_true(grepl("fitted with type", msg))
+spec <- design_matrix(design_matrix(y ~ x + f, dt), newdata = NULL)
+expect_error(design_matrix(spec, nd_bad), msg, fixed = TRUE)
+expect_error(design_matrix(design_matrix(y ~ x + f, dt), nd_bad), msg, fixed = TRUE)
+expect_error(design_matrix(design.matrix:::design_plan(y ~ x + f, dt), nd_bad), msg, fixed = TRUE)
+fit <- design_lm(y ~ x + f, dt)
+expect_error(predict(fit, nd_bad), msg, fixed = TRUE)
+# the plan's fast path is learned from good data, then gets bad data
+p_lazy <- design_matrix(design_matrix(y ~ x + f, dt), newdata = NULL)
+invisible(design_matrix(p_lazy, dt[1:3, ]))
+expect_error(design_matrix(p_lazy, nd_bad), msg, fixed = TRUE)
+# two variables of the wrong type
+nd_bad2 <- transform(nd_bad, f = c(1, 2))
+msg2 <- tryCatch(predict(lm(y ~ x + f, dt), nd_bad2), error = conditionMessage)
+expect_error(predict(fit, nd_bad2), msg2, fixed = TRUE)
+# substitutes that predict.lm() accepts: a factor for a character variable,
+# integers for doubles, logicals for logicals
+fit <- design_lm(y ~ x + ch + lg, dt)
+nd_ok <- data.frame(x = 1:2, ch = factor(c("v", "u")), lg = c(FALSE, TRUE))
+expect_equal(predict(fit, nd_ok), predict(lm(y ~ x + ch + lg, dt), nd_ok))
+
+# offsets of new data with rows omitted by na.action: the offsets of the
+# rows kept, in order
+do <- data.frame(y = rnorm(30), x = rnorm(30), o = rnorm(30))
+nd_na <- data.frame(x = c(NA, 1, 2, 3), o = c(10, 20, 30, 40))
+for (fo in list(y ~ x + offset(o), y ~ x)) {
+    fit <- if (length(attr(terms(fo), "offset"))) design_lm(fo, do) else design_lm(fo, do, offset = o)
+    p <- predict(fit, nd_na, na.action = na.omit)
+    expect_equal(names(p), c("2", "3", "4"))
+    expect_equal(unname(p), coef(fit)[[1]] + coef(fit)[[2]] * c(1, 2, 3) + c(20, 30, 40))
+    expect_equal(predict(fit, nd_na), c(NA, p), check.attributes = FALSE)
+}
+
+# integer weights whose sum in a pattern exceeds the integer range
+dw <- data.frame(f = gl(3, 3), y = rnorm(9), w = rep(1000000000L, 9))
+b_c <- design_lm(y ~ f, dw, weights = w, compress = TRUE)
+b_u <- design_lm(y ~ f, dw, weights = w, compress = FALSE)
+expect_true(b_c$compressed)
+expect_true(same_fit(b_c, b_u, tol = 1e-10))
+expect_true(same_fit(lm(y ~ f, dw, weights = w), b_c))
+
+# a zero-weight row with a huge response does not enter the fit
+dz <- data.frame(f = gl(3, 4), y = rnorm(12), w = 1)
+dz$y[1] <- 1e200
+dz$w[1] <- 0
+b_c <- design_lm(y ~ f, dz, weights = w, compress = TRUE)
+expect_true(b_c$compressed)
+expect_true(is.finite(sigma(b_c)))
+## (vcov(lm()) is NaN here: summary.lm() multiplies the row's infinite
+## squared residual by its zero weight; lm() without the row is the reference)
+expect_true(same_fit(lm(y ~ f, dz[-1, ]), b_c))
+expect_true(same_fit(design_lm(y ~ f, dz, weights = w, compress = FALSE), b_c))
+
+# a saturated fit: prediction standard errors are NaN, as in predict.lm()
+d4 <- data.frame(y = c(1, 2, 3), f = factor(c("a", "b", "c")), f2 = factor(c("a", "b", "c")))
+for (fo in list(y ~ f, y ~ f + f2)) {
+    pa <- suppressWarnings(predict(lm(fo, d4), d4, se.fit = TRUE))
+    pb <- suppressWarnings(predict(design_lm(fo, d4), d4, se.fit = TRUE))
+    expect_true(all(is.nan(pb$se.fit)))
+    expect_equal(unname(pb$se.fit), unname(pa$se.fit))
+}
+
+# residuals: (y - offset) - X b, which keeps the digits when y and the
+# offset are large and close
+dr <- data.frame(x = rnorm(20), o = 1e16 + 2 * (1:20))
+dr$y <- dr$o + rnorm(20)
+a <- lm(y ~ x, dr, offset = o)
+b <- design_lm(y ~ x, dr, offset = o)
+expect_equal(residuals(b), residuals(a))
+expect_equal(sum(residuals(b)^2), deviance(b))
