@@ -1,4 +1,4 @@
-# Cases shared by test_glm.R (in memory) and test_remote_glm.R (remote):
+# Cases shared by test_parity_glm.R (in memory and remote):
 # the same models, each compared with glm() on the same rows.
 
 glm_data <- function(n = 1500, seed = 42) {

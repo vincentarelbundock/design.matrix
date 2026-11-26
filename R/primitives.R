@@ -37,10 +37,15 @@
 ##   ==  !=  <  >  <=  >=  &  |  !
 ##   exp log sqrt abs log1p expm1 log2 log10 cos sin tan floor ceiling sign
 ##                         (Math group; log has one argument)
-##   dmc_pmin dmc_pmax dmc_ifelse dmc_rowsums dmc_cbind dmc_col(x, j)
+##   dmc_pmin dmc_pmax dmc_ifelse dmc_rowsums dmc_cbind dmc_col(x, j) dmc_ncol
 ##   dmc_const(like, value) dmc_lgamma dmc_round (half to even)
-##   dmc_is_finite dmc_is_nan (NaN-safe) dmc_on(col, x) (same SQL, rows of x)
-##   dmc_pnorm dmc_qnorm dmc_dnorm dmc_pcauchy
+##   dmc_is_finite (NaN-safe) dmc_notnan (not NA or NaN)
+##   dmc_on(col, x) (same SQL, rows of x)
+##   dmc_count(cond, negate) (1 where cond is TRUE, to sum)
+##   dmc_freeze(col) (computed once: remotely, columns of a new frame)
+##   dmc_pnorm dmc_qnorm dmc_dnorm dmc_pcauchy dmc_qcauchy
+##   dmc_logit_inv dmc_logit_mu_eta dmc_binomial_dev(y, mu, w)
+##                         (in memory the C code of binomial())
 ##                         (remotely the DuckDB macros of dm_sql_macros(), as
 ##                         R computes them: pnorm/dnorm/pcauchy to rounding,
 ##                         qnorm to one ulp; dmc_mexpm1m(u) = -expm1(-u))
@@ -76,6 +81,8 @@
 ##   dmp_groupsum(col, group) sums of a column (k columns) within groups:
 ##                            G x k matrix, as rowsum(col, group) (NA for a
 ##                            group with a missing value)
+##   dmp_y(x, y)              the response of the qr() methods as a column
+##   dmp_min_nonzero(x)       a lower bound on the non-zero entries (0 if none)
 ##   dmc_codes(codes, G)      a grouping as integer codes 1..G: grouped sums
 ##                            then return all G groups in code order, without
 ##                            labels, from one-pass C kernels in memory
@@ -95,8 +102,12 @@
 ##   dmp_quad(x, V, along)    rowSums((X V) * X), V p x p symmetric positive
 ##                            semi-definite, as a column
 ##   dm_colsum(col)           sums over rows: a number per column
+##   dmc_sums(...)            sums over rows of several columns (one query)
+##   dmc_mean(col)            the mean of a column
 ##   dmp_colnorms(col)        Euclidean norms of the columns
 ##   dm_nrows(x)              number of rows of a design or column
+##   dm_engine(x)             "sql" or "chunked" for a remote design, ""
+##                            in memory (for the description of a fit)
 ##   dmp_patterns(x, z, w, compress, keys = NULL)
 ##                            compressed least squares: when rows with the
 ##                            same design inputs are worth grouping, a list
@@ -122,13 +133,17 @@
 ##                            R expressions (in SQL when translatable, else
 ##                            evaluated in R into a temporary table); returns
 ##                            list(x, cols, evaluated)
-##   dmp_output(x, cols)      row-wise results of an algorithm: in memory a
-##                            data frame of the columns (one row per row of x);
-##                            remotely a temporary view with the columns of
-##                            the remote data and the named columns `cols`,
-##                            a string of class dm_remote_table. One code path
-##                            computes the columns; only the container
-##                            differs.
+##   dmp_output(x, cols, memory, na, design, attrs)
+##                            row-wise results of an algorithm: in memory
+##                            memory(d), d the data frame of the named
+##                            columns `cols` (one row per row of x; default
+##                            d); remotely a temporary view with the columns
+##                            of the remote data and `cols`, a string of
+##                            class dm_remote_table (padded by napredict(na),
+##                            with attributes attrs), or with design = TRUE
+##                            the remote design with `cols` added to its
+##                            data. One code path computes the columns; only
+##                            the container differs.
 ##
 ## Remote methods: crossprod, colSums, products and patterns run in the
 ## database (or in batches with the chunked engine); dmp_groupsum and
@@ -173,11 +188,13 @@
 
 ## ---- remote columns ----
 
-dm_rcols <- function(frame, sql) {
+## (`notnull`: columns known never to be NULL, whose sums need no count of
+## missing values)
+dm_rcols <- function(frame, sql, notnull = FALSE) {
     ## (parenthesized, so that expressions compose with any operator)
     sql <- as.character(sql)
     sql <- sprintf("(%s)", sql)
-    structure(list(frame = frame, sql = sql), class = "dm_rcols")
+    structure(list(frame = frame, sql = sql, notnull = rep_len(notnull, length(sql))), class = "dm_rcols")
 }
 
 dm_is_rcols <- function(x) inherits(x, "dm_rcols")
@@ -264,9 +281,18 @@ dmc_pmin <- function(x, y) {
     dm_rcols(f, sprintf("least(%s, %s)", dm_rcols_operand(x), dm_rcols_operand(y)))
 }
 
+## (in memory a numeric vector: `no` with `yes` where test is TRUE and NA
+## where it is NA, as ifelse() but without its copies and attributes)
 dmc_ifelse <- function(test, yes, no) {
     f <- dm_rcols_frame(test, yes, no)
-    if (is.null(f)) return(ifelse(test, yes, no))
+    if (is.null(f)) {
+        n <- length(test)
+        out <- rep_len(as.double(no), n)
+        i <- which(test)
+        out[i] <- if (length(yes) == 1L) yes else yes[i]
+        if (anyNA(test)) out[is.na(test)] <- NA
+        return(out)
+    }
     dm_rcols(f, sprintf("(CASE WHEN %s THEN %s ELSE %s END)", dm_rcols_operand(test),
                         dm_rcols_operand(yes), dm_rcols_operand(no)))
 }
@@ -276,7 +302,8 @@ dmc_cbind <- function(...) {
     args <- list(...)
     f <- do.call(dm_rcols_frame, args)
     if (is.null(f)) return(do.call(cbind, args))
-    dm_rcols(f, unlist(lapply(args, dm_rcols_operand)))
+    dm_rcols(f, unlist(lapply(args, dm_rcols_operand)),
+             notnull = unlist(lapply(args, function(a) if (dm_is_rcols(a)) unclass(a)$notnull else !is.na(a))))
 }
 
 dmc_rowsums <- function(x) {
@@ -295,6 +322,29 @@ dmc_qnorm <- function(x) dmc_macro(x, stats::qnorm, "dm_qnorm")
 dmc_dnorm <- function(x) dmc_macro(x, stats::dnorm, "dm_dnorm")
 dmc_pcauchy <- function(x) dmc_macro(x, stats::pcauchy, "dm_pcauchy")
 dmc_mexpm1m <- function(x) dmc_macro(x, function(u) -expm1(-u), "dm_mexpm1m")
+## The logit link of binomial(): inverse, derivative, and the binomial
+## deviance residuals (in memory the C code of R's family object, in one
+## pass; remotely the same arithmetic in SQL)
+dmc_logit_inv <- function(e) {
+    if (!dm_is_rcols(e)) return(stats::binomial()$linkinv(e))
+    eps <- .Machine$double.eps
+    dmc_ifelse(e < -30, eps / (1 + eps), dmc_ifelse(e > 30, (1 / eps) / (1 + 1 / eps), exp(e) / (1 + exp(e))))
+}
+dmc_logit_mu_eta <- function(e) {
+    if (!dm_is_rcols(e)) return(stats::binomial()$mu.eta(e))
+    dmc_ifelse(e > 30 | e < -30, .Machine$double.eps, exp(e) / ((1 + exp(e)) * (1 + exp(e))))
+}
+dmc_binomial_dev <- function(y, mu, w) {
+    if (is.null(dm_rcols_frame(y, mu, w))) return(stats::binomial()$dev.resids(y, mu, w))
+    xlogx <- function(a, b) dmc_ifelse(a != 0, a * log(a / b), 0)
+    2 * w * (xlogx(y, mu) + xlogx(1 - y, 1 - mu))
+}
+
+## qcauchy (remotely through tan(): to rounding, where R uses tanpi())
+dmc_qcauchy <- function(x) {
+    if (!dm_is_rcols(x)) return(stats::qcauchy(x))
+    dmc_ifelse(x <= 0.5, -1 / tan(pi * x), 1 / tan(pi * (1 - x)))
+}
 
 ## The values of a column in R (remotely: all its rows; for small data).
 dmp_collect <- function(x) {
@@ -317,16 +367,31 @@ dm_colsum <- function(x) {
     fr <- unclass(x)$frame
     sql <- unclass(x)$sql
     k <- length(sql)
+    nn <- unclass(x)$notnull %||% rep(FALSE, k)
     items <- c(sprintf("SUM(CAST(%s AS DOUBLE)) AS s%d", sql, seq_len(k)),
-               sprintf("SUM(CASE WHEN (%s) IS NULL THEN 1 ELSE 0 END) AS n%d", sql, seq_len(k)))
+               sprintf("SUM(CASE WHEN (%s) IS NULL THEN 1 ELSE 0 END) AS n%d", sql, seq_len(k))[!nn])
     res <- dm_query(fr, sprintf("SELECT %s FROM (%s) AS s WHERE %s", paste(items, collapse = ", "),
                                 fr$src$select, fr$filter))
     vapply(seq_len(k), function(j) {
         v <- as.double(res[[paste0("s", j)]])
-        if (as.numeric(res[[paste0("n", j)]]) > 0) return(NA_real_)
+        if (!nn[j] && as.numeric(res[[paste0("n", j)]]) > 0) return(NA_real_)
         if (is.na(v)) 0 else v
     }, 0)
 }
+
+## Sums over rows of several columns (vectors or numbers in memory; one
+## query remotely): a number per argument.
+dmc_sums <- function(...) {
+    a <- list(...)
+    if (any(vapply(a, dm_is_rcols, NA))) return(dm_colsum(do.call(dmc_cbind, a)))
+    vapply(a, function(v) sum(v), 0)
+}
+
+## The mean of a column (in memory as mean() computes it).
+dmc_mean <- function(x) if (dm_is_rcols(x)) dm_colsum(x) / dm_nrows(x) else mean(x)
+
+## The engine of a remote design ("sql" or "chunked"), "" in memory.
+dm_engine <- function(x) if (inherits(x, "dm_remote")) x$engine else ""
 
 dm_nrows <- function(x) {
     if (inherits(x, "dm_remote")) return(x$cache$n %||% x$n)
@@ -477,7 +542,18 @@ dmp_mult <- function(x, B, along = list()) {
 }
 
 dmp_quad <- function(x, V, along = list()) {
-    if (!inherits(x, "dm_remote")) return(quadratic_diagonal(x, V))
+    if (!inherits(x, "dm_remote")) {
+        J <- as_jac(x)
+        storage.mode(V) <- "double"
+        if (!jac_kernel_ok(J)) {
+            X <- as.matrix(J)
+            return(unname(rowSums((X %*% V) * X)))
+        }
+        g <- dm_groups(J, cost = dm_row_cost(J)^2)
+        q <- do.call(.Call, c(list(C_dm_jac_quad), jac_args(J),
+                              list(V, if (is.null(g)) NULL else g$first, design_threads())))
+        return(if (is.null(g)) q else q[g$map])
+    }
     zero <- dm_rcols(dm_along_frame(x, along), "CAST(0 AS DOUBLE)")
     if (ncol(V) == 0L) return(zero)
     e <- eigen(V, symmetric = TRUE)
@@ -533,9 +609,17 @@ dmp_patterns <- function(x, z, w = NULL, compress = "auto", keys = NULL) {
          keys = if (!is.null(keys)) (if (is.matrix(keys)) keys else matrix(keys, ncol = 1L))[g$first[keep], , drop = FALSE])
 }
 
-## Row-wise results: a data frame in memory, a remote table remotely.
-dmp_output <- function(x, cols) {
-    if (!inherits(x, "dm_remote")) return(as.data.frame(lapply(cols, function(v) as.vector(v))))
+## Row-wise results: in memory memory(d), d the data frame of the columns
+## (default: d); remotely a table (a temporary view with the columns of the
+## remote data and `cols`), padded by napredict(na) for a fit with
+## na.exclude, with attributes `attrs`; with design = TRUE, the remote
+## design with the columns added to its data (so that they can scale its
+## rows).
+dmp_output <- function(x, cols, memory = identity, na = NULL, design = FALSE, attrs = list()) {
+    if (!inherits(x, "dm_remote")) return(memory(as.data.frame(lapply(cols, function(v) as.vector(v)))))
+    taken <- intersect(names(cols), names(x$src$types))
+    if (length(taken)) stop(sprintf("The remote data already has a column `%s`.", taken[1L]), call. = FALSE)
+    if (design) return(dm_with_columns(x, do.call(dmc_cbind, unname(cols)), names(cols)))
     fr <- dm_rebase(dm_remote_unscaled(x), do.call(dm_rcols_frame, unname(cols)))
     srccols <- names(x$src$types)
     items <- vapply(names(cols), function(nm) {
@@ -546,7 +630,10 @@ dmp_output <- function(x, cols) {
                    paste(c(paste0("s.", dm_qi(fr, srccols)), items), collapse = ", "), fr$src$select, fr$filter)
     name <- dm_tmp_name("dm_out")
     dm_execute(fr, sprintf("CREATE TEMPORARY VIEW %s AS %s", dm_qi(fr, name), sel))
-    structure(name, class = "dm_remote_table", connection = dm_con(fr), holder = fr$src$holder)
+    out <- stats::napredict(na, structure(name, class = "dm_remote_table", connection = dm_con(fr),
+                                          holder = fr$src$holder))
+    for (a in names(attrs)) attr(out, a) <- attrs[[a]]
+    out
 }
 
 ## DuckDB macros for the distribution functions of remote columns, as R
@@ -748,6 +835,9 @@ dm_colsums_struct_ok <- function(D, G) {
 
 ## ---- more column functions (requested by the GLM work) ----
 
+## the number of columns of a column
+dmc_ncol <- function(x) if (dm_is_rcols(x)) length(x) else NCOL(x)
+
 ## one column of a multi-column column
 dmc_col <- function(x, j) {
     if (!dm_is_rcols(x)) return(if (is.matrix(x)) x[, j] else x)
@@ -772,15 +862,106 @@ dmc_round <- function(x) {
     dm_rcols(unclass(x)$frame, sprintf("round_even(%s, 0)", unclass(x)$sql))
 }
 
-## is.finite and is.nan, NaN-safe (in DuckDB, NaN = NaN and NaN > 0 are true)
+## is.finite, NaN-safe (in DuckDB, NaN = NaN and NaN > 0 are true)
 dmc_is_finite <- function(x) {
     if (!dm_is_rcols(x)) return(is.finite(x))
     dm_rcols(unclass(x)$frame, sprintf("COALESCE(isfinite(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql))
 }
 
-dmc_is_nan <- function(x) {
-    if (!dm_is_rcols(x)) return(is.nan(x))
-    dm_rcols(unclass(x)$frame, sprintf("COALESCE(isnan(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql))
+## TRUE where x is not missing (NA or NaN; infinite values count as present).
+dmc_notnan <- function(x) dmc_is_finite(x) | (abs(x) == Inf)
+
+## The rows where a logical column is TRUE (with negate, where it is not
+## TRUE: FALSE or missing), as a column to sum: 1 or 0. In memory a logical
+## vector, which sums as 0/1.
+dmc_count <- function(cond, negate = FALSE) {
+    if (!dm_is_rcols(cond)) {
+        if (anyNA(cond)) cond <- !is.na(cond) & cond
+        return(if (negate) !cond else cond)
+    }
+    sql <- unclass(cond)$sql
+    dm_rcols(unclass(cond)$frame, sprintf(if (negate) "CASE WHEN %s THEN 0 ELSE 1 END" else "CASE WHEN %s THEN 1 ELSE 0 END", sql),
+             notnull = TRUE)
+}
+
+## A column computed once: remotely, its expressions become columns of a
+## new frame (a projection over the frame of the column, one level deeper,
+## as products are), so that later expressions refer to them instead of
+## repeating them (DuckDB expands macros such as dm_qnorm() inline, and
+## nested expressions would grow without bound). Columns frozen separately
+## from one frame live on sibling frames, which cannot be combined: freeze
+## them together (dmc_cbind()). In memory, the column itself.
+dmc_freeze <- function(col) {
+    if (!dm_is_rcols(col)) return(col)
+    fr <- unclass(col)$frame
+    sql <- unclass(col)$sql
+    nm <- paste0("__dm_f", substr(dm_tmp_name("f"), 3L, 10L), "_", seq_along(sql))
+    x <- dm_remote_extend(dm_remote_unscaled(fr), stats::setNames(sql, nm), "column")
+    x$depth <- dm_frame_depth(fr) + 1L
+    dm_rcols(x, sprintf("s.%s", dm_qi(x, nm)))
+}
+
+## ---- inputs of the methods of a design ----
+
+## Which rows of a design matrix are finite: rowSums(!is.finite(as.matrix(x)))
+## == 0, computed without forming the dense matrix (TRUE for each row whose
+## entries are all finite, FALSE for a row with any NA, NaN or infinite entry,
+## including entries that overflow, such as the product of two large numeric
+## variables, and, for a combination of designs, scaled sums that overflow).
+finite_rows <- function(x) {
+    ## a remote design: a logical column (every entry of the row finite)
+    if (inherits(x, "dm_remote")) {
+        P <- dmp_mult(x, diag(1, ncol(x)))
+        return(dm_rcols(unclass(P)$frame,
+                        paste(sprintf("COALESCE(isfinite(%s), FALSE)", unclass(P)$sql), collapse = " AND ")))
+    }
+    checkmate::assert_class(x, "design_matrix")
+    J <- as_jac(x)
+    if (!jac_kernel_ok(J)) {
+        return(unname(rowSums(!is.finite(as.matrix(x))) == 0))
+    }
+    do.call(.Call, c(list(C_dm_jac_finite), jac_args(J), list(design_threads())))
+}
+
+## A lower bound on the absolute value of the non-zero entries of x (0 when
+## no bound is available: always for a remote design).
+dmp_min_nonzero <- function(x) {
+    if (inherits(x, "dm_remote")) return(0)
+    terms <- dm_terms(x)
+    out <- Inf
+    for (t in terms) {
+        d <- t$design
+        b <- if (kernel_ok(d)) .Call(C_dm_min_nonzero, d$setup, d$vars) else {
+            X <- as.matrix(d)
+            a <- abs(X[X != 0 & is.finite(X)])
+            if (length(a)) min(a) else 1
+        }
+        s <- t$scale
+        if (!is.null(s)) {
+            a <- abs(s[s != 0 & is.finite(s)])
+            b <- b * (if (length(a)) min(a) else 1)
+        }
+        out <- min(out, b)
+    }
+    ## a sum of two designs can cancel to small values
+    if (length(terms) > 1L) 0 else out
+}
+
+## The `y` of the qr() methods as a column of design x: in memory a finite
+## double matrix (from a vector or matrix with nrow(x) rows); remotely a
+## remote column from column names, a DBI::SQL() expression or a remote
+## column. Returns list(Y, vec (was y one column?), rows, cols (names)).
+dmp_y <- function(x, y) {
+    if (!inherits(x, "dm_remote")) return(dmqr_y(y, nrow(x)))
+    D <- dm_remote_unscaled(x)
+    if (dm_is_rcols(y)) return(list(Y = y, vec = length(y) == 1L, cols = NULL))
+    if (inherits(y, "SQL")) return(list(Y = dm_rcols(D, as.character(y)), vec = TRUE, cols = NULL))
+    if (is.character(y)) {
+        dm_remote_column(D, y, "y", several = TRUE)
+        return(list(Y = dm_rcols(D, sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, y))), vec = length(y) == 1L,
+                    cols = if (length(y) > 1L) y))
+    }
+    stop("For a remote design, `y` must name columns of its data, or be a DBI::SQL() expression.", call. = FALSE)
 }
 
 ## ---- rows of a design ----
@@ -849,15 +1030,15 @@ dmp_resolve <- function(x, exprs, env, logical = character(), data = NULL) {
         a <- dm_resolve_or_eval(e, env, x$src$types, con, nm, bool = nm %in% logical)
         if (!is.null(a$expr)) {
             items[[nm]] <- a
-            later[[paste0("__dm_arg_", nm)]] <- a$expr
+            later[[paste0("__dm_eval_", nm)]] <- a$expr
         } else {
             sqls[[nm]] <- a$sql
         }
     }
     if (length(later)) {
-        x$src <- dm_materialize(x$src, later, env, logical = paste0("__dm_arg_", logical), chunk_size = x$chunk_size)
+        x$src <- dm_materialize(x$src, later, env, logical = paste0("__dm_eval_", logical), chunk_size = x$chunk_size)
         for (nm in names(items)) {
-            col <- DBI::dbQuoteIdentifier(con, paste0("__dm_arg_", nm))
+            col <- DBI::dbQuoteIdentifier(con, paste0("__dm_eval_", nm))
             sqls[[nm]] <- if (nm %in% logical) sprintf("s.%s", col) else sprintf("CAST(s.%s AS DOUBLE)", col)
         }
     }

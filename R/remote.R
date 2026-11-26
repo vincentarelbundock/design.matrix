@@ -176,17 +176,17 @@ dm_need_duckdb <- function() {
 }
 
 
-## Entry point from design_matrix().
-## `weights`, `offset`, `subset` (see dm_resolve_arg(), resolved in `env`)
-## and `drop_unused` are for design_lm(): the rows are those of `subset`;
-## rows with a missing weight or offset are dropped; factor levels absent
-## from the rows used are dropped, as lm() builds its model frame.
-## `source` can also be an opened source (dm_remote_source()); `override`
-## gives SQL for model variables whose values were computed in R
-## (dm_materialize()).
+## Entry point from design_matrix(), and from the fits (dm_remote_fit()).
+## For the fits: `subset` (SQL over the source) restricts the rows; `extra`
+## (named list of list(sql, inputs, kind), kind "numeric" for a numeric
+## argument such as weights, "present" for columns that must only be
+## present) adds variables in no term, which select rows; factor levels
+## absent from the rows used are dropped with `drop_unused`, as lm() builds
+## its model frame. `source` can also be an opened source
+## (dm_remote_source()); `override` gives SQL for model variables whose
+## values were computed in R (dm_materialize()).
 dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = stats::na.pass,
-                      weights = NULL, drop_unused = FALSE, subset = NULL, offset = NULL,
-                      env = parent.frame(), override = list()) {
+                      drop_unused = FALSE, subset = NULL, extra = list(), override = list()) {
     dm_need_duckdb()
     keys <- c("table", "sql", "engine", "chunk_size")
     nms <- names(dots)
@@ -198,18 +198,11 @@ dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = sta
     chunk_size <- ra$chunk_size %||% getOption("design.matrix.chunk_size", 250000)
     checkmate::assert_number(chunk_size, lower = 1, finite = TRUE, .var.name = "chunk_size")
     src <- if (inherits(source, "dm_src")) source else dm_remote_source(source, ra$table, ra$sql)
-    con <- src$holder$con
     if (!is.null(subset)) {
-        sub <- dm_resolve_arg(subset, env, src$types, con, "subset", bool = TRUE)
-        src$select <- sprintf("SELECT s.* FROM (%s) AS s WHERE %s", src$select, sub$sql)
+        src$select <- sprintf("SELECT s.* FROM (%s) AS s WHERE %s", src$select, subset)
         src$base_table <- NULL
         src$label <- paste(src$label, "(subset)")
     }
-    extra <- list()
-    w <- dm_resolve_arg(weights, env, src$types, con, "weights")
-    if (!is.null(w)) extra[["(weights)"]] <- w
-    o <- dm_resolve_arg(offset, env, src$types, con, "offset")
-    if (!is.null(o)) extra[["(offset)"]] <- o
 
     if (inherits(object, "design_formula")) {
         contrasts.arg <- object$contrasts
@@ -315,8 +308,15 @@ dm_execute <- function(D, sql) {
     DBI::dbExecute(dm_con(D), sql)
 }
 
+## Names of temporary tables, views and columns: a counter (8 hex digits,
+## right after the prefix) and a token of the process, without using (or
+## being reset by) R's random numbers.
+dm_tmp <- new.env(parent = emptyenv())
 dm_tmp_name <- function(prefix) {
-    paste0(prefix, "_", paste(sample(c(letters, 0:9), 12, TRUE), collapse = ""))
+    if (is.null(dm_tmp$token))
+        dm_tmp$token <- sprintf("%x%x", Sys.getpid(), as.integer(as.numeric(Sys.time()) * 1000) %% 1e9)
+    dm_tmp$i <- (dm_tmp$i %||% 0) + 1
+    sprintf("%s_%08x%s", prefix, as.integer(dm_tmp$i), dm_tmp$token)
 }
 
 ## Describe one model variable: how SQL can compute it, or test whether it
@@ -368,13 +368,14 @@ dm_remote_var <- function(name, expr, types, D, xlevels, formula_case) {
 
 ## SQL condition: is variable `v` present (not NULL, not NaN) in a row?
 ## Exact for variables with a SQL translation; a variable evaluated in R
-## counts as present when all its input columns are.
+## counts as present when all its input columns are, as do the columns of
+## a "present" variable (FE variables, a factor response).
 dm_remote_var_ok <- function(D, v) {
     types <- D$src$types
     cond <- switch(v$kind,
         factor = , logical = sprintf("s.%s IS NOT NULL", dm_qi(D, v$col)),
         numeric = sprintf("(%s) IS NOT NULL AND NOT isnan(%s)", v$sql, v$sql),
-        other = vapply(v$inputs, function(col) {
+        other = , present = vapply(v$inputs, function(col) {
             q <- dm_qi(D, col)
             if (types[[col]] == "double") sprintf("s.%s IS NOT NULL AND NOT isnan(s.%s)", q, q)
             else sprintf("s.%s IS NOT NULL", q)
@@ -417,10 +418,11 @@ dm_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(),
         D$vars[[nm]]$reason <- NULL
         D$vars[[nm]]$inputs <- unique(c(D$vars[[nm]]$inputs, override[[nm]]$inputs))
     }
-    ## weights and offset argument: variables in no term, which select rows
-    ## (and feed the fit)
+    ## arguments of a fit (weights, offset, response): variables in no term,
+    ## which select rows
     for (nm in names(extra)) {
-        D$vars[[nm]] <- list(name = nm, expr = NULL, inputs = extra[[nm]]$inputs, kind = "numeric",
+        D$vars[[nm]] <- list(name = nm, expr = NULL, inputs = extra[[nm]]$inputs,
+                             kind = extra[[nm]]$kind %||% "numeric",
                              reason = NULL, col = NULL, levels = NULL, sql = extra[[nm]]$sql)
     }
     D$filter <- dm_remote_filter(D)
@@ -630,12 +632,7 @@ print.dm_remote <- function(x, ...) {
     } else {
         cat(sprintf("engine: chunked, %s rows per batch (%s)\n", dm_fmt_count(x$chunk_size), x$why_short))
     }
-    cn <- x$colnames
-    if (length(cn)) {
-        shown <- utils::head(cn, 8L)
-        more <- if (length(cn) > 8L) sprintf(" ... (%d more)", length(cn) - 8L) else ""
-        cat("columns:", paste(shown, collapse = ", "), more, "\n")
-    }
+    dm_print_columns(x$colnames)
     invisible(x)
 }
 
@@ -647,6 +644,15 @@ dim.dm_remote <- function(x) c(x$cache$n %||% x$n, x$p)
 #' @export
 dimnames.dm_remote <- function(x) list(NULL, x$colnames)
 
+
+## Columns of the remote data that must be numeric (double, integer or
+## logical).
+dm_numeric_cols <- function(D, cols) {
+    for (col in cols) {
+        if (!D$src$types[[col]] %in% c("double", "integer", "logical"))
+            stop(sprintf("Column `%s` is not numeric.", col), call. = FALSE)
+    }
+}
 
 ## A column name argument (y, weights, group): check and quote.
 dm_remote_column <- function(D, x, what, several = FALSE) {
@@ -687,41 +693,6 @@ dm_remote_extend <- function(D, exprs, what = "expression") {
     ## the extra columns are not in the base table: batches read a copy
     D$src$base_table <- NULL
     D
-}
-
-## Residuals of a linear fit: the remote design over the same rows, with two
-## more columns in its remote data, `.fitted` (X beta) and `.resid` (the
-## response minus `.fitted`), usable as any column, for instance to scale
-## the design (`".resid" * R`) for sandwich covariance matrices. The
-## predictions live in a temporary view (SQL engine) or table (chunked).
-dm_remote_residuals <- function(x, beta, y = NULL, z = NULL, off = NULL) {
-    checkmate::assert_class(x, "dm_remote")
-    checkmate::assert_numeric(beta, len = x$p, any.missing = FALSE)
-    x <- dm_remote_unscaled(x)
-    if (is.null(z)) {
-        yy <- dm_remote_y(x, y)
-        if (is.null(yy)) stop("Give `y`: the design has no response.", call. = FALSE)
-        if (length(yy$cols) != 1L) stop("`y` must be a single column.", call. = FALSE)
-        z <- if (yy$response) x$vars[[yy$cols]]$sql else sprintf("CAST(s.%s AS DOUBLE)", dm_qi(x, yy$cols))
-        if (is.null(z))
-            stop("The response has no SQL translation; give `y`, a column of the remote data.", call. = FALSE)
-    }
-    taken <- intersect(c(".fitted", ".resid"), names(x$src$types))
-    if (length(taken))
-        stop(sprintf("The remote data already has a column `%s`.", taken[1L]), call. = FALSE)
-    view <- dm_remote_predict(x, beta, column = ".fitted")
-    out <- x
-    ## (z and the offset are expressions over the columns of the data, which
-    ## the view keeps; .fitted there is X beta)
-    out$src$select <- sprintf("SELECT s.* EXCLUDE (\".fitted\"), %s AS \".fitted\", (%s) - s.\".fitted\" AS \".resid\" FROM %s AS s",
-                              if (is.null(off)) "s.\".fitted\"" else sprintf("s.\".fitted\" + (%s)", off),
-                              z, dm_qi(x, unclass(view)[1L]))
-    out$src$base_table <- NULL
-    proto <- DBI::dbGetQuery(dm_con(x), sprintf("SELECT * FROM (%s) AS s LIMIT 0", out$src$select))
-    out$src$proto <- proto
-    out$src$types <- vapply(proto, dm_col_type, "")
-    out$src$view <- view
-    out
 }
 
 ## The response column of a formula design.
@@ -813,9 +784,7 @@ dm_remote_scale_sql <- function(D, s, op) {
         checkmate::assert_string(as.character(s), .var.name = "scale")
         e <- sprintf("(%s)", as.character(s))
     } else if (is.character(s)) {
-        dm_remote_column(D, s, "scale")
-        if (!D$src$types[[s]] %in% c("double", "integer", "logical"))
-            stop(sprintf("Column `%s` is not numeric.", s), call. = FALSE)
+        dm_numeric_cols(D, dm_remote_column(D, s, "scale"))
         e <- sprintf("CAST(%s AS DOUBLE)", dm_qi(D, s))
     } else if (is.numeric(s) && length(s) == 1L && is.null(dim(s))) {
         e <- dm_sql_double(s)

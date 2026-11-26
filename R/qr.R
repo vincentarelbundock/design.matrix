@@ -138,13 +138,7 @@ dmqr_centered <- function(x, ch, G) {
     al <- ch$pivot[seq_len(p) > k]
     Tm <- ctr$T
     if (!identical(keep, sort(keep)) || (length(al) && any(Tm[al, keep] != 0))) return(ch)
-    xs <- x
-    if (x$engine == "sql") {
-        for (nm in names(ctr$shift))
-            xs$vars[[nm]]$sql <- sprintf("(%s - %s)", x$vars[[nm]]$sql, dm_sql_double(ctr$shift[[nm]]))
-    } else {
-        xs$shift <- ctr$shift
-    }
+    xs <- dm_shifted(x, ctr$shift)
     ## (not compressed: the design of the patterns would not be shifted)
     op <- options(design.matrix.remote_compress = FALSE)
     on.exit(options(op))
@@ -162,9 +156,21 @@ dmqr_centered <- function(x, ch, G) {
     ch
 }
 
-## Centering of the numeric variables: list(shift (named by variable), T)
-## with X(shifted) = X T, T unit upper triangular, or NULL (nothing to
-## center, or no such T).
+## The remote design with numeric variables shifted (their SQL, or the
+## batches of the chunked engine).
+dm_shifted <- function(x, shift) {
+    if (x$engine == "sql") {
+        for (nm in names(shift))
+            x$vars[[nm]]$sql <- sprintf("(%s - %s)", x$vars[[nm]]$sql, dm_sql_double(shift[[nm]]))
+    } else {
+        x$shift <- shift
+    }
+    x
+}
+
+## Centering of the numeric variables of a remote design: list(shift (named
+## by variable), T) with X(shifted) = X T, T unit upper triangular, or NULL
+## (nothing to center, or no such T); from a sample of its rows.
 dm_center <- function(D) {
     plan <- D$plan
     sample <- dm_remote_sample(D)
@@ -172,22 +178,32 @@ dm_center <- function(D) {
     mf <- tryCatch(design_frame(plan$terms, sample, xlev = plan$xlevels, na.action = stats::na.omit),
                    error = function(e) NULL)
     if (is.null(mf) || !nrow(mf)) return(NULL)
-    cls <- vapply(mf, stats::.MFclass, "")
-    num <- names(cls)[cls == "numeric"]
+    if (D$p > 2000L) return(NULL)
+    dm_center_shift(mf, mf, function(fr) dm_frame_design(D, fr), D$p)
+}
+
+## The shift of the numeric variables of a model frame whose mean (in the
+## rows of `stats_frame`) is large compared with their spread, and T with
+## X(shifted) = X T unit upper triangular, checked on prototype rows drawn
+## from `proto_frame` (levels and logical values at random, numeric values
+## near zero, which keeps the prototype design well conditioned), the
+## designs built by build(frame) with p columns: list(shift, T), or NULL.
+## (For remote designs, dm_center(); in memory, dm_fe_center().)
+dm_center_shift <- function(stats_frame, proto_frame, build, p) {
+    tt <- attr(stats_frame, "terms")
+    resp <- if (!is.null(tt) && attr(tt, "response") > 0L) dm_terms_vars(tt)$names[attr(tt, "response")]
+    cand <- setdiff(names(stats_frame), resp)
+    num <- cand[vapply(cand, function(nm) identical(stats::.MFclass(stats_frame[[nm]]), "numeric"), NA)]
     if (!length(num)) return(NULL)
-    mu <- vapply(num, function(nm) mean(mf[[nm]]), 0)
-    sdv <- vapply(num, function(nm) stats::sd(mf[[nm]]), 0)
+    mu <- vapply(num, function(nm) mean(stats_frame[[nm]]), 0)
+    sdv <- vapply(num, function(nm) stats::sd(stats_frame[[nm]]), 0)
     sdv[!is.finite(sdv)] <- 0
     ## only variables whose mean is large compared with their spread
     big <- is.finite(mu) & abs(mu) > sdv
     if (!any(big)) return(NULL)
     shift <- mu[big]
-    p <- D$p
-    if (p > 2000L) return(NULL)
-    ## prototype rows: sampled rows, with random levels and random values
     m <- max(4L * p, 200L)
-    idx <- sample.int(nrow(mf), m, replace = TRUE)
-    proto <- mf[idx, , drop = FALSE]
+    proto <- proto_frame[sample.int(nrow(proto_frame), m, replace = TRUE), , drop = FALSE]
     for (nm in names(proto)) {
         x <- proto[[nm]]
         if (is.factor(x)) {
@@ -196,22 +212,18 @@ dm_center <- function(D) {
         } else if (is.logical(x)) {
             proto[[nm]] <- sample(c(FALSE, TRUE), m, TRUE)
         } else if (nm %in% num) {
-            ## (T does not depend on the values: values near zero keep the
-            ## prototype design well conditioned)
             proto[[nm]] <- stats::rnorm(m)
         }
     }
-    attr(proto, "terms") <- attr(mf, "terms")
     shifted <- proto
     for (nm in names(shift)) shifted[[nm]] <- proto[[nm]] - shift[[nm]]
-    X0 <- tryCatch(as.matrix(dm_frame_design(D, proto)), error = function(e) NULL)
-    X1 <- tryCatch(as.matrix(dm_frame_design(D, shifted)), error = function(e) NULL)
-    if (is.null(X0) || is.null(X1)) return(NULL)
+    X0 <- tryCatch(as.matrix(build(proto)), error = function(e) NULL)
+    X1 <- tryCatch(as.matrix(build(shifted)), error = function(e) NULL)
+    if (is.null(X0) || is.null(X1) || ncol(X0) != p || ncol(X1) != p) return(NULL)
     q <- qr(X0)
     if (q$rank < p) return(NULL)
     Tm <- unname(qr.coef(q, X1))
-    scale <- max(1, abs(X1))
-    if (!all(is.finite(Tm)) || max(abs(X0 %*% Tm - X1)) > 1e-8 * scale) return(NULL)
+    if (!all(is.finite(Tm)) || max(abs(X0 %*% Tm - X1)) > 1e-8 * max(1, abs(X1))) return(NULL)
     ts <- max(1, abs(Tm))
     if (max(abs(diag(Tm) - 1)) > 1e-8 * ts || max(abs(Tm[lower.tri(Tm)])) > 1e-8 * ts) return(NULL)
     Tm[lower.tri(Tm)] <- 0
@@ -219,6 +231,7 @@ dm_center <- function(D) {
     Tm[abs(Tm) < 1e-10 * ts] <- 0
     list(shift = shift, T = Tm)
 }
+
 ## The in-memory design of a model frame of the plan's terms.
 dm_frame_design <- function(D, mf) {
     plan <- D$plan
@@ -258,7 +271,7 @@ dmqr_chol <- function(x, G, tol) {
     ## entries can be so small that their squares underflow: when the
     ## design's smallest possible non-zero entry rules that out, zero
     ## columns need no check against the data.
-    if (any(dg == 0) && dmqr_min_nonzero(x)^2 > 1e-300) dres[dg == 0] <- 0
+    if (any(dg == 0) && dmp_min_nonzero(x)^2 > 1e-300) dres[dg == 0] <- 0
     repeat {
         ch <- .Call(C_dm_chol_pivot, G, tol, susp, as.double(nrow(x)), dres)
         names(ch) <- c("R", "rank", "pivot", "suspects")
@@ -325,30 +338,6 @@ dmqr_resid2 <- function(x, G, ch, cols) {
     list(ratio = ratio, nonzero = nonzero)
 }
 
-## A lower bound on the absolute value of the non-zero entries of x (0 when
-## no bound is available).
-dmqr_min_nonzero <- function(x) {
-    if (inherits(x, "dm_remote")) return(0)
-    terms <- dm_terms(x)
-    out <- Inf
-    for (t in terms) {
-        d <- t$design
-        b <- if (kernel_ok(d)) .Call(C_dm_min_nonzero, d$setup, d$vars) else {
-            X <- as.matrix(d)
-            a <- abs(X[X != 0 & is.finite(X)])
-            if (length(a)) min(a) else 1
-        }
-        s <- t$scale
-        if (!is.null(s)) {
-            a <- abs(s[s != 0 & is.finite(s)])
-            b <- b * (if (length(a)) min(a) else 1)
-        }
-        out <- min(out, b)
-    }
-    ## a sum of two designs can cancel to small values
-    if (length(terms) > 1L) 0 else out
-}
-
 #' @export
 print.design_qr <- function(x, ...) {
     cat(sprintf("<design_qr: %d x %d design, rank %d>\n",
@@ -410,7 +399,7 @@ dmqr_coef <- function(qr, Y, steps = 3L) {
     D <- qr$design
     keep <- qr$pivot[seq_len(k)]
     if (!is.null(qr$dense))
-        return(base::qr.coef(qr$dense, Y)[keep, , drop = FALSE])
+        return(base::qr.coef(qr$dense, as.matrix(Y))[keep, , drop = FALSE])
     if (!is.null(qr$centered)) {
         ## a remote design with numeric variables shifted (dmqr_centered()):
         ## X~'Y on the shifted design, solved with its well-conditioned
@@ -467,35 +456,20 @@ dmqr_out <- function(out, yy, rows = yy$rows) {
     out
 }
 
-## Remote designs: `y` is a column name (or several), a DBI::SQL()
-## expression or a remote column; the row-wise results are tables (see
-## dmp_output() in primitives.R).
-dmqr_is_remote <- function(qr) inherits(qr$design, "dm_remote")
-
-dmqr_ry <- function(qr, y) {
-    D <- dm_remote_unscaled(qr$design)
-    if (dm_is_rcols(y)) return(list(Y = y, vec = length(y) == 1L, cols = NULL))
-    if (inherits(y, "SQL")) return(list(Y = dm_rcols(D, as.character(y)), vec = TRUE, cols = NULL))
-    if (is.character(y)) {
-        dm_remote_column(D, y, "y", several = TRUE)
-        return(list(Y = dm_rcols(D, sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, y))), vec = length(y) == 1L,
-                    cols = if (length(y) > 1L) y))
-    }
-    stop("For a remote design, `y` must name columns of its data, or be a DBI::SQL() expression.", call. = FALSE)
-}
-
-dmqr_rout <- function(qr, cols, prefix) {
-    k <- length(cols)
+## A row-wise result of the methods (the columns `cols`, one or several):
+## a matrix or vector like `y` in memory (dmqr_out()), a table with columns
+## `prefix` (or prefix1, prefix2, ...) remotely (dmp_output()).
+dmqr_result <- function(qr, cols, prefix, yy, rows = yy$rows) {
+    k <- dmc_ncol(cols)
     nm <- if (k == 1L) prefix else paste0(prefix, seq_len(k))
-    dmp_output(qr$design, stats::setNames(lapply(seq_len(k), function(j) dmc_col(cols, j)), nm))
+    dmp_output(qr$design, stats::setNames(lapply(seq_len(k), function(j) dmc_col(cols, j)), nm),
+               memory = function(d) dmqr_out(unname(as.matrix(d)), yy, rows))
 }
 
-dmqr_fitted <- function(qr, y) {
-    yy <- dmqr_y(y, nrow(qr$design))
-    if (!is.null(qr$dense))
-        return(list(fit = unname(base::qr.fitted(qr$dense, yy$Y)), yy = yy))
-    b <- dmqr_coef(qr, yy$Y)
-    list(fit = unname(qr$design %*% dmqr_full(qr, b)), yy = yy)
+## The fitted values of y (a column, one or several).
+dmqr_fitted <- function(qr, Y) {
+    if (!is.null(qr$dense)) return(unname(base::qr.fitted(qr$dense, Y)))
+    dmp_mult(qr$design, dmqr_full(qr, dmqr_coef(qr, Y)), along = list(Y))
 }
 
 #' @importFrom methods setOldClass
@@ -513,14 +487,7 @@ setOldClass("design_qr")
 #'   as in [solve.qr()].
 #' @exportMethod qr.coef
 setMethod("qr.coef", "design_qr", function(qr, y) {
-    if (dmqr_is_remote(qr)) {
-        yy <- dmqr_ry(qr, y)
-        out <- dmqr_full(qr, dmqr_coef(qr, yy$Y), fill = NA_real_)
-        rownames(out) <- colnames(qr$design)
-        colnames(out) <- yy$cols
-        return(if (yy$vec) out[, 1L] else out)
-    }
-    yy <- dmqr_y(y, nrow(qr$design))
+    yy <- dmp_y(qr$design, y)
     b <- dmqr_coef(qr, yy$Y)
     out <- dmqr_full(qr, b, fill = NA_real_)
     dmqr_out(out, yy, colnames(qr$design))
@@ -531,25 +498,15 @@ setMethod("qr.coef", "design_qr", function(qr, y) {
 setMethod("qr.fitted", "design_qr", function(qr, y, k = qr$rank) {
     if (!identical(as.integer(k), as.integer(qr$rank)))
         stop("Only `k = qr$rank` is supported for design matrices.", call. = FALSE)
-    if (dmqr_is_remote(qr)) {
-        yy <- dmqr_ry(qr, y)
-        fit <- dmp_mult(qr$design, dmqr_full(qr, dmqr_coef(qr, yy$Y)), along = list(yy$Y))
-        return(dmqr_rout(qr, fit, ".fitted"))
-    }
-    f <- dmqr_fitted(qr, y)
-    dmqr_out(f$fit, f$yy)
+    yy <- dmp_y(qr$design, y)
+    dmqr_result(qr, dmqr_fitted(qr, yy$Y), ".fitted", yy)
 })
 
 #' @rdname design_qr
 #' @exportMethod qr.resid
 setMethod("qr.resid", "design_qr", function(qr, y) {
-    if (dmqr_is_remote(qr)) {
-        yy <- dmqr_ry(qr, y)
-        fit <- dmp_mult(qr$design, dmqr_full(qr, dmqr_coef(qr, yy$Y)), along = list(yy$Y))
-        return(dmqr_rout(qr, yy$Y - fit, ".resid"))
-    }
-    f <- dmqr_fitted(qr, y)
-    dmqr_out(f$yy$Y - f$fit, f$yy)
+    yy <- dmp_y(qr$design, y)
+    dmqr_result(qr, yy$Y - dmqr_fitted(qr, yy$Y), ".resid", yy)
 })
 
 #' @rdname design_qr
@@ -557,16 +514,11 @@ setMethod("qr.resid", "design_qr", function(qr, y) {
 setMethod("qr.qty", "design_qr", function(qr, y) {
     k <- qr$rank
     keep <- qr$pivot[seq_len(k)]
-    if (dmqr_is_remote(qr)) {
-        yy <- dmqr_ry(qr, y)
-        out <- dmqr_bs(dmqr_R11(qr), dmp_crossprod(qr$design, yy$Y)[keep, , drop = FALSE], transpose = TRUE)
-        return(if (yy$vec) out[, 1L] else out)
-    }
-    yy <- dmqr_y(y, nrow(qr$design))
+    yy <- dmp_y(qr$design, y)
     if (!is.null(qr$dense))
         return(dmqr_out(base::qr.qty(qr$dense, yy$Y)[seq_len(k), , drop = FALSE], yy,
                         yy$rows[seq_len(k)]))
-    out <- dmqr_bs(dmqr_R11(qr), crossprod(qr$design, yy$Y)[keep, , drop = FALSE],
+    out <- dmqr_bs(dmqr_R11(qr), dmp_crossprod(qr$design, yy$Y)[keep, , drop = FALSE],
                    transpose = TRUE)
     dmqr_out(out, yy, yy$rows[seq_len(k)])
 })
@@ -582,9 +534,7 @@ setMethod("qr.qy", "design_qr", function(qr, y) {
         return(dmqr_out(unname(base::qr.qy(qr$dense, Z)), yy, NULL))
     }
     b <- dmqr_bs(dmqr_R11(qr), yy$Y)
-    if (dmqr_is_remote(qr)) return(dmqr_rout(qr, dmp_mult(qr$design, dmqr_full(qr, b)), ".qy"))
-    out <- unname(qr$design %*% dmqr_full(qr, b))
-    dmqr_out(out, yy, NULL)
+    dmqr_result(qr, dmp_mult(qr$design, dmqr_full(qr, b)), ".qy", yy, NULL)
 })
 
 #' @rdname design_qr
@@ -596,9 +546,8 @@ setMethod("qr.Q", "design_qr", function(qr, complete = FALSE, Dvec) {
         stop("`Dvec` is not supported for design matrices.", call. = FALSE)
     k <- qr$rank
     if (!is.null(qr$dense)) return(unname(base::qr.Q(qr$dense)[, seq_len(k), drop = FALSE]))
-    if (dmqr_is_remote(qr))
-        return(dmqr_rout(qr, dmp_mult(qr$design, dmqr_full(qr, dmqr_bs(dmqr_R11(qr), diag(1, k)))), ".Q"))
-    unname(qr$design %*% dmqr_full(qr, dmqr_bs(dmqr_R11(qr), diag(1, k))))
+    dmqr_result(qr, dmp_mult(qr$design, dmqr_full(qr, dmqr_bs(dmqr_R11(qr), diag(1, k)))), ".Q",
+                list(vec = FALSE, cols = NULL), NULL)
 })
 
 #' @rdname design_qr
@@ -613,13 +562,6 @@ setMethod("qr.R", "design_qr", function(qr, complete = FALSE) {
 #' @method solve design_qr
 #' @export
 solve.design_qr <- function(a, b, ...) {
-    if (dmqr_is_remote(a)) {
-        if (missing(b)) stop("only square matrices can be inverted", call. = FALSE)
-        if (a$rank != ncol(a$design)) stop("singular matrix 'a' in solve", call. = FALSE)
-        res <- qr.coef(a, b)
-        res[is.na(res)] <- 0
-        return(res)
-    }
     n <- nrow(a$design)
     p <- ncol(a$design)
     if (a$rank != min(n, p)) stop("singular matrix 'a' in solve", call. = FALSE)

@@ -231,11 +231,14 @@ print.design_matrix <- function(x, ...) {
     if (dm_is_comb(x)) {
         cat(if (is.null(x$design2)) "scaled rows of one design\n" else "combination of two designs\n")
     }
-    cn <- dimnames(x)[[2L]]
-    if (length(cn)) {
-        shown <- utils::head(cn, 8L)
-        more <- if (length(cn) > 8L) sprintf(" ... (%d more)", length(cn) - 8L) else ""
-        cat("columns:", paste(shown, collapse = ", "), more, "\n")
-    }
+    dm_print_columns(dimnames(x)[[2L]])
     invisible(x)
+}
+
+## The first column names of a design, for print().
+dm_print_columns <- function(cn) {
+    if (!length(cn)) return(invisible())
+    shown <- utils::head(cn, 8L)
+    more <- if (length(cn) > 8L) sprintf(" ... (%d more)", length(cn) - 8L) else ""
+    cat("columns:", paste(shown, collapse = ", "), more, "\n")
 }

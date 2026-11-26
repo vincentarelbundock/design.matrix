@@ -159,37 +159,29 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
             stop("With a design matrix, give the response as `y`; `data`, ",
                  "`na.action` and `contrasts` do not apply.", call. = FALSE)
         if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
-        w <- if (missing(weights)) NULL else weights
-        off <- if (missing(offset)) NULL else offset
-        if (inherits(formula, "dm_remote")) {
-            if (missing(weights)) weights <- NULL
-            if (missing(offset)) offset <- NULL
-        }
+        ## (remotely, `weights` and `offset` are columns or expressions)
         fit <- if (inherits(formula, "dm_remote")) {
-            dm_remote_glm_design(formula, y, substitute(weights), substitute(offset), family, start, control,
+            dm_remote_glm_design(formula, y, if (missing(weights)) NULL else substitute(weights),
+                                 if (missing(offset)) NULL else substitute(offset), family, start, control,
                                  compress, parent.frame())
         } else {
-            dmglm_design(formula, y, w, off, start, family, control, compress)
+            dmglm_design(formula, y, if (missing(weights)) NULL else weights,
+                         if (missing(offset)) NULL else offset, start, family, control, compress)
         }
         fit$call <- cl
         return(fit)
     }
     if (!is.null(y)) stop("`y` applies only when the first argument is a design matrix.", call. = FALSE)
-    na_kind <- if (missing(na.action)) "omit" else dmglm_na(na.action)
-    ## remote data: the response, weights and offset as SQL (remote_glm.R)
+    na_kind <- if (missing(na.action)) "omit" else dm_na_kind(na.action, c("omit", "exclude", "fail"))
+    ## remote data: the response, weights and offset as SQL (remote_fit.R)
     if (!missing(data) && dm_is_remote_source(data)) {
         return(dm_remote_glm(formula, data, family, if (missing(weights)) NULL else substitute(weights),
                              if (missing(offset)) NULL else substitute(offset), start, contrasts, compress,
-                             control, cl, list(...), na_fail = na_kind == "fail", env = parent.frame()))
+                             control, cl, list(...), na = na_kind, env = parent.frame()))
     }
     if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
     ## the model frame, as glm() builds it
-    mf <- match.call(expand.dots = FALSE)
-    m <- match(c("formula", "data", "weights", "na.action", "offset"), names(mf), 0L)
-    mf <- mf[c(1L, m)]
-    mf$drop.unused.levels <- TRUE
-    mf[[1L]] <- quote(design.matrix::design_frame)
-    mf <- eval(mf, parent.frame())
+    mf <- dmfit_model_frame(cl, c("weights", "na.action", "offset"), parent.frame())
     mt <- attr(mf, "terms")
     if (attr(mt, "response") == 0L) stop("The formula has no response.", call. = FALSE)
     w <- as.vector(stats::model.weights(mf))
@@ -210,17 +202,9 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
     fit$xlevels <- stats::.getXlevels(mt, mf)
     fit$na.action <- attr(mf, "na.action")
     fit$offset_call <- cl$offset
+    fit$env <- environment(mt)
     if (model) fit$model <- mf else fit$data <- NULL
     fit
-}
-
-## na.action: na.omit, na.exclude or na.fail.
-dmglm_na <- function(na.action) {
-    for (nm in c("omit", "exclude", "fail")) {
-        f <- get(paste0("na.", nm), envir = asNamespace("stats"))
-        if (identical(na.action, f) || identical(na.action, paste0("na.", nm))) return(nm)
-    }
-    stop("`na.action` must be na.omit, na.exclude or na.fail.", call. = FALSE)
 }
 
 ## The family, as glm() resolves it.
@@ -232,39 +216,6 @@ dmglm_family <- function(family, env) {
         stop("'family' not recognized", call. = FALSE)
     }
     family
-}
-
-## A column computed once: remotely, its expressions become columns of a
-## new frame (a projection over the frame of the column, one level deeper,
-## as products are), so that later expressions refer to them instead of
-## repeating them. Needed where expressions nest: DuckDB expands macros
-## (qnorm, pnorm) inline, and pnorm(qnorm(mustart)) would repeat the
-## expression of mustart hundreds of times. In memory, the column itself.
-## (A candidate for the contract: dmc_freeze.)
-dmglm_freeze <- function(col) {
-    if (!dm_is_rcols(col)) return(col)
-    fr <- unclass(col)$frame
-    sql <- unclass(col)$sql
-    nm <- paste0("__dm_f", substr(dm_tmp_name("f"), 3L, 10L), "_", seq_along(sql))
-    x <- dm_remote_extend(dm_remote_unscaled(fr), stats::setNames(sql, nm), "column")
-    x$depth <- dm_frame_depth(fr) + 1L
-    dm_rcols(x, sprintf("s.%s", dm_qi(x, nm)))
-}
-
-## Conditions: TRUE where x is not NaN (or NA), and where x is finite.
-dmglm_notnan <- function(x) dmc_is_finite(x) | (abs(x) == Inf)
-dmglm_finite <- function(x) dmc_is_finite(x)
-## 1 where `cond` is TRUE (dmglm_count) or not TRUE (dmglm_bad), else 0
-## (NA where cond is NA in memory; remotely, NULL counts as not TRUE).
-## (in memory the logical vector itself, which sums and multiplies as 0/1)
-dmglm_count <- function(cond) if (dm_is_rcols(cond)) dmc_ifelse(cond, 1, 0) else cond
-dmglm_bad <- function(cond) if (dm_is_rcols(cond)) dmc_ifelse(cond, 0, 1) else !cond
-
-## Sums over rows of several columns (one query remotely).
-dmglm_sums <- function(...) {
-    a <- list(...)
-    if (any(vapply(a, dm_is_rcols, NA))) return(dm_colsum(do.call(dmc_cbind, a)))
-    vapply(a, function(v) sum(v), 0)
 }
 
 ## ---- families on columns ----------------------------------------------------
@@ -308,44 +259,15 @@ dmglm_kind <- function(family) {
 }
 
 ## The family as functions of columns (vectors in memory, SQL remotely),
-## computed as R's family objects compute them.
-dmglm_cf <- function(k, family) {
-    cf <- dmglm_cf_cols(k)
-    ## vectors (in memory): the family object itself, as glm.fit() calls it
-    disp <- function(rf, colf) {
-        force(rf)
-        force(colf)
-        function(...) {
-        a <- list(...)
-            if (any(vapply(a, dm_is_rcols, NA))) colf(...) else rf(...)
-        }
-    }
-    valideta <- family$valideta %||% function(eta) TRUE
-    validmu <- family$validmu %||% function(mu) TRUE
-    cf$linkfun <- disp(family$linkfun, cf$linkfun)
-    cf$linkinv <- disp(family$linkinv, cf$linkinv)
-    cf$mu.eta <- disp(family$mu.eta, cf$mu.eta)
-    cf$variance <- disp(family$variance, cf$variance)
-    cf$dev <- disp(family$dev.resids, cf$dev)
-    colvalid <- cf$valid
-    cf$valid <- function(eta, mu) {
-        if (dm_is_rcols(eta) || dm_is_rcols(mu)) return(colvalid(eta, mu))
-        isTRUE(valideta(eta) && validmu(mu))
-    }
-    cf
-}
-
-## The family on columns: SQL remotely (and R's arithmetic on vectors).
-dmglm_cf_cols <- function(k) {
+## with the arithmetic of R's family objects (so that, in memory, the
+## values are those of glm.fit(), to the last bit).
+dmglm_cf <- function(k) {
     eps <- .Machine$double.eps
     link <- switch(k$link,
-        identity = list(fun = function(m) m, inv = function(e) e, me = function(e) 0 * e + 1),
+        identity = list(fun = function(m) m, inv = function(e) e, me = function(e) dmc_const(e, 1)),
         log = list(fun = function(m) log(m), inv = function(e) dmc_pmax(exp(e), eps),
                    me = function(e) dmc_pmax(exp(e), eps)),
-        logit = list(fun = function(m) log(m / (1 - m)),
-                     inv = function(e) dmc_ifelse(e < -30, eps / (1 + eps),
-                                                  dmc_ifelse(e > 30, (1 / eps) / (1 + 1 / eps), exp(e) / (1 + exp(e)))),
-                     me = function(e) dmc_ifelse(e > 30 | e < -30, eps, exp(e) / ((1 + exp(e)) * (1 + exp(e))))),
+        logit = list(fun = function(m) log(m / (1 - m)), inv = dmc_logit_inv, me = dmc_logit_mu_eta),
         probit = {
             thr <- -stats::qnorm(eps)
             list(fun = function(m) dmc_qnorm(m), inv = function(e) dmc_pnorm(dmc_pmin(dmc_pmax(e, -thr), thr)),
@@ -359,31 +281,31 @@ dmglm_cf_cols <- function(k) {
                        }),
         cauchit = {
             thr <- -stats::qcauchy(eps)
-            list(fun = function(m) dmc_ifelse(m <= 0.5, -1 / tan(pi * m), 1 / tan(pi * (1 - m))),
+            list(fun = function(m) dmc_qcauchy(m),
                  inv = function(e) dmc_pcauchy(dmc_pmin(dmc_pmax(e, -thr), thr)),
                  me = function(e) dmc_pmax(1 / (pi * (1 + e * e)), eps))
         },
         inverse = list(fun = function(m) 1 / m, inv = function(e) 1 / e, me = function(e) -1 / (e * e),
-                       valid = function(e) dmglm_finite(e) & e != 0),
+                       valid = function(e) dmc_is_finite(e) & e != 0),
         sqrt = list(fun = function(m) sqrt(m), inv = function(e) e * e, me = function(e) 2 * e,
-                    valid = function(e) dmglm_finite(e) & e > 0),
+                    valid = function(e) dmc_is_finite(e) & e > 0),
         "1/mu^2" = list(fun = function(m) 1 / (m * m), inv = function(e) 1 / sqrt(e),
-                        me = function(e) -1 / (2 * e^1.5), valid = function(e) dmglm_finite(e) & e > 0))
-    variance <- switch(k$var, "1" = function(m) 0 * m + 1, "mu(1-mu)" = function(m) m * (1 - m),
-                       mu = function(m) m, "mu^2" = function(m) m * m, "mu^3" = function(m) m * m * m)
+                        me = function(e) -1 / (2 * e^1.5), valid = function(e) dmc_is_finite(e) & e > 0))
+    variance <- switch(k$var, "1" = function(m) dmc_const(m, 1), "mu(1-mu)" = function(m) m * (1 - m),
+                       mu = function(m) m, "mu^2" = function(m) m * m, "mu^3" = function(m) m^3)
     validmu <- switch(k$validmu, none = NULL,
-                      unit = function(m) dmglm_finite(m) & m > 0 & m < 1,
-                      unit_nf = function(m) dmglm_notnan(m) & m > 0 & m < 1,
-                      positive = function(m) dmglm_finite(m) & m > 0,
-                      positive_nf = function(m) dmglm_notnan(m) & m > 0)
+                      unit = function(m) dmc_is_finite(m) & m > 0 & m < 1,
+                      unit_nf = function(m) dmc_notnan(m) & m > 0 & m < 1,
+                      positive = function(m) dmc_is_finite(m) & m > 0,
+                      positive_nf = function(m) dmc_notnan(m) & m > 0)
     xlogx <- function(a, b) dmc_ifelse(a != 0, a * log(a / b), 0)
     dev <- switch(k$dev,
-        gaussian = function(y, m, w) w * (y - m) * (y - m),
-        binomial = function(y, m, w) 2 * w * (xlogx(y, m) + xlogx(1 - y, 1 - m)),
+        gaussian = function(y, m, w) w * ((y - m)^2),
+        binomial = dmc_binomial_dev,
         poisson = function(y, m, w) dmc_ifelse(y > 0, 2 * w * (y * log(y / m) - (y - m)), 2 * m * w),
         gamma = function(y, m, w) -2 * w * (log(dmc_ifelse(y == 0, 1, y / m)) - (y - m) / m),
         qgamma = function(y, m, w) dmc_pmax(-2 * w * (log(dmc_ifelse(y == 0, 1, y) / m) - (y - m) / m), 0),
-        invgauss = function(y, m, w) w * (y - m) * (y - m) / (y * m * m))
+        invgauss = function(y, m, w) w * ((y - m)^2) / (y * m^2))
     ## dev(y, mu, w) = w (sat(y) + a part linear in y): the part of the
     ## deviance that does not depend on mu (for compression)
     sat <- switch(k$dev, gaussian = NULL,
@@ -395,7 +317,7 @@ dmglm_cf_cols <- function(k) {
         y = function(y, w, n, cb) y,
         binomial = function(y, w, n, cb) if (cb) (n * y + 0.5) / (n + 1) else (w * y + 0.5) / (w + 1),
         poisson = function(y, w, n, cb) y + 0.1,
-        y01 = function(y, w, n, cb) y + 0.1 * dmglm_count(y == 0),
+        y01 = function(y, w, n, cb) y + 0.1 * dmc_count(y == 0),
         clamp = function(y, w, n, cb) dmc_pmax(0.001, dmc_pmin(0.999, y)))
     valid <- function(eta, mu) {
         a <- link$valid
@@ -416,6 +338,7 @@ dmglm_cf_cols <- function(k) {
 ## times trials for a two-column binomial response (a successes, b
 ## failures), y = 0 where the weight is 0.
 dmglm_cols <- function(y, a, b, w, off, k, cb, weighted = TRUE) {
+    y0 <- y
     if (cb) {
         if (!k$binomial)
             stop("A two-column response (successes and failures) needs a binomial family.", call. = FALSE)
@@ -426,8 +349,9 @@ dmglm_cols <- function(y, a, b, w, off, k, cb, weighted = TRUE) {
         nt <- dmc_const(y, 1)
         if (k$binomial) y <- dmc_ifelse(w == 0, 0, y)
     }
-    ## (trials weight the rows of a two-column response)
-    list(y = y, w = w, n = nt, off = off, cbind = cb, a = a, b = b, weighted = weighted || cb)
+    ## (trials weight the rows of a two-column response; y0 the response as
+    ## given)
+    list(y = y, w = w, n = nt, off = off, cbind = cb, a = a, b = b, weighted = weighted || cb, y0 = y0)
 }
 
 ## The response of a model frame in memory (a vector, a factor or character
@@ -460,19 +384,26 @@ dmglm_design <- function(x, y, weights, offset, start, family, control, compress
     if (is.null(y)) stop("Give the response as `y`.", call. = FALSE)
     n <- nrow(x)
     if (NROW(y) != n) stop(sprintf("The response must have %d values.", n), call. = FALSE)
-    if (anyNA(y)) stop("NA/NaN/Inf in 'y'", call. = FALSE)
-    if (!is.null(weights)) {
-        checkmate::assert_numeric(weights, len = n)
-        if (anyNA(weights)) stop("missing or negative weights not allowed", call. = FALSE)
-    }
-    if (!is.null(offset)) {
-        checkmate::assert_numeric(offset, len = n)
-        if (!all(is.finite(offset))) stop("NA/NaN/Inf in 'offset'", call. = FALSE)
-    }
+    if (!is.null(weights)) checkmate::assert_numeric(weights, len = n)
+    if (!is.null(offset)) checkmate::assert_numeric(offset, len = n)
     tt <- x$training_terms
     intercept <- if (!is.null(tt)) attr(tt, "intercept") > 0L else "(Intercept)" %in% colnames(x)
     cols <- dmglm_mem_cols(y, weights, offset, dmglm_kind(family))
+    dmglm_check_design(cols)
     dmglm_fit(x, cols, family, start, control, intercept, compress, wmsg = "missing or negative weights not allowed")
+}
+
+## The checks of a fit on a design (no rows dropped): no missing response
+## or weight, a finite offset.
+dmglm_check_design <- function(cols) {
+    y <- if (cols$cbind) cols$a + cols$b else cols$y0
+    s <- dmc_sums(dmc_count(dmc_notnan(y), negate = TRUE),
+                  if (cols$weighted && !cols$cbind) dmc_count(dmc_notnan(cols$w), negate = TRUE) else 0,
+                  if (!is.null(cols$off)) dmc_count(dmc_is_finite(cols$off), negate = TRUE) else 0)
+    bad <- is.na(s) | s > 0
+    if (bad[1L]) stop("NA/NaN/Inf in 'y'", call. = FALSE)
+    if (bad[2L]) stop("missing or negative weights not allowed", call. = FALSE)
+    if (bad[3L]) stop("NA/NaN/Inf in 'offset'", call. = FALSE)
 }
 
 ## ---- checks ------------------------------------------------------------------
@@ -484,12 +415,12 @@ dmglm_checks <- function(cols, k, start, wmsg) {
     w <- cols$w
     one <- 0 * y + 1
     zero <- 0 * y
-    sums <- list(n = one, nz = dmglm_count(w != 0), sw = w, swy = w * y,
-                 maxn = if (k$binomial) dmglm_count(cols$n > 1) else zero,
+    sums <- list(n = one, nz = dmc_count(w != 0), sw = w, swy = w * y,
+                 maxn = if (k$binomial) dmc_count(cols$n > 1) else zero,
                  slw = if (k$aic == "gaussian") dmc_ifelse(w > 0, log(w), 0) else zero,
-                 nzero = dmglm_count(w == 0), neg = dmglm_count(w < 0), infw = dmglm_count(abs(w) == Inf),
+                 nzero = dmc_count(w == 0), neg = dmc_count(w < 0), infw = dmc_count(abs(w) == Inf),
                  ly = if (k$aic == "inverse.gaussian") dmc_ifelse(y > 0, w * log(y), 0) else zero,
-                 nonint = if (k$aic == "poisson") dmglm_count(y != dmc_round(y)) else zero)
+                 nonint = if (k$aic == "poisson") dmc_count(y != dmc_round(y)) else zero)
     chk <- list()
     add <- function(cond, msg, type = "error") chk[[length(chk) + 1L]] <<- list(cond = cond, msg = msg, type = type)
     fam <- k$family
@@ -505,8 +436,8 @@ dmglm_checks <- function(cols, k, start, wmsg) {
     if (fam == "inverse.gaussian") add(y <= 0, "positive values only are allowed for the 'inverse.gaussian' family")
     if (fam == "gaussian" && is.null(start) && k$link %in% c("inverse", "log"))
         add(if (k$link == "inverse") y == 0 else y <= 0, "cannot find valid starting values: please specify some")
-    all_cols <- c(sums, lapply(chk, function(x) dmglm_count(x$cond)))
-    s <- do.call(dmglm_sums, unname(all_cols))
+    all_cols <- c(sums, lapply(chk, function(x) dmc_count(x$cond)))
+    s <- do.call(dmc_sums, unname(all_cols))
     ck <- stats::setNames(as.list(s[seq_along(sums)]), names(sums))
     if (ck$n == 0) stop("0 (non-NA) cases", call. = FALSE)
     if (ck$neg > 0) stop(wmsg, call. = FALSE)
@@ -532,7 +463,7 @@ dmglm_checks <- function(cols, k, start, wmsg) {
 
 dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg) {
     k <- dmglm_kind(family)
-    cf <- dmglm_cf(k, family)
+    cf <- dmglm_cf(k)
     ck <- dmglm_checks(cols, k, start, wmsg)
     tol <- min(1e-07, control$epsilon / 1000)
     p <- ncol(x)
@@ -544,11 +475,11 @@ dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg
     off <- cols$off %||% 0
     rows <- list(lin = function(b) dmp_mult(x, b), wls = dmglm_wls_design(x, tol), y = y, W = w, off = off, C = 0)
     ## starting values, on the rows
-    eta0 <- dmglm_freeze(if (!is.null(start)) dmp_mult(x, start) + off
+    eta0 <- dmc_freeze(if (!is.null(start)) dmp_mult(x, start) + off
                          else cf$linkfun(cf$mustart(y, w, cols$n, cols$cbind)))
-    mu0 <- dmglm_freeze(cf$linkinv(eta0))
+    mu0 <- dmc_freeze(cf$linkinv(eta0))
     v0 <- cf$valid(eta0, mu0)
-    s0 <- dmglm_sums(cf$dev(y, mu0, w), if (is.null(v0)) 0 * y else dmglm_bad(v0))
+    s0 <- dmc_sums(cf$dev(y, mu0, w), if (is.null(v0)) 0 * y else dmc_count(v0, negate = TRUE))
     if (isTRUE(is.na(s0[2L]) || s0[2L] > 0))
         stop("cannot find valid starting values: please specify some", call. = FALSE)
     devold <- s0[1L]
@@ -584,16 +515,15 @@ dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg
     nobs <- ck$nz
     if (nobs < .Machine$integer.max) nobs <- as.integer(nobs)
     rank <- res$fit$rank
-    remote <- inherits(x, "dm_remote")
     out <- list(coefficients = stats::setNames(res$coef, colnames(x)), rank = rank, pivot = res$fit$pivot,
                 R = res$fit$R, tol = tol, deviance = res$dev, null.deviance = fin$nulldev,
                 aic = dmglm_aic(k, ck, res$dev, fin$ll) + 2 * rank, iter = res$iter, converged = res$conv,
                 boundary = res$boundary, df.residual = nobs - rank, df.null = nobs - as.integer(intercept),
                 nobs = nobs, rows = ck$n, pearson = fin$pearson, zero_weights = fin$zero, family = family,
                 intercept = intercept, compressed = !is.null(pt), patterns = if (is.null(pt)) ck$n else length(units$W),
-                control = control, spec = dmfit_spec(x), remote = remote,
-                method = if (!is.null(pt)) "patterns" else switch(x$engine %||% "rows", sql = "SQL iterations",
-                                                                 chunked = "iterations in batches", "rows"),
+                control = control, spec = dmfit_spec(x),
+                method = if (!is.null(pt)) "patterns" else switch(dm_engine(x), sql = "SQL iterations",
+                                                                 chunked = "iterations in batches", NULL),
                 data = list(design = x, y = y, weights = w, offset = cols$off))
     class(out) <- "design_glm"
     out
@@ -615,7 +545,7 @@ dmglm_wls_design <- function(x, tol) {
 
 ## The same for an intercept alone (the null model): w2 and z sums.
 dmglm_wls_mean <- function(w2, z) {
-    s <- dmglm_sums(w2, w2 * z)
+    s <- dmc_sums(w2, w2 * z)
     if (!all(is.finite(s))) return(list(coefficients = NaN, rank = 0L, pivot = 1L, R = matrix(0, 1L, 1L)))
     list(coefficients = if (s[1L] > 0) s[2L] / s[1L] else 0, rank = if (s[1L] > 0) 1L else 0L,
          pivot = 1L, R = matrix(sqrt(s[1L]), 1L, 1L))
@@ -628,13 +558,13 @@ dmglm_working <- function(u, eta, mu, cf) {
     v <- cf$variance(mu)
     me <- cf$mu.eta(eta)
     good <- (W > 0) & (me != 0)
-    wz <- dmglm_freeze(dmc_cbind(dmc_ifelse(good, W * me * me / v, 0),
+    wz <- dmc_freeze(dmc_cbind(dmc_ifelse(good, W * me * me / v, 0),
                                  dmc_ifelse(good, (eta - u$off) + (u$y - mu) / me, 0)))
     w2 <- dmc_col(wz, 1L)
     z <- dmc_col(wz, 2L)
-    s <- dmglm_sums(dmglm_count((W > 0) & !dmglm_notnan(v)), dmglm_count((W > 0) & v == 0),
-                               dmglm_count((W > 0) & !dmglm_notnan(me)), dmglm_count(good),
-                               dmglm_bad(dmglm_finite(w2) & dmglm_finite(z)))
+    s <- dmc_sums(dmc_count((W > 0) & !dmc_notnan(v)), dmc_count((W > 0) & v == 0),
+                               dmc_count((W > 0) & !dmc_notnan(me)), dmc_count(good),
+                               dmc_count(dmc_is_finite(w2) & dmc_is_finite(z), negate = TRUE))
     if (isTRUE(is.na(s[1L]) || s[1L] > 0)) stop("NAs in V(mu)", call. = FALSE)
     if (isTRUE(s[2L] > 0)) stop("0s in V(mu)", call. = FALSE)
     if (isTRUE(is.na(s[3L]) || s[3L] > 0)) stop("NAs in d(mu)/d(eta)", call. = FALSE)
@@ -671,11 +601,11 @@ dmglm_units <- function(u, cf, k, first = NULL, eta = NULL, mu = NULL) {
         },
         eval = function(beta) {
             eta <- u$lin(beta) + u$off
-            mu <- dmglm_freeze(cf$linkinv(eta))
+            mu <- dmc_freeze(cf$linkinv(eta))
             v <- cf$valid(eta, mu)
-            ext <- if (k$family == "binomial") dmglm_count(mu > 1 - eps | mu < eps)
-                   else if (k$family == "poisson") dmglm_count(mu < eps) else 0 * mu
-            s <- dmglm_sums(cf$dev(u$y, mu, u$W), if (is.null(v)) 0 * mu else dmglm_bad(v), ext)
+            ext <- if (k$family == "binomial") dmc_count(mu > 1 - eps | mu < eps)
+                   else if (k$family == "poisson") dmc_count(mu < eps) else 0 * mu
+            s <- dmc_sums(cf$dev(u$y, mu, u$W), if (is.null(v)) 0 * mu else dmc_count(v, negate = TRUE), ext)
             st$eta <- eta
             st$mu <- mu
             st$beta <- beta
@@ -786,7 +716,7 @@ dmglm_final <- function(x, cols, cf, k, ck, beta, old, eta0, dev, intercept) {
         eta_old <- dmc_col(P, 2L) + off
     }
     ## (frozen together: columns of one frame)
-    mm <- dmglm_freeze(dmc_cbind(cf$linkinv(eta), cf$linkinv(eta_old)))
+    mm <- dmc_freeze(dmc_cbind(cf$linkinv(eta), cf$linkinv(eta_old)))
     mu <- dmc_col(mm, 1L)
     me <- cf$mu.eta(eta)
     mu0 <- dmc_col(mm, 2L)
@@ -811,7 +741,7 @@ dmglm_final <- function(x, cols, cf, k, ck, beta, old, eta0, dev, intercept) {
             w * (-lgamma(a) - a * log(mu * disp) + (a - 1) * log(y) - y / (mu * disp))
         },
         0 * y)
-    s <- dmglm_sums(dmc_ifelse(good0, w0 * r * r, 0), dmglm_bad(good0), cf$dev(y, wtd, w), ll)
+    s <- dmc_sums(dmc_ifelse(good0, w0 * r * r, 0), dmc_count(good0, negate = TRUE), cf$dev(y, wtd, w), ll)
     list(pearson = s[1L], zero = isTRUE(s[2L] > 0), nulldev = s[3L], ll = s[4L], mu = mu)
 }
 
@@ -837,7 +767,7 @@ dmglm_null_refit <- function(cols, cf, k, control, nobs, mu) {
     eta <- cf$linkfun(mu)
     mu1 <- cf$linkinv(eta)
     v <- cf$valid(eta, mu1)
-    s <- dmglm_sums(cf$dev(cols$y, mu1, cols$w), if (is.null(v)) 0 * mu1 else dmglm_bad(v))
+    s <- dmc_sums(cf$dev(cols$y, mu1, cols$w), if (is.null(v)) 0 * mu1 else dmc_count(v, negate = TRUE))
     if (isTRUE(is.na(s[2L]) || s[2L] > 0)) stop("cannot find valid starting values: please specify some", call. = FALSE)
     B <- dmglm_units(u, cf, k, eta = eta, mu = mu1)
     res <- dmglm_loop(B, k, control, nobs, s[1L])
@@ -871,32 +801,32 @@ dmglm_rows <- function(object, what) {
     object$data
 }
 
-## Row-wise results: a vector in memory (named, padded by na.action), a
-## remote table remotely (dmp_output()).
-dmglm_output <- function(object, x, cols, na_act = object$na.action) {
-    out <- dmp_output(x, cols)
-    if (inherits(out, "dm_remote_table")) return(out)
-    v <- out[[ncol(out)]]
-    names(v) <- dimnames(x)[[1L]]
-    if (is.null(na_act)) v else stats::napredict(na_act, v)
+## Row-wise results: a vector in memory (the last column, named, padded by
+## pad(na.action)), a remote table remotely (dmp_output()).
+dmglm_output <- function(x, cols, na_act, pad = stats::napredict) {
+    dmp_output(x, cols, na = na_act, memory = function(d) {
+        v <- d[[ncol(d)]]
+        names(v) <- dimnames(x)[[1L]]
+        pad(na_act, v)
+    })
 }
 
 ## A linear predictor (with its NAs kept as NA by the inverse link).
-dmglm_response <- function(cf, eta) dmc_ifelse(dmglm_notnan(eta), cf$linkinv(eta), eta)
+dmglm_response <- function(cf, eta) dmc_ifelse(dmc_notnan(eta), cf$linkinv(eta), eta)
 
 #' @export
 fitted.design_glm <- function(object, ...) {
     d <- dmglm_rows(object, "fitted()")
-    cf <- dmglm_cf(dmglm_kind(object$family), object$family)
+    cf <- dmglm_cf(dmglm_kind(object$family))
     eta <- dmp_mult(d$design, dmfit_beta(object)) + (d$offset %||% 0)
-    dmglm_output(object, d$design, list(.fitted = cf$linkinv(eta)))
+    dmglm_output(d$design, list(.fitted = cf$linkinv(eta)), object$na.action)
 }
 
 #' @export
 residuals.design_glm <- function(object, type = c("deviance", "pearson", "working", "response"), ...) {
     type <- match.arg(type)
     d <- dmglm_rows(object, "residuals()")
-    cf <- dmglm_cf(dmglm_kind(object$family), object$family)
+    cf <- dmglm_cf(dmglm_kind(object$family))
     eta <- dmp_mult(d$design, dmfit_beta(object)) + (d$offset %||% 0)
     mu <- cf$linkinv(eta)
     y <- d$y
@@ -909,8 +839,7 @@ residuals.design_glm <- function(object, type = c("deviance", "pearson", "workin
                   pearson = (y - mu) * sqrt(w) / sqrt(cf$variance(mu)),
                   working = (y - mu) / cf$mu.eta(eta),
                   response = y - mu)
-    out <- dmglm_output(object, d$design, list(.fitted = mu, .resid = res), na_act = NULL)
-    if (inherits(out, "dm_remote_table")) out else stats::naresid(object$na.action, out)
+    dmglm_output(d$design, list(.fitted = mu, .resid = res), object$na.action, pad = stats::naresid)
 }
 
 #' @param object A `"design_glm"` object.
@@ -924,7 +853,7 @@ residuals.design_glm <- function(object, type = c("deviance", "pearson", "workin
 predict.design_glm <- function(object, newdata = NULL, type = c("link", "response"),
                                na.action = stats::na.pass, ...) {
     type <- match.arg(type)
-    cf <- dmglm_cf(dmglm_kind(object$family), object$family)
+    cf <- dmglm_cf(dmglm_kind(object$family))
     if (is.null(newdata)) {
         if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
         d <- dmglm_rows(object, "predict() without `newdata`")
@@ -932,35 +861,22 @@ predict.design_glm <- function(object, newdata = NULL, type = c("link", "respons
         off <- d$offset
         na_act <- object$na.action
     } else {
-        if (is.null(object$spec)) stop("This design cannot be applied to new data.", call. = FALSE)
-        if (dm_is_remote_source(newdata)) {
-            x <- do.call(design_matrix, c(list(object$spec, newdata, na.action = na.action), list(...)))
-            no <- dm_remote_new_offset(object, x)
-            x <- no$D
-            off <- dmp_column(x, no$off)
-        } else {
-            if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
-            x <- design_matrix(object$spec, newdata, na.action = na.action)
-            off <- dmfit_new_offset(object, newdata, x)
-        }
+        nd <- dmfit_newdata(object, newdata, na.action, list(...))
+        x <- nd$D
+        off <- nd$off
         na_act <- NULL
         if (object$rank < length(object$coefficients))
             warning("prediction from rank-deficient fit; consider predict(., rankdeficient=\"NA\")", call. = FALSE)
     }
     eta <- dmp_mult(x, dmfit_beta(object)) + (off %||% 0)
-    dmglm_output(object, x, list(.fitted = if (type == "response") dmglm_response(cf, eta) else eta), na_act)
+    dmglm_output(x, list(.fitted = if (type == "response") dmglm_response(cf, eta) else eta), na_act)
 }
 
 #' @export
 print.design_glm <- function(x, digits = max(3L, getOption("digits") - 3L), ...) {
     cat("\nCall:  ", paste(deparse(x$call), sep = "\n", collapse = "\n"), "\n", sep = "")
-    dmglm_print_method(x)
-    if (length(x$coefficients)) {
-        cat("\nCoefficients:\n")
-        print.default(format(x$coefficients, digits = digits), print.gap = 2L, quote = FALSE)
-    } else {
-        cat("\nNo coefficients\n\n")
-    }
+    dmfit_print_rows(x)
+    dmfit_print_coef(x, digits, none = "\nNo coefficients\n\n")
     cat("\nDegrees of Freedom:", x$df.null, "Total (i.e. Null); ", x$df.residual, "Residual\n")
     if (nzchar(mess <- stats::naprint(x$na.action))) cat("  (", mess, ")\n", sep = "")
     cat("Null Deviance:\t   ", format(signif(x$null.deviance, digits)),
@@ -968,14 +884,6 @@ print.design_glm <- function(x, digits = max(3L, getOption("digits") - 3L), ...)
         format(signif(x$aic, digits)))
     cat("\n")
     invisible(x)
-}
-
-dmglm_print_method <- function(x) {
-    if (x$compressed) {
-        cat(sprintf("\nFitted on %s design patterns of %s rows.\n", dm_fmt_count(x$patterns), dm_fmt_count(x$rows)))
-    } else if (isTRUE(x$remote)) {
-        cat(sprintf("\nFitted from %s of %s rows.\n", x$method, dm_fmt_count(x$rows)))
-    }
 }
 
 #' @export
@@ -1073,7 +981,7 @@ summary.design_glm <- function(object, dispersion = NULL, ...) {
     }
     ans <- c(object[c("call", "terms", "family", "deviance", "aic", "contrasts", "df.residual",
                       "null.deviance", "df.null", "iter", "na.action", "compressed", "patterns",
-                      "rows", "remote", "method")],
+                      "rows", "method")],
              list(coefficients = coef.table, aliased = aliased, dispersion = dispersion,
                   df = c(object$rank, df.r, length(aliased)), cov.unscaled = covmat.unscaled,
                   cov.scaled = covmat))
@@ -1085,22 +993,8 @@ summary.design_glm <- function(object, dispersion = NULL, ...) {
 print.summary.design_glm <- function(x, digits = max(3L, getOption("digits") - 3L),
                                      signif.stars = getOption("show.signif.stars"), ...) {
     cat("\nCall:\n", paste(deparse(x$call), sep = "\n", collapse = "\n"), "\n", sep = "")
-    dmglm_print_method(x)
-    if (length(x$aliased) == 0L) {
-        cat("\nNo Coefficients\n")
-    } else {
-        nsing <- sum(x$aliased)
-        coefs <- x$coefficients
-        if (nsing > 0L) {
-            cat("\nCoefficients: (", nsing, " not defined because of singularities)\n", sep = "")
-            cn <- names(x$aliased)
-            coefs <- matrix(NA_real_, length(x$aliased), 4L, dimnames = list(cn, colnames(x$coefficients)))
-            coefs[!x$aliased, ] <- x$coefficients[cn[!x$aliased], ]
-        } else {
-            cat("\nCoefficients:\n")
-        }
-        stats::printCoefmat(coefs, digits = digits, signif.stars = signif.stars, na.print = "NA", ...)
-    }
+    dmfit_print_rows(x)
+    dmfit_print_coefmat(x, digits, signif.stars, ...)
     cat("\n(Dispersion parameter for ", x$family$family, " family taken to be ", format(x$dispersion),
         ")\n\n", apply(cbind(paste(format(c("Null", "Residual"), justify = "right"), "deviance:"),
                              format(unlist(x[c("null.deviance", "deviance")]), digits = max(5L, digits + 1L)),

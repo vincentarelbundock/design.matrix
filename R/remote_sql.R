@@ -317,10 +317,7 @@ dm_sql_ycols <- function(D, yy) {
         if (v$kind != "numeric") stop("The response must be numeric.", call. = FALSE)
         return(list(exprs = paste0("__dm_v", match(yy$cols, names(D$vars))), extra = character()))
     }
-    for (col in yy$cols) {
-        if (!D$src$types[[col]] %in% c("double", "integer", "logical"))
-            stop(sprintf("Column `%s` is not numeric.", col), call. = FALSE)
-    }
+    dm_numeric_cols(D, yy$cols)
     K <- length(yy$cols)
     list(exprs = paste0("__dm_y", seq_len(K)),
          extra = sprintf("CAST(s.%s AS DOUBLE) AS __dm_y%d", dm_qi(D, yy$cols), seq_len(K)))

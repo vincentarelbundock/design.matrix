@@ -288,18 +288,16 @@ for (engine in c("sql", "chunked")) {
     expect_true(same(colSums(D, group = DBI::SQL("cl % 3")), rowsum(X, dk$cl %% 3)), info = engine)
     expect_true(same(colMeans(DBI::SQL("2 * x") * D, group = "cl"),
                      rowsum(2 * dk$x * X, dk$cl) / as.vector(table(dk$cl))), info = engine)
-    R <- design.matrix:::dm_remote_residuals(D, coef(fit))
+    R <- residuals(design_lm(D))
     expect_equal(dim(R), dim(D), info = engine)
     expect_true(same(crossprod(R, DBI::SQL('".resid" * ".resid"') * R), crossprod(X, e^2 * X)), info = engine)
     expect_true(same(crossprod(".resid" * R), crossprod(X, e^2 * X)), info = engine)
     expect_true(same(colSums(".resid" * R, group = "cl"), rowsum(e * X, dk$cl)), info = engine)
     expect_true(max(abs(crossprod(R, ".resid"))) < 1e-8, info = engine)
 }
-Rl <- design.matrix:::dm_remote_residuals(design_matrix(log(abs(y)) ~ x, con, table = "ds"),
-                                          coef(lm(log(abs(y)) ~ x, dk)))
+Rl <- residuals(design_lm(design_matrix(log(abs(y)) ~ x, con, table = "ds")))
 expect_true(max(abs(crossprod(Rl, ".resid"))) < 1e-8)
 expect_error(DBI::SQL("nope + 1") * design_matrix(y ~ x, con, table = "ds"), "invalid SQL expression")
-expect_error(design.matrix:::dm_remote_residuals(design_matrix(y ~ x, con, table = "ds"), 1), "len")
 
 ## errors
 expect_error(design_matrix(y ~ x1, con), "exactly one of")

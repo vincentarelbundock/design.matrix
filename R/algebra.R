@@ -407,45 +407,12 @@ setMethod("rowMeans", "design_matrix", function(x, na.rm = FALSE, dims = 1, ...)
 #' @rdname design_algebra
 #' @export
 quadratic_diagonal <- function(x, V) {
-    ## a remote design: a table with the column .quad (primitives.R)
-    if (inherits(x, "dm_remote")) {
-        checkmate::assert_matrix(V, mode = "numeric", nrows = ncol(x), ncols = ncol(x), any.missing = FALSE)
-        return(dmp_output(x, list(.quad = dmp_quad(x, V))))
-    }
-    checkmate::assert_class(x, "design_matrix")
+    checkmate::assert_multi_class(x, c("design_matrix", "dm_remote"))
     p <- ncol(x)
     checkmate::assert_matrix(V, mode = "numeric", nrows = p, ncols = p, any.missing = FALSE)
     checkmate::assert_true(all(is.finite(V)))
-    J <- as_jac(x)
-    storage.mode(V) <- "double"
-    if (!jac_kernel_ok(J)) {
-        X <- as.matrix(J)
-        return(unname(rowSums((X %*% V) * X)))
-    }
-    g <- dm_groups(J, cost = dm_row_cost(J)^2)
-    q <- do.call(.Call, c(list(C_dm_jac_quad), jac_args(J),
-                          list(V, if (is.null(g)) NULL else g$first, design_threads())))
-    if (is.null(g)) q else q[g$map]
-}
-
-## Which rows of a design matrix are finite: rowSums(!is.finite(as.matrix(x)))
-## == 0, computed without forming the dense matrix (TRUE for each row whose
-## entries are all finite, FALSE for a row with any NA, NaN or infinite entry,
-## including entries that overflow, such as the product of two large numeric
-## variables, and, for a combination of designs, scaled sums that overflow).
-finite_rows <- function(x) {
-    ## a remote design: a logical column (every entry of the row finite)
-    if (inherits(x, "dm_remote")) {
-        P <- dmp_mult(x, diag(1, ncol(x)))
-        return(dm_rcols(unclass(P)$frame,
-                        paste(sprintf("COALESCE(isfinite(%s), FALSE)", unclass(P)$sql), collapse = " AND ")))
-    }
-    checkmate::assert_class(x, "design_matrix")
-    J <- as_jac(x)
-    if (!jac_kernel_ok(J)) {
-        return(unname(rowSums(!is.finite(as.matrix(x))) == 0))
-    }
-    do.call(.Call, c(list(C_dm_jac_finite), jac_args(J), list(design_threads())))
+    ## a vector in memory, a table with the column .quad remotely
+    dmp_output(x, list(.quad = dmp_quad(x, V)), memory = function(d) d$.quad)
 }
 
 ## Groups of identical rows (same bits in every input of the row), or NULL.

@@ -59,7 +59,7 @@ dm_chunk_design <- function(D, chunk) {
     mf <- design_frame(D$terms_full, chunk, xlev = plan$xlevels, na.action = na)
     ## variables of another type than in training: the error of predict.lm()
     if (!is.null(plan$data_classes)) stats::.checkMFClasses(plan$data_classes, mf)
-    ## numeric variables shifted for a better conditioned fit (remote_lm.R)
+    ## numeric variables shifted for a better conditioned fit (qr.R)
     for (nm in names(D$shift)) mf[[nm]] <- mf[[nm]] - D$shift[[nm]]
     design <- design_matrix(plan$terms, mf, contrasts.arg = plan$contrasts)
     if (isTRUE(plan$drop_intercept)) design <- dm_drop_intercept(design)

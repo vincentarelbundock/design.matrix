@@ -146,7 +146,7 @@ for (mode in modes) {
 ## regression: nested expressions (probit: DuckDB expands the qnorm and
 ## pnorm macros inline) once made queries so long that DuckDB hung; the
 ## linear predictor, fitted means and working weights are computed once
-## (dmglm_freeze()), which bounds the queries
+## (dmc_freeze()), which bounds the queries
 if (length(modes) > 1L) {
     qlen <- integer()
     withCallingHandlers({
@@ -174,16 +174,20 @@ expect_equal(residuals(fx), residuals(bx))
 expect_equal(fitted(fx), fitted(bx))
 
 ## a design with y: in memory a vector or a two-column matrix, remotely
-## column names
+## column names; a missing response is an error in both (no rows are
+## dropped from a design), as for design_lm()
 dc <- dd[complete.cases(dd[c("x", "g", "yb")]), ]
 D <- design_matrix(~ x + g, dc)
 expect_equal(coef(design_glm(D, binomial, y = dc$yb)), coef(glm(yb ~ x + g, binomial, dc)))
 expect_equal(coef(design_glm(D, binomial, y = cbind(dc$s, dc$fl))), coef(glm(cbind(s, fl) ~ x + g, binomial, dc)))
 if (length(modes) > 1L) {
-    Dr <- design_matrix(~ x + g, con, table = "d")
+    expect_error(design_glm(design_matrix(~ x + g, con, table = "d"), binomial, y = "yb"), "NA/NaN/Inf in 'y'")
+    expect_error(design_glm(design_matrix(~ x + g, dd), binomial, y = dd$yb[!is.na(dd$x)]), "NA/NaN/Inf in 'y'")
+    Dr <- design_matrix(~ x + g, con, sql = "SELECT * FROM d WHERE yb IS NOT NULL")
     expect_equal(coef(design_glm(Dr, binomial, y = "yb")), coef(glm(yb ~ x + g, binomial, dd)))
-    expect_equal(coef(design_glm(Dr, binomial, y = c("s", "fl"))), coef(glm(cbind(s, fl) ~ x + g, binomial, dd)))
-    expect_equal(coef(design_glm(Dr, poisson, y = "yp", offset = "le")),
+    Da <- design_matrix(~ x + g, con, table = "d")
+    expect_equal(coef(design_glm(Da, binomial, y = c("s", "fl"))), coef(glm(cbind(s, fl) ~ x + g, binomial, dd)))
+    expect_equal(coef(design_glm(Da, poisson, y = "yp", offset = "le")),
                  coef(glm(yp ~ x + g, poisson, dd, offset = le)))
 }
 

@@ -203,10 +203,7 @@ dm_compress_ys <- function(D, yy) {
         if (v$kind != "numeric") return(NULL)
         return(v$sql)
     }
-    for (col in yy$cols) {
-        if (!D$src$types[[col]] %in% c("double", "integer", "logical"))
-            stop(sprintf("Column `%s` is not numeric.", col), call. = FALSE)
-    }
+    dm_numeric_cols(D, yy$cols)
     sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, yy$cols))
 }
 

@@ -155,15 +155,9 @@ dmp_center <- function(x) {
         if (!isTRUE(getOption("design.matrix.remote_center", TRUE))) return(NULL)
         ctr <- dm_center(x)
         if (is.null(ctr)) return(NULL)
-        x2 <- x
+        x2 <- dm_shifted(x, ctr$shift)
         x2$cache <- new.env(parent = emptyenv())
         x2$id <- dm_tmp_name("dm")
-        if (x$engine == "sql") {
-            for (nm in names(ctr$shift))
-                x2$vars[[nm]]$sql <- sprintf("(%s - %s)", x$vars[[nm]]$sql, dm_sql_double(ctr$shift[[nm]]))
-        } else {
-            x2$shift <- ctr$shift
-        }
         return(list(x = x2, T = ctr$T))
     }
     mt <- x$training_terms

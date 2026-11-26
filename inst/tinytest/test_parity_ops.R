@@ -1,6 +1,8 @@
 ## Parity of the matrix operations of a design in memory and remote: every
 ## operation on the same data, in memory and on a DuckDB table (SQL and
-## chunked engines) and a Parquet file.
+## chunked engines) and a Parquet file. Two formulas: one that SQL computes
+## (the SQL engine for the table and the Parquet file), and one with a term
+## evaluated in R (the chunked engine for every source).
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
 library(design.matrix)
@@ -17,14 +19,7 @@ d <- DBI::dbReadTable(con, "d")
 pq <- tempfile(fileext = ".parquet")
 DBI::dbExecute(con, sprintf("COPY d TO '%s' (FORMAT PARQUET)", pq))
 
-fo <- y ~ x * f + log(z) + splines::ns(z, 2)
-fo_sql <- y ~ x * f + log(z)
-M <- design_matrix(fo, d)
-X <- as.matrix(M)
-rows <- as.integer(rownames(X))
-dk <- d[rows, ]
-B <- cbind(b1 = rnorm(ncol(X)), b2 = rnorm(ncol(X)))
-V <- crossprod(matrix(rnorm(ncol(X)^2), ncol(X)))
+formulas <- list(sql = y ~ x * f + log(z), r = y ~ x * f + log(z) + splines::ns(z, 2))
 
 ## a table of row-wise results, in the order of the rows of M
 by_id <- function(tab, col) {
@@ -33,21 +28,35 @@ by_id <- function(tab, col) {
 }
 
 sources <- list(
-    sql = function(f) design_matrix(f, con, table = "d", engine = "auto"),
+    table = function(f) design_matrix(f, con, table = "d", engine = "auto"),
     chunked = function(f) design_matrix(f, con, table = "d", engine = "chunked", chunk_size = 97),
     parquet = function(f) design_matrix(f, pq))
-for (src in names(sources)) {
+for (fname in names(formulas)) for (src in names(sources)) {
+    fo <- formulas[[fname]]
+    M <- design_matrix(fo, d)
+    X <- as.matrix(M)
+    rows <- as.integer(rownames(X))
+    dk <- d[rows, ]
+    set.seed(3)
+    B <- cbind(b1 = rnorm(ncol(X)), b2 = rnorm(ncol(X)))
+    V <- crossprod(matrix(rnorm(ncol(X)^2), ncol(X)))
     D <- suppressMessages(sources[[src]](fo))
-    info <- src
-    ## shape
+    info <- paste(fname, src)
+    expect_identical(D$engine, if (fname == "sql" && src != "chunked") "sql" else "chunked", info = info)
+    ## shape and printing
     expect_equal(dim(D), dim(M), info = info)
     expect_identical(colnames(D), colnames(M), info = info)
+    expect_identical(dimnames(D), list(NULL, colnames(M)), info = info)
+    expect_true(any(grepl("remote design_matrix", capture.output(print(D)))), info = info)
+    expect_true(any(grepl("remote design_matrix", capture.output(print("w" * D)))), info = info)
     ## as.matrix and sparse coercion (small data; the guard otherwise)
     A <- as.matrix(D)
     expect_true(same(crossprod(A), crossprod(X)) && same(colSums(A), colSums(X)), info = paste(info, "as.matrix"))
     S <- as(D, "CsparseMatrix")
     expect_inherits(S, "CsparseMatrix")
     expect_true(same(as.matrix(crossprod(S)), crossprod(X)), info = paste(info, "sparse"))
+    expect_true(same(as.matrix(as(D, "dgCMatrix")), X), info = paste(info, "dgCMatrix"))
+    expect_true(same(as.matrix("w" * D), dk$w * X), info = paste(info, "as.matrix scaled"))
     op <- options(design.matrix.remote_max_rows = 10)
     expect_error(as.matrix(D), "force = TRUE")
     expect_error(as(D, "CsparseMatrix"), "remote_max_rows")
@@ -65,25 +74,43 @@ for (src in names(sources)) {
     expect_true(same(crossprod(D, DBI::SQL("y * w")), crossprod(X, dk$y * dk$w)), info = paste(info, "X'(SQL)"))
     expect_true(same(crossprod("w" * D, "y"), crossprod(dk$w * M, dk$y)), info = paste(info, "(WX)'y"))
     expect_true(same(crossprod(2 * D), crossprod(2 * M)), info = paste(info, "(2X)'(2X)"))
+    expect_true(same(crossprod(D, D), crossprod(M, M)), info = paste(info, "X'X (two arguments)"))
+    expect_true(same(crossprod("w" * D, "z" * D), crossprod(dk$w * M, dk$z * M)), info = paste(info, "(WX)'(ZX)"))
     ## sums and means
     expect_true(same(colSums(D), colSums(X)), info = paste(info, "colSums"))
     expect_true(same(colMeans(D), colMeans(X)), info = paste(info, "colMeans"))
     expect_true(same(colSums("w" * D, group = "g"), colSums(dk$w * M, group = dk$g)), info = paste(info, "colSums group"))
     expect_true(same(colMeans(D, group = "f"), colMeans(M, group = dk$f)), info = paste(info, "colMeans group"))
+    expect_true(same(colSums("w" * D), colSums(dk$w * M)), info = paste(info, "colSums weighted"))
+    expect_true(same(colMeans("w" * D, group = "g"), colMeans(dk$w * M, group = dk$g)),
+                info = paste(info, "colMeans weighted group"))
+    expect_true(same(colSums(D, group = DBI::SQL("g % 2")), colSums(M, group = dk$g %% 2)),
+                info = paste(info, "colSums SQL group"))
     expect_true(same(by_id(rowSums(D), ".rowsum"), rowSums(X)), info = paste(info, "rowSums"))
     expect_true(same(by_id(rowMeans(D), ".rowmean"), rowMeans(X)), info = paste(info, "rowMeans"))
     expect_true(same(by_id(rowSums("w" * D), ".rowsum"), rowSums(dk$w * X)), info = paste(info, "rowSums scaled"))
+    expect_true(same(by_id(rowMeans("w" * D), ".rowmean"), rowMeans(dk$w * X)), info = paste(info, "rowMeans scaled"))
     ## quadratic forms
     expect_true(same(by_id(quadratic_diagonal(D, V), ".quad"), quadratic_diagonal(M, V)), info = paste(info, "quad"))
+    expect_true(same(by_id(quadratic_diagonal("w" * D, V), ".quad"), quadratic_diagonal(dk$w * M, V)),
+                info = paste(info, "quad scaled"))
     ## arithmetic
     expect_true(same(crossprod(-D), crossprod(-M)), info = paste(info, "-D"))
     expect_true(same(crossprod(D / "w"), crossprod((1 / dk$w) * M)), info = paste(info, "D / w"))
+    expect_true(same(crossprod(D * 3), crossprod(M * 3)), info = paste(info, "D * 3"))
+    expect_true(same(crossprod(DBI::SQL("w * z") * D), crossprod((dk$w * dk$z) * M)), info = paste(info, "SQL * D"))
+    expect_true(same(by_id(("w" * D) %*% B[, 1], ".fitted"), drop((dk$w * M) %*% B[, 1])),
+                info = paste(info, "scaled %*%"))
     expect_error(D + D, "not supported")
     expect_error(D - D, "not supported")
     ## rows
     Ds <- D[DBI::SQL("x > 0"), ]
     expect_true(same(crossprod(Ds), crossprod(X[dk$x > 0, ])), info = paste(info, "D[SQL, ]"))
     expect_error(D[1:3, ], "not by position")
+    expect_error(D[rep(TRUE, nrow(D)), ], "not by position")
+    pos <- design.matrix:::dmp_column(D, "s.x > 0")
+    expect_true(same(crossprod(D[pos, ]), crossprod(X[dk$x > 0, ])), info = paste(info, "D[column, ]"))
+    expect_equal(nrow(D[pos, ]), sum(dk$x > 0), info = paste(info, "nrow(D[column, ])"))
     fr <- design.matrix:::finite_rows(D)
     expect_equal(design.matrix:::dm_colsum(design.matrix:::dmc_ifelse(fr, 1, 0)), sum(design.matrix:::finite_rows(M)),
                  info = paste(info, "finite_rows"))
@@ -110,13 +137,13 @@ for (src in names(sources)) {
     qw <- qr("w" * D)
     qwm <- qr(dk$w * M)
     expect_true(same(qr.coef(qw, DBI::SQL("w * y")), qr.coef(qwm, dk$w * dk$y)), info = paste(info, "weighted qr"))
+    expect_true(same(by_id(qr.resid(qw, DBI::SQL("w * y")), ".resid"), qr.resid(qwm, dk$w * dk$y)),
+                info = paste(info, "weighted qr.resid"))
+    expect_true(same(qr.qty(q, c("y", "w")), qr.qty(qm, cbind(dk$y, dk$w))), info = paste(info, "qr.qty matrix"))
+    qf <- qr.fitted(q, c("y", "w"))
+    expect_true(same(cbind(by_id(qf, ".fitted1"), by_id(qf, ".fitted2")), qr.fitted(qm, cbind(dk$y, dk$w))),
+                info = paste(info, "qr.fitted matrix"))
 }
-
-## the SQL engine on a formula it can translate
-D <- design_matrix(fo_sql, con, table = "d")
-expect_identical(D$engine, "sql")
-Ms <- design_matrix(fo_sql, d)
-expect_true(same(qr.coef(qr(D), "y"), qr.coef(qr(Ms), d$y[as.integer(rownames(as.matrix(Ms)))])))
 
 DBI::dbDisconnect(con)
 unlink(pq)

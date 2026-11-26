@@ -43,7 +43,7 @@
 ## the normal equations X'M e = 0 correct the rounding of the one-pass
 ## aggregates. Numeric variables far from zero are centered first when that
 ## is an exact linear transform of the design (as for remote fits, see
-## dm_center() in remote_lm.R), which keeps X'MX, hence the covariance
+## dm_center() in qr.R), which keeps X'MX, hence the covariance
 ## matrix, accurate.
 ##
 ## With FE, the score of cluster c is
@@ -553,59 +553,18 @@ dm_fe_uncenter <- function(est, Tm, icol) {
 dm_fe_center <- function(mt, mf, contrasts) {
     if (!isTRUE(getOption("design.matrix.fe_center", TRUE))) return(NULL)
     if (attr(mt, "intercept") == 0L) return(NULL)
-    tv <- dm_terms_vars(mt)$names
-    resp <- if (attr(mt, "response") > 0L) tv[attr(mt, "response")] else character()
-    cand <- setdiff(intersect(tv, names(mf)), resp)
-    num <- cand[vapply(cand, function(nm) identical(stats::.MFclass(mf[[nm]]), "numeric"), NA)]
-    if (!length(num)) return(NULL)
     ## the decision and the shift from a systematic sample of rows (any
     ## shift is exact; a shift near the mean keeps the sums accurate)
+    tv <- dm_terms_vars(mt)$names
     nr <- nrow(mf)
     idx <- if (nr > 1e5) unique(round(seq(1, nr, length.out = 1e5))) else seq_len(nr)
-    mu <- vapply(num, function(nm) mean(mf[[nm]][idx]), 0)
-    sdv <- vapply(num, function(nm) stats::sd(mf[[nm]][idx]), 0)
-    sdv[!is.finite(sdv)] <- 0
-    big <- is.finite(mu) & abs(mu) > sdv
-    if (!any(big)) return(NULL)
-    shift <- mu[big]
+    st <- mf[idx, intersect(tv, names(mf)), drop = FALSE]
+    attr(st, "terms") <- mt
     m0 <- mf[seq_len(min(nrow(mf), 2000L)), , drop = FALSE]
     attr(m0, "terms") <- NULL
     p <- tryCatch(ncol(design_matrix(mt, m0, contrasts.arg = contrasts)), error = function(e) NA)
     if (is.na(p) || p > 2000L) return(NULL)
-    m <- max(4L * p, 200L)
-    proto <- m0[sample.int(nrow(m0), m, replace = TRUE), , drop = FALSE]
-    for (nm in names(proto)) {
-        x <- proto[[nm]]
-        if (is.factor(x)) {
-            proto[[nm]] <- factor(sample(levels(x), m, TRUE), levels = levels(x))
-            attr(proto[[nm]], "contrasts") <- attr(x, "contrasts")
-        } else if (is.logical(x)) {
-            proto[[nm]] <- sample(c(FALSE, TRUE), m, TRUE)
-        } else if (nm %in% num) {
-            proto[[nm]] <- stats::rnorm(m)
-        }
-    }
-    shifted <- proto
-    for (nm in names(shift)) shifted[[nm]] <- proto[[nm]] - shift[[nm]]
-    X0 <- tryCatch(as.matrix(design_matrix(mt, proto, contrasts.arg = contrasts)), error = function(e) NULL)
-    X1 <- tryCatch(as.matrix(design_matrix(mt, shifted, contrasts.arg = contrasts)), error = function(e) NULL)
-    if (is.null(X0) || is.null(X1) || ncol(X0) != p || ncol(X1) != p) return(NULL)
-    dm_center_T(X0, X1, shift)
-}
-
-## T with X1 = X0 T, unit upper triangular, or NULL (see dm_center()).
-dm_center_T <- function(X0, X1, shift) {
-    p <- ncol(X0)
-    q <- qr(X0)
-    if (q$rank < p) return(NULL)
-    Tm <- unname(qr.coef(q, X1))
-    if (!all(is.finite(Tm)) || max(abs(X0 %*% Tm - X1)) > 1e-8 * max(1, abs(X1))) return(NULL)
-    ts <- max(1, abs(Tm))
-    if (max(abs(diag(Tm) - 1)) > 1e-8 * ts || max(abs(Tm[lower.tri(Tm)])) > 1e-8 * ts) return(NULL)
-    Tm[lower.tri(Tm)] <- 0
-    diag(Tm) <- 1
-    Tm[abs(Tm) < 1e-10 * ts] <- 0
-    list(shift = shift, T = Tm)
+    dm_center_shift(st, m0, function(fr) design_matrix(mt, fr, contrasts.arg = contrasts), p)
 }
 
 ## ---------------------------------------------------------------------------
@@ -724,11 +683,13 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     fit$contrasts <- base$contrasts
     fit$xlevels <- base$xlevels
     fit$spec <- base$spec
-    fit$na.action <- dm_fe_na_action(base$na_act, prob$rows, base$nall)
-    if (inherits(prob$x, "dm_remote")) {
-        fit$remote <- TRUE
-        fit$remote_design <- prob$x
-        fit$method <- if (prob$x$engine == "sql") "SQL aggregates" else "aggregates computed in batches"
+    ## (remotely, na.exclude pads the results with every row not used)
+    fit$na.action <- if (isTRUE(base$exclude)) dm_remote_exclude(prob$x)
+                     else dm_fe_na_action(base$na_act, prob$rows, base$nall)
+    fit$method <- switch(dm_engine(prob$x), sql = "SQL aggregates", chunked = "aggregates computed in batches", NULL)
+    ## (the data of a remote fit stay in the database: always kept)
+    if (!is.null(fit$method)) {
+        ## nothing to drop
     } else if (model) {
         fit$model <- prob$x$vars
     } else {
@@ -746,11 +707,7 @@ dm_fe_base_memory <- function(pf, call, env, contrasts, clv) {
     fe_vars <- unique(unlist(pf$fe, use.names = FALSE))
     aug <- dm_fe_augment(pf$main, unique(c(fe_vars, clv)))
     environment(aug) <- environment(pf$main)
-    mf <- call[c(1L, match(c("data", "weights", "na.action"), names(call), 0L))]
-    mf$formula <- aug
-    mf$drop.unused.levels <- TRUE
-    mf[[1L]] <- quote(design.matrix::design_frame)
-    mf <- eval(mf, env)
+    mf <- dmfit_model_frame(call, c("weights", "na.action"), env, formula = aug)
     mt_aug <- attr(mf, "terms")
     labs <- attr(mt_aug, "term.labels")
     drop <- which(!labs %in% attr(stats::terms(pf$main), "term.labels"))
@@ -780,23 +737,25 @@ dm_fe_base_memory <- function(pf, call, env, contrasts, clv) {
 
 ## Remotely: the remote design of the right-hand side, and the response and
 ## weights resolved as columns (a column name, DBI::SQL(), or an R
-## expression: in SQL when translatable, else evaluated in R).
+## expression: in SQL when translatable, else evaluated in R), on the rows
+## where the model, FE and cluster variables, the response and the weights
+## are present, as the model frame in memory (dm_remote_fit()).
 dm_fe_base_remote <- function(pf, source, call, env, contrasts, dots, clv) {
-    if (!is.null(call$na.action) && dm_remote_na(eval(call$na.action, env)) != "omit")
-        stop("For remote data, `na.action` must be na.omit.", call. = FALSE)
+    na <- if (is.null(call$na.action)) "omit" else dm_na_kind(eval(call$na.action, env), c("omit", "exclude"), "For remote data, ")
     nms <- names(dots)
     if (is.null(nms)) nms <- rep("", length(dots))
     keys <- c("table", "sql", "engine", "chunk_size")
     if (any(!nms %in% keys))
         stop("Unknown arguments: ", paste(nms[!nms %in% keys], collapse = ", "), call. = FALSE)
-    rhs <- pf$main[-2L]
-    environment(rhs) <- environment(pf$main)
-    if (length(attr(stats::terms(rhs), "offset")))
+    if (length(attr(stats::terms(pf$main), "offset")))
         stop("Offsets are not supported with fixed effects.", call. = FALSE)
-    D <- dm_remote(rhs, source, contrasts, NULL, dots, drop_unused = TRUE)
-    r <- dmp_resolve(D, list(z = pf$main[[2L]], w = call$weights), env)
-    list(x = r$x, z = r$cols$z, w = r$cols$w, keys = dm_fe_keys(r$x, pf, clv), rows = NULL, nall = D$n, na_act = NULL,
-         terms = stats::terms(pf$main), contrasts = D$plan$contrasts, xlevels = D$plan$xlevels,
+    dm_need_duckdb()
+    src <- dm_remote_source(source, dots$table, dots$sql)
+    r <- dm_remote_fit(pf$main, src, list(y = pf$main[[2L]], weights = call$weights), env, dots, contrasts,
+                       present = unique(c(unlist(pf$fe, use.names = FALSE), clv)))
+    D <- r$x
+    list(x = D, z = r$cols$y, w = r$cols$weights, keys = dm_fe_keys(D, pf, clv), rows = NULL, nall = D$n,
+         na_act = NULL, exclude = na == "exclude", terms = stats::terms(pf$main), contrasts = D$plan$contrasts, xlevels = D$plan$xlevels,
          spec = D$plan)
 }
 
@@ -966,13 +925,8 @@ print.design_lm_fe <- function(x, digits = max(3L, getOption("digits") - 3L), ..
     if (!is.null(x$call)) cat("\nCall:\n", paste(deparse(x$call), sep = "\n", collapse = "\n"), "\n", sep = "")
     cat("\nFixed effects: ", paste(sprintf("%s (%s)", names(x$fe_sizes),
                                             dm_fmt_count(x$fe_sizes)), collapse = ", "), "\n", sep = "")
-    if (isTRUE(x$remote)) cat(sprintf("Fitted from %s of %s rows.\n", x$method, dm_fmt_count(x$rows)))
-    if (length(x$coefficients)) {
-        cat("\nCoefficients:\n")
-        print.default(format(x$coefficients, digits = digits), print.gap = 2L, quote = FALSE)
-    } else {
-        cat("\nNo coefficients\n")
-    }
+    dmfit_print_rows(x, prefix = "")
+    dmfit_print_coef(x, digits)
     cat("\n")
     invisible(x)
 }
@@ -995,7 +949,7 @@ summary.design_lm_fe <- function(object, ...) {
                 within.r.squared = if (object$tss_within > 0) 1 - object$rss / object$tss_within else NA_real_,
                 vcov_type = object$vcov_type, cluster = object$cluster, G_cluster = object$G_cluster,
                 fe_sizes = object$fe_sizes, nobs = object$nobs, nsingletons = object$nsingletons,
-                compressed = FALSE, remote = object$remote, method = object$method,
+                compressed = FALSE, method = object$method,
                 rows = object$rows)
     n <- object$nobs
     ans$adj.r.squared <- 1 - (1 - ans$r.squared) * (n - 1) / object$df.residual
@@ -1014,17 +968,7 @@ print.summary.design_lm_fe <- function(x, digits = max(3L, getOption("digits") -
     cat("Standard errors: ", if (identical(x$vcov_type, "cluster"))
         sprintf("clustered by %s (%s clusters)", x$cluster, dm_fmt_count(x$G_cluster)) else "iid",
         "\n", sep = "")
-    nsing <- sum(x$aliased)
-    if (length(x$aliased) == 0L) {
-        cat("\nNo Coefficients\n")
-    } else {
-        cat(if (nsing) sprintf("\nCoefficients: (%d not defined because of singularities)\n", nsing)
-            else "\nCoefficients:\n")
-        coefs <- matrix(NA_real_, length(x$aliased), 4L,
-                        dimnames = list(names(x$aliased), colnames(x$coefficients)))
-        coefs[!x$aliased, ] <- x$coefficients
-        stats::printCoefmat(coefs, digits = digits, signif.stars = signif.stars, na.print = "NA", ...)
-    }
+    dmfit_print_coefmat(x, digits, signif.stars, ...)
     cat("\nResidual standard error:", format(signif(x$sigma, digits)),
         "on", x$df[2L], "degrees of freedom\n")
     cat("Multiple R-squared: ", formatC(x$r.squared, digits = digits),
@@ -1055,18 +999,18 @@ dm_fe_beta <- function(object, x) {
 
 #' @export
 residuals.design_lm_fe <- function(object, ...) {
-    r <- dm_fe_columns(object)
     ## remote: the remote design with the columns .fitted and .resid
-    if (isTRUE(object$remote)) return(dm_with_columns(object$x, dmc_cbind(r$fitted, r$resid), c(".fitted", ".resid")))
-    stats::naresid(object$na.action, as.vector(r$resid))
+    r <- dm_fe_columns(object)
+    dmp_output(object$x, list(.fitted = r$fitted, .resid = r$resid), design = TRUE,
+               memory = function(d) stats::naresid(object$na.action, d$.resid))
 }
 
 #' @export
 fitted.design_lm_fe <- function(object, ...) {
-    r <- dm_fe_columns(object)
     ## remote: a table with .fitted and .resid
-    if (isTRUE(object$remote)) return(dmp_output(object$x, list(.fitted = r$fitted, .resid = r$resid)))
-    stats::napredict(object$na.action, as.vector(r$fitted))
+    r <- dm_fe_columns(object)
+    dmp_output(object$x, list(.fitted = r$fitted, .resid = r$resid),
+               memory = function(d) stats::napredict(object$na.action, d$.fitted))
 }
 
 #' @export
@@ -1077,15 +1021,10 @@ predict.design_lm_fe <- function(object, newdata, se.fit = FALSE,
     if (isTRUE(se.fit) || interval != "none")
         stop("With fixed effects, predict() gives the fit only (no `se.fit` or intervals).", call. = FALSE)
     if (missing(newdata) || is.null(newdata)) return(fitted(object))
-    if (is.null(object$spec)) stop("This design cannot be applied to new data.", call. = FALSE)
     if (!identical(na.action, stats::na.pass))
         stop("With fixed effects, predict() keeps every row of `newdata` (na.action = na.pass).", call. = FALSE)
     ## the design of the new rows (as predict() without FE)
-    Dn <- if (dm_is_remote_source(newdata)) {
-        do.call(design_matrix, c(list(object$spec, newdata, na.action = stats::na.pass), list(...)))
-    } else {
-        design_matrix(object$spec, newdata, na.action = stats::na.pass)
-    }
+    Dn <- dmfit_newdata(object, newdata, stats::na.pass, list(...))$D
     keys <- lapply(object$fe_vars, function(vars) {
         k <- tryCatch(dmc_key(Dn, vars, data = if (is.data.frame(newdata)) newdata),
                       error = function(e) NULL)
@@ -1095,14 +1034,8 @@ predict.design_lm_fe <- function(object, newdata, se.fit = FALSE,
         k
     })
     f <- dm_fe_fitted(Dn, dm_fe_beta(object, Dn), object$fixef, keys, object$fe_levels)
-    ## the container: a table remotely, a named vector in memory
-    if (inherits(Dn, "dm_remote")) {
-        if (".fitted" %in% names(Dn$src$types))
-            stop("The remote data already has a column `.fitted`.", call. = FALSE)
-        return(dmp_output(Dn, list(.fitted = f)))
-    }
-    names(f) <- dimnames(Dn)[[1L]]
-    f
+    ## a table remotely, a named vector in memory
+    dmp_output(Dn, list(.fitted = f), memory = function(d) stats::setNames(d$.fitted, dimnames(Dn)[[1L]]))
 }
 
 ## fixef(): the FE values, a list with one named vector per FE (fixest's
