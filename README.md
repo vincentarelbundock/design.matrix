@@ -86,7 +86,7 @@ The plot measures only time, and only for predictions. The savings extend to mem
 | Grouped weighted sums (cluster-robust variance) | 121ms, 397MB | 28.3ms, 37.2MB |
 | Sparse model matrix (vs. `Matrix::sparse.model.matrix()`) | 447ms, 662MB | 28.3ms, 40.7MB |
 
-The benchmarks below give the details. When you do need the dense matrix, `design.matrix` returns the identical matrix at about the same speed on one thread and about twice as fast on four threads, but it takes the same memory.
+These gains come from never forming the dense model matrix. Each task above uses that matrix only as an intermediate input, for example to multiply it by a vector of coefficients, so `design.matrix` computes the result directly from the factor codes and numeric variables. When the dense matrix itself is what you need, there is no step to skip: `design.matrix` returns the identical matrix at about the same speed on one thread and about twice as fast on four threads, but it takes the same memory. The benchmarks below give the details.
 
 ### Promises
 
