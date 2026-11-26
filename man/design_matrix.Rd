@@ -58,6 +58,20 @@ and \code{NaN}), same names and attributes in the same order. The C routine is
 a port of the one in R's stats package; its fill visits rows in chunks,
 optionally on several threads (see \code{\link[=design_threads]{design_threads()}}), and performs exactly
 the same floating point operations as R for every cell.
+
+\strong{Options.}
+\itemize{
+\item \code{design.matrix.skip_na_copy} (default \code{TRUE}): when the model frame
+has no missing value and \code{na.action} is \code{\link[stats:na.omit]{stats::na.omit()}},
+\code{\link[stats:na.exclude]{stats::na.exclude()}}, \code{\link[stats:na.fail]{stats::na.fail()}} or \code{\link[stats:na.pass]{stats::na.pass()}},
+skip the copy of the whole frame that \code{na.omit()} and \code{na.exclude()}
+make even when they remove nothing. The result is identical either
+way; set \code{FALSE} to build the frame exactly as \code{model.matrix()} does,
+for example in benchmarks against functions that call it.
+\item \code{design.matrix.structured} (default \code{TRUE}): use the column-structured
+kernels for products with finite designs (see \link{design_algebra}).
+\item \code{design.matrix.dedup}: see \link{design_algebra}.
+}
 }
 \examples{
 d <- data.frame(y = rnorm(10), x = rnorm(10), f = gl(2, 5))

@@ -37,6 +37,18 @@
 #' optionally on several threads (see [design_threads()]), and performs exactly
 #' the same floating point operations as R for every cell.
 #'
+#' **Options.**
+#' * `design.matrix.skip_na_copy` (default `TRUE`): when the model frame
+#'   has no missing value and `na.action` is [stats::na.omit()],
+#'   [stats::na.exclude()], [stats::na.fail()] or [stats::na.pass()],
+#'   skip the copy of the whole frame that `na.omit()` and `na.exclude()`
+#'   make even when they remove nothing. The result is identical either
+#'   way; set `FALSE` to build the frame exactly as `model.matrix()` does,
+#'   for example in benchmarks against functions that call it.
+#' * `design.matrix.structured` (default `TRUE`): use the column-structured
+#'   kernels for products with finite designs (see [design_algebra]).
+#' * `design.matrix.dedup`: see [design_algebra].
+#'
 #' @examples
 #' d <- data.frame(y = rnorm(10), x = rnorm(10), f = gl(2, 5))
 #' X <- as.matrix(design_matrix(y ~ x * f, d))

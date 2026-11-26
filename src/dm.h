@@ -30,5 +30,10 @@ SEXP dm_jac_entries_mean(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_jac_finite(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_jac_gram(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_chol_pivot(SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP dm_struct_ok(SEXP, SEXP, SEXP);
+SEXP dm_struct_info(SEXP, SEXP);
+SEXP dm_struct_gram(SEXP, SEXP, SEXP);
+SEXP dm_struct_xty(SEXP, SEXP, SEXP);
+SEXP dm_struct_mult(SEXP, SEXP, SEXP, SEXP);
 SEXP dm_omp_max_threads(void);
 #endif

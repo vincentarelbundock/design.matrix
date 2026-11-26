@@ -103,7 +103,7 @@ Under the hood, a design matrix stores only the factor codes, the numeric variab
 
 Each section shows a small example, checked with `identical()` when the result is exact and with `all.equal()` when sums run in a different order, followed by a benchmark on medium-sized data (200,000 rows, 119 columns). The relative costs depend on the size and structure of the design.
 
-The benchmark tables report minimum and median elapsed time and `mem_alloc`, the total bytes allocated on the R heap during one evaluation. Reproducing the memory column requires an R build with `capabilities("profmem")` enabled.
+The benchmark tables report minimum and median elapsed time and `mem_alloc`, the total bytes allocated on the R heap during one evaluation. Reproducing the memory column requires an R build with `capabilities("profmem")` enabled. For fair comparisons with functions that call `model.matrix()`, the benchmarks set `options(design.matrix.skip_na_copy = FALSE)`, so that the model frame is built in exactly the same way (by default, `design.matrix` skips a copy of the frame that `na.omit()` makes even when no row has a missing value).
 
 ### Simple example
 
@@ -718,30 +718,45 @@ all.equal(coef(fit), qr.coef(qr(D), d$y))
 #> [1] TRUE
 ```
 
-The benchmark compares `lm()`, `lm.fit()` on the model matrix (a Householder QR), and `RcppEigen::fastLmPure()` with its fastest method, a Cholesky decomposition of `X'X`. All three include building the model matrix, and so does the design matrix.
+The benchmark below compares `qr()` on a design matrix with eight other implementations of least squares, on 200,000 rows and designs from 3 to 401 columns. It runs outside this README, because a fair comparison needs a fresh R process for each method and design: `bench/ols/run.sh` runs it and writes `bench/ols/results.csv`, which the tables below read. The protocol:
 
-``` r
-library(design.matrix)
-options(design.matrix.dedup = FALSE)
-set.seed(1)
-n <- 2e5
-big <- data.frame(
-    y = rnorm(n),
-    x = rnorm(n),
-    f1 = factor(sample(sprintf("a%02d", 1:50), n, TRUE)),
-    f2 = factor(sample(letters[1:20], n, TRUE)),
-    cl = sample(1:1000, n, TRUE))
-fo <- y ~ x * f1 + f2
-flat <- function(v) unname(c(unlist(v)))
-close <- function(a, b) isTRUE(all.equal(flat(a), flat(b)))
+* Two comparisons. *From formula*: every method starts from the formula and the data, as a user would. *Prebuilt*: the model matrix (or design matrix) is built before timing, and only the fit is timed.
+* One thread everywhere, including the BLAS. The model frame is built exactly as `model.matrix()` builds it (option `design.matrix.skip_na_copy = FALSE`).
+* Memory is the peak resident memory of the first call in a fresh process, so it counts every allocation, including those made in C++.
+* Every result is compared with the coefficients of `lm()`, including which columns are aliased (`NA`). A method that gives a different answer is marked "no".
 
-bench::mark(
-    "lm()"                    = coef(lm(fo, big)),
-    "lm.fit()"                = lm.fit(model.matrix(fo, big), big$y)$coefficients,
-    "RcppEigen::fastLmPure()" = RcppEigen::fastLmPure(model.matrix(fo, big), big$y, method = 2L)$coefficients,
-    "qr() on a design matrix" = qr.coef(qr(design_matrix(fo, big)), big$y),
-    iterations = 5, check = close)[c("expression", "min", "median", "mem_alloc")]
-```
+**From formula**
+
+|Method               |3 columns       |5 columns       |21 columns      |40 columns       |119 columns        |401 columns              |
+|:--------------------|:---------------|:---------------|:---------------|:----------------|:------------------|:------------------------|
+|design.matrix qr()   |14.9 ms, 10 MB  |24.0 ms, 21 MB  |15.9 ms, 13 MB  |19.5 ms, 13 MB   |21.9 ms, 18 MB     |179.2 ms, 50 MB          |
+|.lm.fit()            |15.4 ms, 16 MB  |34.1 ms, 18 MB  |184.6 ms, 67 MB |265.6 ms, 125 MB |897.7 ms, 372 MB   |8,217.8 ms, 1232 MB      |
+|fixest::feols()      |16.6 ms, 1 MB   |21.0 ms, 9 MB   |181.9 ms, 65 MB |253.0 ms, 123 MB |496.5 ms, 364 MB   |1,500.9 ms, 1779 MB (no) |
+|lm()                 |29.5 ms, 21 MB  |176.3 ms, 19 MB |182.0 ms, 73 MB |250.6 ms, 131 MB |880.0 ms, 382 MB   |8,118.7 ms, 1243 MB      |
+|MatrixModels::glm4() |218.6 ms, 52 MB |229.1 ms, 81 MB |206.6 ms, 54 MB |252.7 ms, 64 MB  |270.2 ms, 81 MB    |error                    |
+|RcppArmadillo        |18.5 ms, 16 MB  |32.0 ms, 20 MB  |186.3 ms, 69 MB |287.5 ms, 127 MB |1,019.6 ms, 373 MB |6,155.4 ms, 1235 MB (no) |
+|RcppEigen Cholesky   |15.4 ms, 15 MB  |19.6 ms, 18 MB  |148.7 ms, 36 MB |172.3 ms, 64 MB  |348.2 ms, 190 MB   |1,555.6 ms, 621 MB (no)  |
+|RcppEigen QR         |15.3 ms, 18 MB  |21.0 ms, 18 MB  |178.0 ms, 67 MB |267.5 ms, 125 MB |980.4 ms, 372 MB   |8,853.4 ms, 1232 MB (no) |
+|speedglm::speedlm()  |17.2 ms, 16 MB  |29.3 ms, 19 MB  |35.8 ms, 58 MB  |194.1 ms, 99 MB  |243.4 ms, 216 MB   |785.9 ms, 744 MB (no)    |
+
+**Prebuilt**
+
+|Method                     |3 columns     |5 columns     |21 columns     |40 columns      |119 columns      |401 columns              |
+|:--------------------------|:-------------|:-------------|:--------------|:---------------|:----------------|:------------------------|
+|design.matrix qr()         |3.4 ms, 2 MB  |5.5 ms, 1 MB  |5.1 ms, 2 MB   |5.9 ms, 2 MB    |9.8 ms, 2 MB     |55.1 ms, 33 MB           |
+|.lm.fit()                  |4.8 ms, 0 MB  |7.1 ms, 0 MB  |45.5 ms, 32 MB |118.6 ms, 61 MB |683.1 ms, 182 MB |7,908.8 ms, 612 MB       |
+|fixest::feols.fit()        |13.1 ms, 1 MB |18.6 ms, 1 MB |53.2 ms, 34 MB |100.1 ms, 65 MB |353.7 ms, 184 MB |1,319.9 ms, 1161 MB (no) |
+|MatrixModels lm.fit.sparse |7.9 ms, 0 MB  |14.7 ms, 0 MB |9.7 ms, 0 MB   |13.5 ms, 0 MB   |181.8 ms, 76 MB  |34.6 ms, 0 MB (no)       |
+|RcppArmadillo              |3.6 ms, 2 MB  |5.7 ms, 2 MB  |46.2 ms, 34 MB |127.9 ms, 62 MB |852.4 ms, 183 MB |5,829.8 ms, 614 MB (no)  |
+|RcppEigen Cholesky         |2.0 ms, 0 MB  |2.2 ms, 0 MB  |10.0 ms, 0 MB  |23.7 ms, 0 MB   |136.0 ms, 0 MB   |1,251.5 ms, 0 MB (no)    |
+|RcppEigen QR               |2.5 ms, 0 MB  |4.5 ms, 0 MB  |36.0 ms, 32 MB |107.4 ms, 61 MB |796.6 ms, 182 MB |8,485.0 ms, 612 MB (no)  |
+|speedglm::speedlm.fit()    |4.1 ms, 2 MB  |4.8 ms, 2 MB  |20.2 ms, 18 MB |34.4 ms, 39 MB  |66.8 ms, 16 MB   |481.7 ms, 151 MB (no)    |
+
+ R version 4.5.3 (2026-03-11); BLAS: OpenBLAS 0.3.33 (libblas.so.3), limited to 1 thread; CPU: AMD Ryzen AI 7 PRO 450 w/ Radeon 860M
+
+From 21 columns up, `qr()` on a design matrix is the fastest method that matches `lm()` in both comparisons. From formula, with 21 to 119 columns, it is 2 to 11 times faster than the next method, and it uses the least memory, because it never builds the dense matrix. Prebuilt, it is 2 to 7 times faster, though some methods need even less memory, since they read the prebuilt matrix in place. At 401 columns, 21 of them aliased, the only other method that matches `lm()` is `.lm.fit()` (the same routine that `lm()` uses), 45 times slower from formula and 140 times slower prebuilt; the faster alternatives stop with an error, drop the aliased columns, or return a different solution.
+
+With 3 to 5 numeric columns, the dense matrix is small and the gains disappear. From formula, `qr()` ties for fastest with 3 columns and is about 4 ms slower than `RcppEigen`'s Cholesky decomposition with 5; `fixest`, which does not build a model frame, uses the least memory. Prebuilt, `RcppEigen` is faster by 1 to 3 ms.
 
 ### Predictions
 

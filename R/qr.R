@@ -196,6 +196,13 @@ dmqr_coef <- function(qr, Y, steps = 3L) {
     keep <- qr$pivot[seq_len(k)]
     b <- dmqr_solve(qr, crossprod(D, Y)[keep, , drop = FALSE])
     if (k == 0L) return(b)
+    ## The normal equations lose about kappa^2 * eps of accuracy, where
+    ## kappa is the condition number of X with columns scaled to unit norm
+    ## (Cholesky is insensitive to column scaling). When that is already at
+    ## the level of rounding, refinement cannot help.
+    R11 <- dmqr_R11(qr)
+    kap <- 1 / rcond(R11 / rep(sqrt(colSums(R11^2)), each = k), triangular = TRUE)
+    if (kap^2 <= 64) return(b)
     last <- Inf
     for (s in seq_len(steps)) {
         r <- Y - D %*% dmqr_full(qr, b)

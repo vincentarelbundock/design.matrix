@@ -28,6 +28,11 @@ static const R_CallMethodDef CallEntries[] = {
     {"dm_jac_finite", (DL_FUNC) &dm_jac_finite, 7},
     {"dm_jac_gram", (DL_FUNC) &dm_jac_gram, 14},
     {"dm_chol_pivot", (DL_FUNC) &dm_chol_pivot, 5},
+    {"dm_struct_ok", (DL_FUNC) &dm_struct_ok, 3},
+    {"dm_struct_info", (DL_FUNC) &dm_struct_info, 2},
+    {"dm_struct_gram", (DL_FUNC) &dm_struct_gram, 3},
+    {"dm_struct_xty", (DL_FUNC) &dm_struct_xty, 3},
+    {"dm_struct_mult", (DL_FUNC) &dm_struct_mult, 4},
     {"dm_omp_max_threads", (DL_FUNC) &dm_omp_max_threads, 0},
     {NULL, NULL, 0}
 };

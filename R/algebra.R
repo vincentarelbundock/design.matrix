@@ -253,7 +253,10 @@ dm_mult <- function(x, beta) {
     B <- beta
     if (!is.matrix(B)) B <- matrix(B, ncol = 1L)
     storage.mode(B) <- "double"
-    if (!jac_kernel_ok(J)) {
+    if (!is.null(st <- dm_struct_single(J))) {
+        out <- dm_struct_mult(st$design, B)
+        if (!is.null(st$scale)) out <- st$scale * out
+    } else if (!jac_kernel_ok(J)) {
         out <- as.matrix(J) %*% B
     } else {
         g <- dm_groups(J, cost = dm_row_cost(J) * ncol(B))
@@ -276,7 +279,10 @@ dm_crossprod <- function(x, w) {
     W <- w
     if (!is.matrix(W)) W <- matrix(W, ncol = 1L)
     storage.mode(W) <- "double"
-    out <- if (jac_kernel_ok(J)) {
+    st <- dm_struct_single(J)
+    out <- if (!is.null(st) && all(is.finite(W))) {
+        dm_struct_xty(st$design, if (is.null(st$scale)) W else st$scale * W)
+    } else if (jac_kernel_ok(J)) {
         dm_crossprod_kernel(J, W)
     } else {
         crossprod(as.matrix(J), W)
@@ -577,6 +583,11 @@ dm_gram <- function(x, y = NULL) {
             y <- NULL
         }
     }
+    if (is.null(y) && (is.null(w) || all(is.finite(w))) && dm_struct_ok(x)) {
+        out <- dm_struct_gram(x, if (is.null(w)) NULL else rep_len(as.double(w), n))
+        dimnames(out) <- nm
+        return(out)
+    }
     A <- as_jac(x)
     B <- if (is.null(y)) NULL else as_jac(y)
     if (!jac_kernel_ok(A) || (!is.null(B) && !jac_kernel_ok(B))) {
@@ -603,6 +614,14 @@ dm_gram <- function(x, y = NULL) {
     out <- do.call(.Call, c(list(C_dm_jac_gram), jac_args(A), Bargs, list(w, first)))
     dimnames(out) <- nm
     out
+}
+
+## A plain design with finite row scales that the structured kernels can
+## handle, as list(design, scale), or NULL.
+dm_struct_single <- function(J) {
+    if (!is.null(J$design2) || !dm_struct_ok(J$design)) return(NULL)
+    if (!is.null(J$scale) && !all(is.finite(J$scale))) return(NULL)
+    list(design = J$design, scale = J$scale)
 }
 
 ## Are two plain designs the same object (or equal)?

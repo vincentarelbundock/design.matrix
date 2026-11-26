@@ -14,6 +14,9 @@ knitr:
 ```{r}
 #| include: false
 options(width = 200)
+## Benchmarks build the model frame exactly as model.matrix() does, so that
+## comparisons with functions that call it are fair.
+options(design.matrix.skip_na_copy = FALSE)
 ```
 
 # design.matrix
@@ -167,7 +170,7 @@ Under the hood, a design matrix stores only the factor codes, the numeric variab
 
 Each section shows a small example, checked with `identical()` when the result is exact and with `all.equal()` when sums run in a different order, followed by a benchmark on medium-sized data (200,000 rows, 119 columns). The relative costs depend on the size and structure of the design.
 
-The benchmark tables report minimum and median elapsed time and `mem_alloc`, the total bytes allocated on the R heap during one evaluation. Reproducing the memory column requires an R build with `capabilities("profmem")` enabled.
+The benchmark tables report minimum and median elapsed time and `mem_alloc`, the total bytes allocated on the R heap during one evaluation. Reproducing the memory column requires an R build with `capabilities("profmem")` enabled. For fair comparisons with functions that call `model.matrix()`, the benchmarks set `options(design.matrix.skip_na_copy = FALSE)`, so that the model frame is built in exactly the same way (by default, `design.matrix` skips a copy of the frame that `na.omit()` makes even when no row has a missing value).
 
 ### Simple example
 
@@ -688,30 +691,38 @@ D <- design_matrix(y ~ x + f, d)
 all.equal(coef(fit), qr.coef(qr(D), d$y))
 ```
 
-The benchmark compares `lm()`, `lm.fit()` on the model matrix (a Householder QR), and `RcppEigen::fastLmPure()` with its fastest method, a Cholesky decomposition of `X'X`. All three include building the model matrix, and so does the design matrix.
+The benchmark below compares `qr()` on a design matrix with eight other implementations of least squares, on 200,000 rows and designs from 3 to 401 columns. It runs outside this README, because a fair comparison needs a fresh R process for each method and design: `bench/ols/run.sh` runs it and writes `bench/ols/results.csv`, which the tables below read. The protocol:
+
+* Two comparisons. *From formula*: every method starts from the formula and the data, as a user would. *Prebuilt*: the model matrix (or design matrix) is built before timing, and only the fit is timed.
+* One thread everywhere, including the BLAS. The model frame is built exactly as `model.matrix()` builds it (option `design.matrix.skip_na_copy = FALSE`).
+* Memory is the peak resident memory of the first call in a fresh process, so it counts every allocation, including those made in C++.
+* Every result is compared with the coefficients of `lm()`, including which columns are aliased (`NA`). A method that gives a different answer is marked "no".
 
 ```{r}
-library(design.matrix)
-options(design.matrix.dedup = FALSE)
-set.seed(1)
-n <- 2e5
-big <- data.frame(
-    y = rnorm(n),
-    x = rnorm(n),
-    f1 = factor(sample(sprintf("a%02d", 1:50), n, TRUE)),
-    f2 = factor(sample(letters[1:20], n, TRUE)),
-    cl = sample(1:1000, n, TRUE))
-fo <- y ~ x * f1 + f2
-flat <- function(v) unname(c(unlist(v)))
-close <- function(a, b) isTRUE(all.equal(flat(a), flat(b)))
-
-bench::mark(
-    "lm()"                    = coef(lm(fo, big)),
-    "lm.fit()"                = lm.fit(model.matrix(fo, big), big$y)$coefficients,
-    "RcppEigen::fastLmPure()" = RcppEigen::fastLmPure(model.matrix(fo, big), big$y, method = 2L)$coefficients,
-    "qr() on a design matrix" = qr.coef(qr(design_matrix(fo, big)), big$y),
-    iterations = 5, check = close)[c("expression", "min", "median", "mem_alloc")]
+#| echo: false
+#| results: asis
+res <- read.csv("bench/ols/results.csv")
+res$p <- as.integer(res$p)
+show <- function(mode) {
+    x <- res[res$mode == mode, ]
+    x$cell <- ifelse(is.na(x$ms), "error",
+                     sprintf("%s ms, %s MB%s", format(x$ms, big.mark = ",", trim = TRUE),
+                             x$MB, ifelse(x$matches_lm %in% TRUE, "", " (no)")))
+    tab <- reshape(x[, c("method", "p", "cell")], idvar = "method", timevar = "p", direction = "wide")
+    names(tab) <- c("Method", paste(sort(unique(x$p)), "columns"))
+    tab <- tab[order(tab$Method != "design.matrix qr()", tab$Method), ]
+    print(knitr::kable(tab, row.names = FALSE))
+}
+cat("**From formula**\n\n")
+show("formula")
+cat("\n**Prebuilt**\n\n")
+show("prebuilt")
+cat("\n", paste(readLines("bench/ols/machine.txt"), collapse = "; "), "\n")
 ```
+
+From 21 columns up, `qr()` on a design matrix is the fastest method that matches `lm()` in both comparisons. From formula, with 21 to 119 columns, it is 2 to 11 times faster than the next method, and it uses the least memory, because it never builds the dense matrix. Prebuilt, it is 2 to 7 times faster, though some methods need even less memory, since they read the prebuilt matrix in place. At 401 columns, 21 of them aliased, the only other method that matches `lm()` is `.lm.fit()` (the same routine that `lm()` uses), 45 times slower from formula and 140 times slower prebuilt; the faster alternatives stop with an error, drop the aliased columns, or return a different solution.
+
+With 3 to 5 numeric columns, the dense matrix is small and the gains disappear. From formula, `qr()` ties for fastest with 3 columns and is about 4 ms slower than `RcppEigen`'s Cholesky decomposition with 5; `fixest`, which does not build a model frame, uses the least memory. Prebuilt, `RcppEigen` is faster by 1 to 3 ms.
 
 ### Predictions
 
