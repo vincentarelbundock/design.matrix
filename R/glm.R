@@ -274,9 +274,18 @@ dmglm_col <- function(x, j) {
 ## give NA in R and FALSE in DuckDB (whose NaN equals itself) for NaN.
 dmglm_notnan <- function(x) ((x - x) == 0) | (abs(x) == Inf)
 dmglm_finite <- function(x) (x - x) == 0
-## Count of rows where `cond` is not TRUE (NA in R when cond is NA).
-dmglm_bad <- function(cond) dmc_ifelse(cond, 0, 1)
-dmglm_count <- function(cond) dmc_ifelse(cond, 1, 0)
+## 1 where `cond` is TRUE (dmglm_count) or not TRUE (dmglm_bad), else 0
+## (NA where cond is NA in memory; remotely, NULL counts as not TRUE).
+## (in memory the logical vector itself, which sums and multiplies as 0/1)
+dmglm_count <- function(cond) if (dm_is_rcols(cond)) dmc_ifelse(cond, 1, 0) else cond
+dmglm_bad <- function(cond) if (dm_is_rcols(cond)) dmc_ifelse(cond, 0, 1) else !cond
+
+## Sums over rows of several columns (one query remotely).
+dmglm_sums <- function(...) {
+    a <- list(...)
+    if (any(vapply(a, dm_is_rcols, NA))) return(dm_colsum(do.call(dmglm_cbind, a)))
+    vapply(a, function(v) sum(v), 0)
+}
 
 ## ---- families on columns ----------------------------------------------------
 
@@ -320,7 +329,34 @@ dmglm_kind <- function(family) {
 
 ## The family as functions of columns (vectors in memory, SQL remotely),
 ## computed as R's family objects compute them.
-dmglm_cf <- function(k) {
+dmglm_cf <- function(k, family) {
+    cf <- dmglm_cf_cols(k)
+    ## vectors (in memory): the family object itself, as glm.fit() calls it
+    disp <- function(rf, colf) {
+        force(rf)
+        force(colf)
+        function(...) {
+        a <- list(...)
+            if (any(vapply(a, dm_is_rcols, NA))) colf(...) else rf(...)
+        }
+    }
+    valideta <- family$valideta %||% function(eta) TRUE
+    validmu <- family$validmu %||% function(mu) TRUE
+    cf$linkfun <- disp(family$linkfun, cf$linkfun)
+    cf$linkinv <- disp(family$linkinv, cf$linkinv)
+    cf$mu.eta <- disp(family$mu.eta, cf$mu.eta)
+    cf$variance <- disp(family$variance, cf$variance)
+    cf$dev <- disp(family$dev.resids, cf$dev)
+    colvalid <- cf$valid
+    cf$valid <- function(eta, mu) {
+        if (dm_is_rcols(eta) || dm_is_rcols(mu)) return(colvalid(eta, mu))
+        isTRUE(valideta(eta) && validmu(mu))
+    }
+    cf
+}
+
+## The family on columns: SQL remotely (and R's arithmetic on vectors).
+dmglm_cf_cols <- function(k) {
     eps <- .Machine$double.eps
     link <- switch(k$link,
         identity = list(fun = function(m) m, inv = function(e) e, me = function(e) 0 * e + 1),
@@ -461,10 +497,13 @@ dmglm_checks <- function(cols, k, start, wmsg) {
     y <- cols$y
     w <- cols$w
     one <- 0 * y + 1
-    sums <- list(n = one, nz = dmglm_count(w != 0), sw = w, swy = w * y, sy = y,
-                 maxn = dmglm_count(cols$n > 1), slw = dmc_ifelse(w > 0, log(w), 0),
+    zero <- 0 * y
+    sums <- list(n = one, nz = dmglm_count(w != 0), sw = w, swy = w * y,
+                 maxn = if (k$binomial) dmglm_count(cols$n > 1) else zero,
+                 slw = if (k$aic == "gaussian") dmc_ifelse(w > 0, log(w), 0) else zero,
                  nzero = dmglm_count(w == 0), neg = dmglm_count(w < 0), infw = dmglm_count(abs(w) == Inf),
-                 ly = dmc_ifelse(y > 0, w * log(y), 0), nonint = dmglm_count(y != dmglm_round(y)))
+                 ly = if (k$aic == "inverse.gaussian") dmc_ifelse(y > 0, w * log(y), 0) else zero,
+                 nonint = if (k$aic == "poisson") dmglm_count(y != dmglm_round(y)) else zero)
     chk <- list()
     add <- function(cond, msg, type = "error") chk[[length(chk) + 1L]] <<- list(cond = cond, msg = msg, type = type)
     fam <- k$family
@@ -481,9 +520,8 @@ dmglm_checks <- function(cols, k, start, wmsg) {
     if (fam == "gaussian" && is.null(start) && k$link %in% c("inverse", "log"))
         add(if (k$link == "inverse") y == 0 else y <= 0, "cannot find valid starting values: please specify some")
     all_cols <- c(sums, lapply(chk, function(x) dmglm_count(x$cond)))
-    s <- dm_colsum(do.call(dmglm_cbind, unname(all_cols)))
+    s <- do.call(dmglm_sums, unname(all_cols))
     ck <- stats::setNames(as.list(s[seq_along(sums)]), names(sums))
-    ck$ym <- ck$sy / ck$n
     if (ck$n == 0) stop("0 (non-NA) cases", call. = FALSE)
     if (ck$neg > 0) stop(wmsg, call. = FALSE)
     if (ck$infw > 0) stop("NA/NaN/Inf in 'weights'", call. = FALSE)
@@ -508,7 +546,7 @@ dmglm_checks <- function(cols, k, start, wmsg) {
 
 dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg) {
     k <- dmglm_kind(family)
-    cf <- dmglm_cf(k)
+    cf <- dmglm_cf(k, family)
     ck <- dmglm_checks(cols, k, start, wmsg)
     tol <- min(1e-07, control$epsilon / 1000)
     p <- ncol(x)
@@ -523,7 +561,7 @@ dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg
     eta0 <- if (!is.null(start)) dmglm_mult(x, start) + off else cf$linkfun(cf$mustart(y, w, cols$n, cols$cbind))
     mu0 <- cf$linkinv(eta0)
     v0 <- cf$valid(eta0, mu0)
-    s0 <- dm_colsum(dmglm_cbind(cf$dev(y, mu0, w), if (is.null(v0)) 0 * y else dmglm_bad(v0)))
+    s0 <- dmglm_sums(cf$dev(y, mu0, w), if (is.null(v0)) 0 * y else dmglm_bad(v0))
     if (isTRUE(is.na(s0[2L]) || s0[2L] > 0))
         stop("cannot find valid starting values: please specify some", call. = FALSE)
     devold <- s0[1L]
@@ -591,7 +629,7 @@ dmglm_wls_design <- function(x, tol) {
 
 ## The same for an intercept alone (the null model): w2 and z sums.
 dmglm_wls_mean <- function(w2, z) {
-    s <- dm_colsum(dmglm_cbind(w2, w2 * z))
+    s <- dmglm_sums(w2, w2 * z)
     if (!all(is.finite(s))) return(list(coefficients = NaN, rank = 0L, pivot = 1L, R = matrix(0, 1L, 1L)))
     list(coefficients = if (s[1L] > 0) s[2L] / s[1L] else 0, rank = if (s[1L] > 0) 1L else 0L,
          pivot = 1L, R = matrix(sqrt(s[1L]), 1L, 1L))
@@ -606,9 +644,9 @@ dmglm_working <- function(u, eta, mu, cf) {
     good <- (W > 0) & (me != 0)
     w2 <- dmc_ifelse(good, W * me * me / v, 0)
     z <- dmc_ifelse(good, (eta - u$off) + (u$y - mu) / me, 0)
-    s <- dm_colsum(dmglm_cbind(dmglm_count((W > 0) & !dmglm_notnan(v)), dmglm_count((W > 0) & v == 0),
+    s <- dmglm_sums(dmglm_count((W > 0) & !dmglm_notnan(v)), dmglm_count((W > 0) & v == 0),
                                dmglm_count((W > 0) & !dmglm_notnan(me)), dmglm_count(good),
-                               dmglm_bad(dmglm_finite(w2) & dmglm_finite(z))))
+                               dmglm_bad(dmglm_finite(w2) & dmglm_finite(z)))
     if (isTRUE(is.na(s[1L]) || s[1L] > 0)) stop("NAs in V(mu)", call. = FALSE)
     if (isTRUE(s[2L] > 0)) stop("0s in V(mu)", call. = FALSE)
     if (isTRUE(is.na(s[3L]) || s[3L] > 0)) stop("NAs in d(mu)/d(eta)", call. = FALSE)
@@ -649,7 +687,7 @@ dmglm_units <- function(u, cf, k, first = NULL, eta = NULL, mu = NULL) {
             v <- cf$valid(eta, mu)
             ext <- if (k$family == "binomial") dmglm_count(mu > 1 - eps | mu < eps)
                    else if (k$family == "poisson") dmglm_count(mu < eps) else 0 * mu
-            s <- dm_colsum(dmglm_cbind(cf$dev(u$y, mu, u$W), if (is.null(v)) 0 * mu else dmglm_bad(v), ext))
+            s <- dmglm_sums(cf$dev(u$y, mu, u$W), if (is.null(v)) 0 * mu else dmglm_bad(v), ext)
             st$eta <- eta
             st$mu <- mu
             st$beta <- beta
@@ -783,7 +821,7 @@ dmglm_final <- function(x, cols, cf, k, ck, beta, old, eta0, dev, intercept) {
             w * (-lgamma(a) - a * log(mu * disp) + (a - 1) * log(y) - y / (mu * disp))
         },
         0 * y)
-    s <- dm_colsum(dmglm_cbind(dmc_ifelse(good0, w0 * r * r, 0), dmglm_bad(good0), cf$dev(y, wtd, w), ll))
+    s <- dmglm_sums(dmc_ifelse(good0, w0 * r * r, 0), dmglm_bad(good0), cf$dev(y, wtd, w), ll)
     list(pearson = s[1L], zero = isTRUE(s[2L] > 0), nulldev = s[3L], ll = s[4L], mu = mu)
 }
 
@@ -809,7 +847,7 @@ dmglm_null_refit <- function(cols, cf, k, control, nobs, mu) {
     eta <- cf$linkfun(mu)
     mu1 <- cf$linkinv(eta)
     v <- cf$valid(eta, mu1)
-    s <- dm_colsum(dmglm_cbind(cf$dev(cols$y, mu1, cols$w), if (is.null(v)) 0 * mu1 else dmglm_bad(v)))
+    s <- dmglm_sums(cf$dev(cols$y, mu1, cols$w), if (is.null(v)) 0 * mu1 else dmglm_bad(v))
     if (isTRUE(is.na(s[2L]) || s[2L] > 0)) stop("cannot find valid starting values: please specify some", call. = FALSE)
     B <- dmglm_units(u, cf, k, eta = eta, mu = mu1)
     res <- dmglm_loop(B, k, control, nobs, s[1L])
@@ -859,7 +897,7 @@ dmglm_response <- function(cf, eta) dmc_ifelse(dmglm_notnan(eta), cf$linkinv(eta
 #' @export
 fitted.design_glm <- function(object, ...) {
     d <- dmglm_rows(object, "fitted()")
-    cf <- dmglm_cf(dmglm_kind(object$family))
+    cf <- dmglm_cf(dmglm_kind(object$family), object$family)
     eta <- dmglm_mult(d$design, dmfit_beta(object)) + (d$offset %||% 0)
     dmglm_output(object, d$design, list(.fitted = cf$linkinv(eta)))
 }
@@ -868,7 +906,7 @@ fitted.design_glm <- function(object, ...) {
 residuals.design_glm <- function(object, type = c("deviance", "pearson", "working", "response"), ...) {
     type <- match.arg(type)
     d <- dmglm_rows(object, "residuals()")
-    cf <- dmglm_cf(dmglm_kind(object$family))
+    cf <- dmglm_cf(dmglm_kind(object$family), object$family)
     eta <- dmglm_mult(d$design, dmfit_beta(object)) + (d$offset %||% 0)
     mu <- cf$linkinv(eta)
     y <- d$y
@@ -896,7 +934,7 @@ residuals.design_glm <- function(object, type = c("deviance", "pearson", "workin
 predict.design_glm <- function(object, newdata = NULL, type = c("link", "response"),
                                na.action = stats::na.pass, ...) {
     type <- match.arg(type)
-    cf <- dmglm_cf(dmglm_kind(object$family))
+    cf <- dmglm_cf(dmglm_kind(object$family), object$family)
     if (is.null(newdata)) {
         if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
         d <- dmglm_rows(object, "predict() without `newdata`")
