@@ -2,31 +2,31 @@
 % Please edit documentation in R/algebra.R
 \name{design_algebra}
 \alias{design_algebra}
-\alias{rowsum.design_matrix}
-\alias{colSums,design_matrix-method}
-\alias{colMeans,design_matrix-method}
-\alias{rowSums,design_matrix-method}
-\alias{rowMeans,design_matrix-method}
+\alias{rowsum.xtx_matrix}
+\alias{colSums,xtx_matrix-method}
+\alias{colMeans,xtx_matrix-method}
+\alias{rowSums,xtx_matrix-method}
+\alias{rowMeans,xtx_matrix-method}
 \alias{quadratic_diagonal}
-\alias{\%*\%.design_matrix}
-\alias{crossprod.design_matrix}
+\alias{\%*\%.xtx_matrix}
+\alias{crossprod.xtx_matrix}
 \title{Algebra on design matrices without forming the dense matrix}
 \usage{
-\method{rowsum}{design_matrix}(x, group, reorder = TRUE, na.rm = FALSE, ...)
+\method{rowsum}{xtx_matrix}(x, group, reorder = TRUE, na.rm = FALSE, ...)
 
-\S4method{colSums}{design_matrix}(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE)
+\S4method{colSums}{xtx_matrix}(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE)
 
-\S4method{colMeans}{design_matrix}(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE)
+\S4method{colMeans}{xtx_matrix}(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE)
 
-\S4method{rowSums}{design_matrix}(x, na.rm = FALSE, dims = 1, ...)
+\S4method{rowSums}{xtx_matrix}(x, na.rm = FALSE, dims = 1, ...)
 
-\S4method{rowMeans}{design_matrix}(x, na.rm = FALSE, dims = 1, ...)
+\S4method{rowMeans}{xtx_matrix}(x, na.rm = FALSE, dims = 1, ...)
 
 quadratic_diagonal(x, V)
 
-\method{\%*\%}{design_matrix}(x, y)
+\method{\%*\%}{xtx_matrix}(x, y)
 
-\method{crossprod}{design_matrix}(x, y = NULL, ...)
+\method{crossprod}{xtx_matrix}(x, y = NULL, ...)
 }
 \arguments{
 \item{x}{A \code{design_matrix}.}
@@ -100,7 +100,7 @@ once per pattern, and expand. Row-wise results (\code{\%*\%}, \code{quadratic_di
 are then identical bit for bit to computing every row; \code{crossprod()} and
 grouped column summaries first sum the weights within each pattern, which changes
 only the rounding. The groups are found once per object and cached.
-The option \code{design.matrix.dedup} controls this:
+The option \code{xtx.dedup} controls this:
 \code{"auto"} (default) groups when the work per row is large enough to pay for
 hashing it and at most half the rows are distinct, \code{TRUE} always groups and
 \code{FALSE} never does.

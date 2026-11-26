@@ -10,7 +10,7 @@
 ## of products of such columns are GROUP BY aggregates over factor codes;
 ## the small dense products with the C_t are done in R (remote_sql.R).
 ## A variable that SQL cannot compute is evaluated in R once, batch by
-## batch, into columns of a temporary table (dm_remote_evaluate()), and is
+## batch, into columns of a temporary table (xtx_remote_evaluate()), and is
 ## then a column like any other.
 
 #' Out-of-core designs on DuckDB
@@ -113,7 +113,7 @@
 #'   products it is combined with (a product read before it is combined is
 #'   made again, as one more view, next to the other).
 #' * `as.matrix(D)` collects the rows and builds the dense matrix, only when
-#'   there are at most `getOption("design.matrix.remote_max_rows", 1e5)` rows
+#'   there are at most `getOption("xtx.remote_max_rows", 1e5)` rows
 #'   or with `force = TRUE`.
 #' * `design_matrix(D, newdata)` applies the design to a data frame, and
 #'   `design_matrix(D, con, table = ...)` to other remote data.
@@ -127,7 +127,7 @@
 #' of the rows also groups by the numeric variables, which returns each
 #' pattern with its number of rows and the sums of the weights and
 #' responses, and the result is computed from the design of the patterns,
-#' in memory. The option `design.matrix.remote_compress` controls it.
+#' in memory. The option `xtx.remote_compress` controls it.
 #' `TRUE` always compresses (unless every row is distinct); `FALSE` never
 #' does. With `"auto"` (default), the choice depends on the operation:
 #' * `colSums()` and `colMeans()` are never compressed (grouping by the
@@ -147,12 +147,12 @@
 #'   the rows).
 #'
 #' These thresholds are provisional. The option
-#' `design.matrix.remote_compress_ratio` (unset by default), when set, caps
+#' `xtx.remote_compress_ratio` (unset by default), when set, caps
 #' every one of these ratios: under `"auto"`, the patterns must then also be
 #' at most that fraction of the rows.
 #'
 #' In every case the number of patterns must also be at most
-#' `getOption("design.matrix.remote_compress_max", 1e6)`. To decide, a design
+#' `getOption("xtx.remote_compress_max", 1e6)`. To decide, a design
 #' with a continuous numeric column (a `DOUBLE` column with many distinct
 #' values in a sample of the rows) is not compressed, at almost no cost;
 #' otherwise the number of patterns is estimated over all the rows
@@ -171,8 +171,8 @@
 #' table name, or a `SELECT` query; not with Parquet paths), `engine`
 #' (`"auto"`, or `"sql"` to refuse variables that must be evaluated in R)
 #' and `chunk_size` (rows per batch when variables are evaluated in R,
-#' default `getOption("design.matrix.chunk_size", 250000)`).
-#' @aliases coerce,dm_remote,CsparseMatrix-method coerce,dm_remote,dgCMatrix-method
+#' default `getOption("xtx.chunk_size", 250000)`).
+#' @aliases coerce,xtx_remote,CsparseMatrix-method coerce,xtx_remote,dgCMatrix-method
 #' @examples
 #' if (requireNamespace("duckdb", quietly = TRUE)) {
 #'     con <- DBI::dbConnect(duckdb::duckdb())
@@ -194,11 +194,11 @@ NULL
 
 ## Is `x` remote data for design_matrix()? (A character vector is never
 ## valid data for model.frame(), so it can only mean Parquet paths.)
-dm_is_remote_source <- function(x) {
+xtx_is_remote_source <- function(x) {
     inherits(x, "DBIConnection") || (is.character(x) && length(x) > 0L && is.null(dim(x)))
 }
 
-dm_need_duckdb <- function() {
+xtx_need_duckdb <- function() {
     for (p in c("DBI", "duckdb")) {
         if (!requireNamespace(p, quietly = TRUE))
             stop(sprintf("Remote designs need the '%s' package.", p), call. = FALSE)
@@ -206,60 +206,60 @@ dm_need_duckdb <- function() {
 }
 
 
-## Entry point from design_matrix(), and from the fits (dm_remote_fit()).
+## Entry point from design_matrix(), and from the fits (xtx_remote_fit()).
 ## For the fits: `subset` (SQL over the source) restricts the rows; `extra`
 ## (named list of list(sql, inputs, kind), kind "numeric" for a numeric
 ## argument such as weights, "present" for columns that must only be
 ## present) adds variables in no term, which select rows; factor levels
 ## absent from the rows used are dropped with `drop_unused`, as lm() builds
 ## its model frame. `source` can also be an opened source
-## (dm_remote_source()); `override` gives SQL for model variables whose
-## values were computed in R (dm_materialize()).
-dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = stats::na.pass,
+## (xtx_remote_source()); `override` gives SQL for model variables whose
+## values were computed in R (xtx_materialize()).
+xtx_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = stats::na.pass,
                       drop_unused = FALSE, subset = NULL, extra = list(), override = list()) {
-    dm_need_duckdb()
+    xtx_need_duckdb()
     nms <- names(dots)
     if (is.null(nms)) nms <- rep("", length(dots))
-    ra <- dots[nms %in% dm_remote_keys]
-    rest <- dots[!nms %in% dm_remote_keys]
+    ra <- dots[nms %in% xtx_remote_keys]
+    rest <- dots[!nms %in% xtx_remote_keys]
     engine <- ra$engine %||% "auto"
     checkmate::assert_choice(engine, c("auto", "sql"), .var.name = "engine")
-    chunk_size <- ra$chunk_size %||% getOption("design.matrix.chunk_size", 250000)
+    chunk_size <- ra$chunk_size %||% getOption("xtx.chunk_size", 250000)
     checkmate::assert_number(chunk_size, lower = 1, finite = TRUE, .var.name = "chunk_size")
-    src <- if (inherits(source, "dm_src")) source else dm_remote_source(source, ra$table, ra$sql)
+    src <- if (inherits(source, "xtx_src")) source else xtx_remote_source(source, ra$table, ra$sql)
     if (!is.null(subset)) {
         src$select <- sprintf("SELECT s.* FROM (%s) AS s WHERE %s", src$select, subset)
         src$base_table <- NULL
         src$label <- paste(src$label, "(subset)")
     }
 
-    if (inherits(object, "design_formula")) {
+    if (inherits(object, "xtx_formula")) {
         contrasts.arg <- object$contrasts
         xlev <- object$xlevels
         object <- object$formula
     }
     if (inherits(object, "formula")) {
         if (length(rest)) stop("Unknown arguments: ", paste(names(rest), collapse = ", "), call. = FALSE)
-        D <- dm_remote_formula(object, src, contrasts.arg, xlev, extra, drop_unused, override)
+        D <- xtx_remote_formula(object, src, contrasts.arg, xlev, extra, drop_unused, override)
     } else {
         if (!is.null(contrasts.arg) || !is.null(xlev))
             stop("`contrasts.arg` and `xlev` apply only to a formula.", call. = FALSE)
-        plan <- if (inherits(object, "design_plan")) {
+        plan <- if (inherits(object, "xtx_plan")) {
             object
-        } else if (inherits(object, "design_matrix")) {
-            dm_plan_for_design(object)
+        } else if (inherits(object, "xtx_matrix")) {
+            xtx_plan_for_design(object)
         } else {
             do.call(design_plan, c(list(object), rest))
         }
-        D <- dm_remote_spec(plan, src, dm_remote_na(na.action))
+        D <- xtx_remote_spec(plan, src, xtx_remote_na(na.action))
     }
     D$chunk_size <- as.integer(chunk_size)
-    dm_remote_finish(D, engine)
+    xtx_remote_finish(D, engine)
 }
 
 ## na.action of a specification applied to remote data: "pass" (rows with
 ## missing values kept, as by default in memory) or "omit".
-dm_remote_na <- function(na.action) {
+xtx_remote_na <- function(na.action) {
     if (identical(na.action, stats::na.pass) || identical(na.action, "na.pass")) return("pass")
     if (identical(na.action, stats::na.omit) || identical(na.action, "na.omit") ||
         identical(na.action, stats::na.exclude) || identical(na.action, "na.exclude")) return("omit")
@@ -268,7 +268,7 @@ dm_remote_na <- function(na.action) {
 
 ## The source: connection (in a holder environment, so that a private
 ## connection is closed once nothing refers to it) and a SELECT statement.
-dm_remote_source <- function(source, table, sql) {
+xtx_remote_source <- function(source, table, sql) {
     holder <- new.env(parent = emptyenv())
     base_table <- NULL
     if (is.character(source)) {
@@ -308,14 +308,14 @@ dm_remote_source <- function(source, table, sql) {
         }
     }
     proto <- DBI::dbGetQuery(con, sprintf("SELECT * FROM (%s) AS s LIMIT 0", select))
-    types <- vapply(proto, dm_col_type, "")
+    types <- vapply(proto, xtx_col_type, "")
     structure(list(holder = holder, select = select, base_table = base_table, label = label,
-         proto = proto, types = types), class = "dm_src")
+         proto = proto, types = types), class = "xtx_src")
 }
 
-dm_con <- function(D) D$src$holder$con
+xtx_con <- function(D) D$src$holder$con
 
-dm_col_type <- function(x) {
+xtx_col_type <- function(x) {
     if (is.factor(x)) return("factor")
     if (is.character(x)) return("character")
     if (is.logical(x)) return("logical")
@@ -324,28 +324,28 @@ dm_col_type <- function(x) {
     "other"
 }
 
-dm_qi <- function(D, x) as.character(DBI::dbQuoteIdentifier(dm_con(D), x))
+xtx_qi <- function(D, x) as.character(DBI::dbQuoteIdentifier(xtx_con(D), x))
 
-## Run a query (with the option design.matrix.remote_debug, print it).
-dm_query <- function(D, sql) {
-    if (isTRUE(getOption("design.matrix.remote_debug"))) message(sql)
-    DBI::dbGetQuery(dm_con(D), sql)
+## Run a query (with the option xtx.remote_debug, print it).
+xtx_query <- function(D, sql) {
+    if (isTRUE(getOption("xtx.remote_debug"))) message(sql)
+    DBI::dbGetQuery(xtx_con(D), sql)
 }
 
-dm_execute <- function(D, sql) {
-    if (isTRUE(getOption("design.matrix.remote_debug"))) message(sql)
-    DBI::dbExecute(dm_con(D), sql)
+xtx_execute <- function(D, sql) {
+    if (isTRUE(getOption("xtx.remote_debug"))) message(sql)
+    DBI::dbExecute(xtx_con(D), sql)
 }
 
 ## Names of temporary tables, views and columns: a counter (8 hex digits,
 ## right after the prefix) and a token of the process, without using (or
 ## being reset by) R's random numbers.
-dm_tmp <- new.env(parent = emptyenv())
-dm_tmp_name <- function(prefix) {
-    if (is.null(dm_tmp$token))
-        dm_tmp$token <- sprintf("%x%x", Sys.getpid(), as.integer((as.numeric(Sys.time()) * 1000) %% 1e9))
-    dm_tmp$i <- (dm_tmp$i %||% 0) + 1
-    sprintf("%s_%08x%s", prefix, as.integer(dm_tmp$i), dm_tmp$token)
+xtx_tmp <- new.env(parent = emptyenv())
+xtx_tmp_name <- function(prefix) {
+    if (is.null(xtx_tmp$token))
+        xtx_tmp$token <- sprintf("%x%x", Sys.getpid(), as.integer((as.numeric(Sys.time()) * 1000) %% 1e9))
+    xtx_tmp$i <- (xtx_tmp$i %||% 0) + 1
+    sprintf("%s_%08x%s", prefix, as.integer(xtx_tmp$i), xtx_tmp$token)
 }
 
 ## Describe one model variable: how SQL can compute it, or test whether it
@@ -353,7 +353,7 @@ dm_tmp_name <- function(prefix) {
 ##   kind: "factor" (a character or ENUM column), "logical" (a logical
 ##         column), "numeric" (an expression with a SQL translation) or
 ##         "other" (evaluated in R).
-dm_remote_var <- function(name, expr, types, D, xlevels, formula_case) {
+xtx_remote_var <- function(name, expr, types, D, xlevels, formula_case) {
     v <- list(name = name, expr = expr, inputs = intersect(all.vars(expr), names(types)),
               kind = "other", reason = NULL, sql = NULL, col = NULL, levels = NULL)
     in_xlev <- name %in% names(xlevels)
@@ -385,7 +385,7 @@ dm_remote_var <- function(name, expr, types, D, xlevels, formula_case) {
     }
     ## offset(e): a numeric variable in no term
     e <- if (is.call(expr) && identical(expr[[1L]], as.name("offset")) && length(expr) == 2L) expr[[2L]] else expr
-    tr <- dm_sql_num(e, types, dm_con(D))
+    tr <- xtx_sql_num(e, types, xtx_con(D))
     if (is.null(tr$sql)) {
         v$reason <- tr$reason
     } else {
@@ -399,13 +399,13 @@ dm_remote_var <- function(name, expr, types, D, xlevels, formula_case) {
 ## Exact for variables with a SQL translation; a variable evaluated in R
 ## counts as present when all its input columns are, as do the columns of
 ## a "present" variable (FE variables, a factor response).
-dm_remote_var_ok <- function(D, v) {
+xtx_remote_var_ok <- function(D, v) {
     types <- D$src$types
     cond <- switch(v$kind,
-        factor = , logical = sprintf("s.%s IS NOT NULL", dm_qi(D, v$col)),
+        factor = , logical = sprintf("s.%s IS NOT NULL", xtx_qi(D, v$col)),
         numeric = sprintf("(%s) IS NOT NULL AND NOT isnan(%s)", v$sql, v$sql),
         other = , present = vapply(v$inputs, function(col) {
-            q <- dm_qi(D, col)
+            q <- xtx_qi(D, col)
             if (types[[col]] == "double") sprintf("s.%s IS NOT NULL AND NOT isnan(s.%s)", q, q)
             else sprintf("s.%s IS NOT NULL", q)
         }, ""))
@@ -415,15 +415,15 @@ dm_remote_var_ok <- function(D, v) {
 
 ## WHERE clause: the rows used. With na.omit, the rows with no missing model
 ## variable; with na.pass (a specification scoring remote data), all rows.
-dm_remote_filter <- function(D) {
+xtx_remote_filter <- function(D) {
     if (identical(D$na, "pass")) return("TRUE")
-    cond <- unique(vapply(D$vars, function(v) dm_remote_var_ok(D, v), ""))
+    cond <- unique(vapply(D$vars, function(v) xtx_remote_var_ok(D, v), ""))
     cond <- setdiff(cond, "TRUE")
     if (!length(cond)) "TRUE" else paste(sprintf("(%s)", cond), collapse = " AND ")
 }
 
 ## Variables of a terms object, with their predvars.
-dm_terms_vars <- function(tt) {
+xtx_terms_vars <- function(tt) {
     vars <- as.list(attr(tt, "variables"))[-1L]
     pv <- attr(tt, "predvars")
     exprs <- if (is.null(pv)) vars else as.list(pv)[-1L]
@@ -432,13 +432,13 @@ dm_terms_vars <- function(tt) {
 
 ## A remote design from a formula: learn levels and transformations from the
 ## remote data.
-dm_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(), drop_unused = FALSE,
+xtx_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(), drop_unused = FALSE,
                               override = list()) {
     D <- list(src = src, na = "omit")
     tt <- stats::terms(formula, data = src$proto)
-    tv <- dm_terms_vars(tt)
+    tv <- xtx_terms_vars(tt)
     types <- src$types
-    D$vars <- Map(function(nm, e) dm_remote_var(nm, e, types, D, NULL, TRUE), tv$names, tv$exprs)
+    D$vars <- Map(function(nm, e) xtx_remote_var(nm, e, types, D, NULL, TRUE), tv$names, tv$exprs)
     names(D$vars) <- tv$names
     ## variables computed in R into columns of the source
     for (nm in names(override)) {
@@ -454,10 +454,10 @@ dm_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(),
                              kind = extra[[nm]]$kind %||% "numeric",
                              reason = NULL, col = NULL, levels = NULL, sql = extra[[nm]]$sql)
     }
-    D$filter <- dm_remote_filter(D)
+    D$filter <- xtx_remote_filter(D)
 
     ## a sample of the rows used, to see what the R expressions return
-    sample <- dm_remote_sample(D)
+    sample <- xtx_remote_sample(D)
     env <- environment(tt)
     predvars <- tv$exprs
     xlevels <- list()
@@ -465,7 +465,7 @@ dm_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(),
         v <- D$vars[[j]]
         if (v$kind == "factor") {
             x <- if (types[[v$col]] == "factor" && !drop_unused) src$proto[[v$col]]
-                 else dm_remote_distinct(D, v$col)[[1L]]
+                 else xtx_remote_distinct(D, v$col)[[1L]]
             x <- as.factor(x)
             if (drop_unused) x <- droplevels(x)
             xlevels[[v$name]] <- levels(x)
@@ -473,7 +473,7 @@ dm_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(),
             val <- tryCatch(eval(v$expr, sample, env), error = function(e) e)
             if (is.factor(val) || is.character(val)) {
                 ## levels from the distinct values of the inputs
-                inp <- dm_remote_distinct(D, v$inputs)
+                inp <- xtx_remote_distinct(D, v$inputs)
                 fx <- as.factor(eval(v$expr, inp, env))
                 lv <- levels(if (drop_unused) droplevels(fx) else fx)
                 xlevels[[v$name]] <- lv
@@ -482,8 +482,8 @@ dm_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(),
                 changed <- inherits(val, "error") ||
                     !identical(stats::makepredictcall(val, tv$calls[[j]]), tv$calls[[j]])
                 if (changed) {
-                    full <- dm_query(D, sprintf("SELECT %s FROM (%s) AS s",
-                                                paste0("s.", dm_qi(D, v$inputs), collapse = ", "),
+                    full <- xtx_query(D, sprintf("SELECT %s FROM (%s) AS s",
+                                                paste0("s.", xtx_qi(D, v$inputs), collapse = ", "),
                                                 src$select))
                     predvars[[j]] <- stats::makepredictcall(eval(v$expr, full, env), tv$calls[[j]])
                 }
@@ -494,7 +494,7 @@ dm_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(),
     attr(tt, "predvars") <- as.call(c(list(as.name("list")), predvars))
     for (j in seq_along(predvars)) D$vars[[j]]$expr <- predvars[[j]]
     if (!nrow(sample))
-        stop(structure(class = c("dm_no_rows", "error", "condition"),
+        stop(structure(class = c("xtx_no_rows", "error", "condition"),
                        list(message = "The remote data has no complete rows.", call = NULL)))
     D$plan <- design_plan.formula(tt, sample, contrasts.arg = contrasts.arg,
                                   xlev = if (length(xlevels)) xlevels else NULL)
@@ -505,22 +505,22 @@ dm_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(),
 }
 
 ## A remote design from a specification: score the remote data.
-dm_remote_spec <- function(plan, src, na = "pass") {
+xtx_remote_spec <- function(plan, src, na = "pass") {
     D <- list(src = src, plan = plan, terms_full = plan$terms, response = NULL, na = na)
-    tv <- dm_terms_vars(plan$terms)
+    tv <- xtx_terms_vars(plan$terms)
     xl <- plan$xlevels
-    dm_remote_check_classes(plan, src, tv, xl)
-    D$vars <- Map(function(nm, e) dm_remote_var(nm, e, src$types, D, xl, FALSE), tv$names, tv$exprs)
+    xtx_remote_check_classes(plan, src, tv, xl)
+    D$vars <- Map(function(nm, e) xtx_remote_var(nm, e, src$types, D, xl, FALSE), tv$names, tv$exprs)
     names(D$vars) <- tv$names
-    D$filter <- dm_remote_filter(D)
+    D$filter <- xtx_remote_filter(D)
     D
 }
 
 ## Columns of another type than in training (a numeric variable stored as
 ## text, say): the error of predict.lm(), before anything is built. Only
 ## plain columns are checked here; variables computed by R expressions are
-## checked when the prototype rows are built (dm_chunk_design()).
-dm_remote_check_classes <- function(plan, src, tv, xl) {
+## checked when the prototype rows are built (xtx_chunk_design()).
+xtx_remote_check_classes <- function(plan, src, tv, xl) {
     cl <- plan$data_classes
     if (is.null(cl)) return(invisible())
     m <- list()
@@ -539,15 +539,15 @@ dm_remote_check_classes <- function(plan, src, tv, xl) {
 
 ## Model variables that SQL cannot compute (kind "other": in a term, or the
 ## response) are evaluated in R, batch by batch, into columns of a temporary
-## table, which becomes the source of the design (dm_materialize()): a
+## table, which becomes the source of the design (xtx_materialize()): a
 ## numeric variable is then a column (several for a matrix, as poly(x, 2)
 ## gives), a factor, character or logical one a column of that type. With
 ## engine = "sql" this is refused; otherwise a message names the first such
 ## term. (offset() terms in no term stay as they are: a fit or a prediction
 ## evaluates them.)
-dm_remote_evaluate <- function(D, engine) {
+xtx_remote_evaluate <- function(D, engine) {
     tt <- D$plan$terms
-    tv <- dm_terms_vars(tt)$names
+    tv <- xtx_terms_vars(tt)$names
     fac <- attr(tt, "factors")
     labels <- attr(tt, "term.labels")
     other <- names(D$vars)[vapply(D$vars, function(v) v$kind == "other", NA)]
@@ -572,9 +572,9 @@ dm_remote_evaluate <- function(D, engine) {
     if (engine == "sql") stop("The SQL engine cannot compute this design: ", why, ".", call. = FALSE)
     message("Evaluated in R: ", why, ".")
     idx <- match(todo, names(D$vars))
-    cols <- paste0("__dm_var", idx)
+    cols <- paste0("__xtx_var", idx)
     xl <- names(D$plan$xlevels)
-    src <- dm_materialize(D$src, stats::setNames(lapply(D$vars[idx], function(v) v$expr), cols),
+    src <- xtx_materialize(D$src, stats::setNames(lapply(D$vars[idx], function(v) v$expr), cols),
                           environment(D$terms_full) %||% globalenv(), chunk_size = D$chunk_size,
                           model = stats::setNames(lapply(D$vars[idx], function(v) {
                               list(inputs = v$inputs, factor = v$name %in% xl, label = v$name,
@@ -589,21 +589,21 @@ dm_remote_evaluate <- function(D, engine) {
         v$reason <- NULL
         v$kind <- f$kind
         if (f$kind == "numeric") {
-            v$sql <- sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, f$cols))
+            v$sql <- sprintf("CAST(s.%s AS DOUBLE)", xtx_qi(D, f$cols))
             v[["k"]] <- length(f$cols)
         } else {
             v$col <- f$cols
         }
         D$vars[[idx[i]]] <- v
     }
-    D$filter <- dm_remote_filter(D)
+    D$filter <- xtx_remote_filter(D)
     D$evaluated <- sprintf("%s `%s` is evaluated in R", what, label)
     D
 }
 
 ## Levels, columns, term structures.
-dm_remote_finish <- function(D, engine) {
-    D <- dm_remote_evaluate(D, engine)
+xtx_remote_finish <- function(D, engine) {
+    D <- xtx_remote_evaluate(D, engine)
     plan <- D$plan
     xl <- plan$xlevels
     ## levels of the factors, and new levels (as model.frame() reports them)
@@ -613,7 +613,7 @@ dm_remote_finish <- function(D, engine) {
         if (v$kind != "factor") next
         lv <- xl[[v$name]]
         D$vars[[j]]$levels <- lv
-        x <- dm_remote_distinct(D, v$col)[[1L]]
+        x <- xtx_remote_distinct(D, v$col)[[1L]]
         xi <- if (is.character(x)) as.factor(x) else x[, drop = TRUE]
         nxl <- levels(xi)
         m <- is.na(match(nxl, lv))
@@ -621,55 +621,55 @@ dm_remote_finish <- function(D, engine) {
             stop(sprintf(ngettext(length(m), "factor %s has new level %s", "factor %s has new levels %s"),
                          v$name, paste(nxl[m], collapse = ", ")), call. = FALSE)
     }
-    sample <- dm_remote_sample(D)
-    proto <- dm_chunk_design(D, sample)$design
+    sample <- xtx_remote_sample(D)
+    proto <- xtx_chunk_design(D, sample)$design
     D$assign <- if (is.null(proto$setup)) attr(proto$dense, "assign") else proto$setup$assign
     D$colnames <- colnames(proto)
     D$p <- length(D$colnames)
-    D$n <- as.numeric(dm_query(D, sprintf("SELECT COUNT(*) AS n FROM (%s) AS s WHERE %s",
+    D$n <- as.numeric(xtx_query(D, sprintf("SELECT COUNT(*) AS n FROM (%s) AS s WHERE %s",
                                            D$src$select, D$filter))$n)
     D$cache <- new.env(parent = emptyenv())
     ## identifies the design through copies with scaled rows
-    D$id <- dm_tmp_name("dm")
-    D$terms <- dm_remote_terms(D)
+    D$id <- xtx_tmp_name("xtx")
+    D$terms <- xtx_remote_terms(D)
     D$engine <- "sql"
-    D <- dm_sql_prepare(D)
-    class(D) <- "dm_remote"
+    D <- xtx_sql_prepare(D)
+    class(D) <- "xtx_remote"
     D
 }
 
 ## Distinct values of columns, in the rows used.
-dm_remote_distinct <- function(D, cols) {
-    dm_query(D, sprintf("SELECT DISTINCT %s FROM (%s) AS s WHERE %s",
-                        paste0("s.", dm_qi(D, cols), collapse = ", "), D$src$select, D$filter))
+xtx_remote_distinct <- function(D, cols) {
+    xtx_query(D, sprintf("SELECT DISTINCT %s FROM (%s) AS s WHERE %s",
+                        paste0("s.", xtx_qi(D, cols), collapse = ", "), D$src$select, D$filter))
 }
 
 ## The columns that the model variables read.
-dm_remote_inputs <- function(D) {
+xtx_remote_inputs <- function(D) {
     unique(unlist(lapply(D$vars, function(v) v$inputs)))
 }
 
-dm_remote_sample <- function(D, n = 2000L) {
-    cols <- dm_remote_inputs(D)
-    sel <- if (length(cols)) paste0("s.", dm_qi(D, cols), collapse = ", ") else "1 AS dm_one"
-    dm_query(D, sprintf("SELECT %s FROM (%s) AS s WHERE %s LIMIT %d", sel, D$src$select, D$filter, n))
+xtx_remote_sample <- function(D, n = 2000L) {
+    cols <- xtx_remote_inputs(D)
+    sel <- if (length(cols)) paste0("s.", xtx_qi(D, cols), collapse = ", ") else "1 AS xtx_one"
+    xtx_query(D, sprintf("SELECT %s FROM (%s) AS s WHERE %s LIMIT %d", sel, D$src$select, D$filter, n))
 }
 
 ## Terms of the design: their variables, and whether SQL computes them
 ## (`sql_ok`; otherwise `reason` says why a variable was evaluated in R).
-dm_remote_terms <- function(D) {
+xtx_remote_terms <- function(D) {
     tt <- D$plan$terms
     fac <- attr(tt, "factors")
     labels <- attr(tt, "term.labels")
     ## rows of `factors` are the variables, in order
-    pv <- dm_terms_vars(tt)$names
+    pv <- xtx_terms_vars(tt)$names
     out <- list()
     if (attr(tt, "intercept") == 1L && !isTRUE(D$plan$drop_intercept))
         out[[1L]] <- list(index = 0L, label = "(Intercept)", vars = integer(), sql_ok = TRUE, reason = NULL)
     for (t in seq_along(labels)) {
         vnames <- pv[fac[, t] > 0]
         L <- prod(vapply(D$vars[vnames], function(v) max(1L, length(v$levels)), 1L))
-        if (L * sum(D$assign == t) > dm_sql_max_cells)
+        if (L * sum(D$assign == t) > xtx_sql_max_cells)
             stop(sprintf("Term `%s` has %s combined levels: too many for a remote design (for a factor with many levels, use fixed effects: y ~ x | f).",
                          labels[t], format(L, big.mark = ",")), call. = FALSE)
         reason <- unlist(lapply(D$vars[vnames], function(v) v$evaluated))[1L]
@@ -680,8 +680,8 @@ dm_remote_terms <- function(D) {
 }
 
 #' @export
-print.dm_remote <- function(x, ...) {
-    cat(sprintf("<remote design_matrix: %s rows x %d columns>\n", dm_fmt_count(x$cache$n %||% x$n), x$p))
+print.xtx_remote <- function(x, ...) {
+    cat(sprintf("<remote design_matrix: %s rows x %d columns>\n", xtx_fmt_count(x$cache$n %||% x$n), x$p))
     cat("source: ", x$src$label, "\n", sep = "")
     if (!is.null(x$scale)) cat("rows scaled by: ", x$scale, "\n", sep = "")
     if (is.null(x$evaluated)) {
@@ -689,22 +689,22 @@ print.dm_remote <- function(x, ...) {
     } else {
         cat(sprintf("engine: sql, on columns computed in R (%s)\n", x$evaluated))
     }
-    dm_print_columns(x$colnames)
+    xtx_print_columns(x$colnames)
     invisible(x)
 }
 
-dm_fmt_count <- function(n) format(n, big.mark = ",", scientific = FALSE, trim = TRUE)
+xtx_fmt_count <- function(n) format(n, big.mark = ",", scientific = FALSE, trim = TRUE)
 
 #' @export
-dim.dm_remote <- function(x) c(x$cache$n %||% x$n, x$p)
+dim.xtx_remote <- function(x) c(x$cache$n %||% x$n, x$p)
 
 #' @export
-dimnames.dm_remote <- function(x) list(NULL, x$colnames)
+dimnames.xtx_remote <- function(x) list(NULL, x$colnames)
 
 
 ## Columns of the remote data that must be numeric (double, integer or
 ## logical).
-dm_numeric_cols <- function(D, cols) {
+xtx_numeric_cols <- function(D, cols) {
     for (col in cols) {
         if (!D$src$types[[col]] %in% c("double", "integer", "logical"))
             stop(sprintf("Column `%s` is not numeric.", col), call. = FALSE)
@@ -712,7 +712,7 @@ dm_numeric_cols <- function(D, cols) {
 }
 
 ## A column name argument (y, weights, group): check and quote.
-dm_remote_column <- function(D, x, what, several = FALSE) {
+xtx_remote_column <- function(D, x, what, several = FALSE) {
     if (several) checkmate::assert_character(x, min.len = 1L, any.missing = FALSE, .var.name = what)
     else checkmate::assert_string(x, .var.name = what)
     miss <- setdiff(x, names(D$src$types))
@@ -728,35 +728,35 @@ dm_remote_column <- function(D, x, what, several = FALSE) {
 ## remote columns of the fitting core (primitives.R; the design is then
 ## moved to their frame). Returns list(D = the design to use, sql, names).
 ## `numeric`: named columns must be numeric.
-dm_remote_cols <- function(D, x, what, several = FALSE, numeric = TRUE) {
-    if (dm_is_column(x)) {
-        return(list(D = dm_rebase(D, dm_frame_later(unclass(x)$frame, D)), sql = unclass(x)$sql, names = NULL))
+xtx_remote_cols <- function(D, x, what, several = FALSE, numeric = TRUE) {
+    if (xtx_is_column(x)) {
+        return(list(D = xtx_rebase(D, xtx_frame_later(unclass(x)$frame, D)), sql = unclass(x)$sql, names = NULL))
     }
     if (inherits(x, "SQL")) {
         checkmate::assert_string(as.character(x), .var.name = what)
         e <- sprintf("(%s)", as.character(x))
-        tryCatch(dm_query(D, sprintf("SELECT %s FROM (%s) AS s LIMIT 0", e, D$src$select)),
+        tryCatch(xtx_query(D, sprintf("SELECT %s FROM (%s) AS s LIMIT 0", e, D$src$select)),
                  error = function(err) stop(sprintf("`%s`: invalid SQL expression: %s", what, conditionMessage(err)),
                                             call. = FALSE))
         return(list(D = D, sql = e, names = as.character(x)))
     }
-    dm_remote_column(D, x, what, several)
-    if (numeric) dm_numeric_cols(D, x)
-    list(D = D, sql = sprintf("s.%s", dm_qi(D, x)), names = x)
+    xtx_remote_column(D, x, what, several)
+    if (numeric) xtx_numeric_cols(D, x)
+    list(D = D, sql = sprintf("s.%s", xtx_qi(D, x)), names = x)
 }
 
 ## The design over the same rows, with extra columns `exprs` (named SQL
 ## expressions over the columns of the source) added to the source.
-dm_remote_extend <- function(D, exprs, what = "expression") {
-    con <- dm_con(D)
-    items <- sprintf("(%s) AS %s", exprs, dm_qi(D, names(exprs)))
+xtx_remote_extend <- function(D, exprs, what = "expression") {
+    con <- xtx_con(D)
+    items <- sprintf("(%s) AS %s", exprs, xtx_qi(D, names(exprs)))
     select <- sprintf("SELECT s.*, %s FROM (%s) AS s", paste(items, collapse = ", "), D$src$select)
     proto <- tryCatch(DBI::dbGetQuery(con, sprintf("SELECT * FROM (%s) AS s LIMIT 0", select)),
                       error = function(e) stop(sprintf("`%s`: invalid SQL expression: %s", what,
                                                        conditionMessage(e)), call. = FALSE))
     D$src$select <- select
     D$src$proto <- proto
-    D$src$types <- vapply(proto, dm_col_type, "")
+    D$src$types <- vapply(proto, xtx_col_type, "")
     ## the extra columns are not in the base table: batches read a copy
     D$src$base_table <- NULL
     D
@@ -765,17 +765,17 @@ dm_remote_extend <- function(D, exprs, what = "expression") {
 ## X'WX, X'WY, Y'WY, the number of rows and the sum of the weights of an
 ## unscaled remote design: from its patterns when that pays (see
 ## *Compression*; not with `wy`, or with compress = FALSE), else one scan.
-## `ys`, `w`, `wy`: SQL expressions over the source (dm_remote_cols(),
-## dm_sql_moments()).
-dm_remote_moments <- function(x, ys = character(), w = NULL, gram = TRUE, wy = NULL, compress = TRUE) {
-    cap <- if (compress && is.null(wy)) dm_compress_cap(x, op = "products")
-    out <- if (!is.null(cap)) dm_sql_moments(x, ys, w, gram, cap = cap)
-    if (is.null(out)) out <- dm_sql_moments(x, ys, w, gram, wy = wy)
+## `ys`, `w`, `wy`: SQL expressions over the source (xtx_remote_cols(),
+## xtx_sql_moments()).
+xtx_remote_moments <- function(x, ys = character(), w = NULL, gram = TRUE, wy = NULL, compress = TRUE) {
+    cap <- if (compress && is.null(wy)) xtx_compress_cap(x, op = "products")
+    out <- if (!is.null(cap)) xtx_sql_moments(x, ys, w, gram, cap = cap)
+    if (is.null(out)) out <- xtx_sql_moments(x, ys, w, gram, wy = wy)
     out
 }
 
 ## The product of row scales (SQL expressions, or NULL), or NULL.
-dm_sql_times <- function(...) {
+xtx_sql_times <- function(...) {
     w <- c(...)
     if (length(w)) paste(sprintf("(%s)", w), collapse = " * ")
 }
@@ -783,89 +783,89 @@ dm_sql_times <- function(...) {
 ## X'X of a remote design (rows possibly scaled) and, with the remote
 ## columns Y, X'Y, from one scan: list(xtx, xty). (Without Y,
 ## crossprod(x), and xty NULL.)
-dm_remote_gram_xty <- function(x, Y = NULL) {
-    if (is.null(Y) || (!dm_is_column(Y) && !length(Y))) return(list(xtx = crossprod(x), xty = NULL))
-    yc <- dm_remote_cols(x, Y, "y")
+xtx_remote_gram_xty <- function(x, Y = NULL) {
+    if (is.null(Y) || (!xtx_is_column(Y) && !length(Y))) return(list(xtx = crossprod(x), xty = NULL))
+    yc <- xtx_remote_cols(x, Y, "y")
     sc <- yc$D$scale
     if (is.null(sc) && length(yc$sql) == 1L)
         return(lm_moments(yc$D, Y, NULL, centered = FALSE))
-    dm_remote_moments(dm_remote_unscaled(yc$D), yc$sql, dm_sql_times(sc, sc), wy = sc, compress = FALSE)[c("xtx", "xty")]
+    xtx_remote_moments(xtx_remote_unscaled(yc$D), yc$sql, xtx_sql_times(sc, sc), wy = sc, compress = FALSE)[c("xtx", "xty")]
 }
 
 ## X %*% beta written to a temporary view, or to the table `name`, with
 ## the columns `keep` (default: all)
-## of the remote data. Returns the name, of class dm_remote_table (the
-## view under the frame of dmp_mult(); public products return columns).
-dm_remote_predict <- function(x, beta, name = NULL, column = ".fitted", keep = NULL, overwrite = FALSE) {
-    checkmate::assert_class(x, "dm_remote")
+## of the remote data. Returns the name, of class xtx_remote_table (the
+## view under the frame of xtx_p_mult(); public products return columns).
+xtx_remote_predict <- function(x, beta, name = NULL, column = ".fitted", keep = NULL, overwrite = FALSE) {
+    checkmate::assert_class(x, "xtx_remote")
     p <- x$p
     B <- if (is.matrix(beta)) beta else matrix(beta, ncol = 1L)
     checkmate::assert_matrix(B, mode = "numeric", nrows = p, any.missing = FALSE, .var.name = "beta")
     checkmate::assert_true(all(is.finite(B)), .var.name = "all(is.finite(beta))")
     storage.mode(B) <- "double"
     sc <- x$scale
-    x <- dm_remote_unscaled(x)
-    keep <- if (is.null(keep)) names(x$src$types) else dm_remote_column(x, keep, "keep", several = TRUE)
+    x <- xtx_remote_unscaled(x)
+    keep <- if (is.null(keep)) names(x$src$types) else xtx_remote_column(x, keep, "keep", several = TRUE)
     outcols <- if (ncol(B) == 1L) column else colnames(B) %||% paste0(column, seq_len(ncol(B)))
     if (any(outcols %in% keep))
         stop("The prediction column clashes with a column of the remote data.", call. = FALSE)
     if (!is.null(sc)) {
         ## rows scaled: the predictions times the scale
-        x <- dm_remote_extend(x, c(`__dm_scale` = sc), "scale")
-        tmp <- dm_sql_predict(x, B, NULL, outcols, c(keep, "__dm_scale"), FALSE)
-        sel <- sprintf("SELECT %s FROM %s", paste(c(dm_qi(x, keep),
-                       sprintf("%s * \"__dm_scale\" AS %s", dm_qi(x, outcols), dm_qi(x, outcols))), collapse = ", "),
-                       dm_qi(x, tmp))
+        x <- xtx_remote_extend(x, c(`__xtx_scale` = sc), "scale")
+        tmp <- xtx_sql_predict(x, B, NULL, outcols, c(keep, "__xtx_scale"), FALSE)
+        sel <- sprintf("SELECT %s FROM %s", paste(c(xtx_qi(x, keep),
+                       sprintf("%s * \"__xtx_scale\" AS %s", xtx_qi(x, outcols), xtx_qi(x, outcols))), collapse = ", "),
+                       xtx_qi(x, tmp))
         if (is.null(name)) {
-            name <- dm_tmp_name("dm_pred")
-            dm_execute(x, sprintf("CREATE TEMPORARY VIEW %s AS %s", dm_qi(x, name), sel))
+            name <- xtx_tmp_name("xtx_pred")
+            xtx_execute(x, sprintf("CREATE TEMPORARY VIEW %s AS %s", xtx_qi(x, name), sel))
         } else {
-            dm_execute(x, sprintf("CREATE %sTABLE %s AS %s", if (overwrite) "OR REPLACE " else "", dm_qi(x, name), sel))
+            xtx_execute(x, sprintf("CREATE %sTABLE %s AS %s", if (overwrite) "OR REPLACE " else "", xtx_qi(x, name), sel))
         }
         out <- name
     } else {
-        out <- dm_sql_predict(x, B, name, outcols, keep, overwrite)
+        out <- xtx_sql_predict(x, B, name, outcols, keep, overwrite)
     }
-    structure(out, class = "dm_remote_table", connection = dm_con(x), holder = x$src$holder)
+    structure(out, class = "xtx_remote_table", connection = xtx_con(x), holder = x$src$holder)
 }
 
 #' @export
-print.dm_remote_table <- function(x, ...) {
+print.xtx_remote_table <- function(x, ...) {
     cat(sprintf("<remote table \"%s\">: read it with as.data.frame(), or query it on attr(, \"connection\")\n",
                 unclass(x)[1L]))
     invisible(x)
 }
 
 #' @export
-as.data.frame.dm_remote_table <- function(x, ...) {
+as.data.frame.xtx_remote_table <- function(x, ...) {
     con <- attr(x, "connection")
     DBI::dbGetQuery(con, sprintf("SELECT * FROM %s", DBI::dbQuoteIdentifier(con, unclass(x)[1L])))
 }
 
 #' @export
-`%*%.dm_remote` <- function(x, y) {
-    if (!inherits(x, "dm_remote"))
+`%*%.xtx_remote` <- function(x, y) {
+    if (!inherits(x, "xtx_remote"))
         stop("Only `design %*% beta` is supported, with the design first.", call. = FALSE)
     ## a remote column (design_column), as a vector in memory
     k <- if (is.matrix(y)) ncol(y) else 1L
     lab <- if (k == 1L) ".fitted" else colnames(y)
     if (k > 1L && (is.null(lab) || anyNA(lab) || any(lab == "") || anyDuplicated(lab)))
         lab <- paste0(".fitted", seq_len(k))
-    dm_column_label(dmp_mult(x, y), lab)
+    xtx_column_label(xtx_p_mult(x, y), lab)
 }
 
 ## Scaled rows, as `w * D` for a design in memory: the scale is a SQL
 ## expression over the columns of the remote data (a number, a column
 ## name, or a DBI::SQL() expression), kept unevaluated in `x$scale`.
-dm_remote_scale_sql <- function(D, s, op) {
+xtx_remote_scale_sql <- function(D, s, op) {
     if (inherits(s, "SQL")) {
         checkmate::assert_string(as.character(s), .var.name = "scale")
         e <- sprintf("(%s)", as.character(s))
     } else if (is.character(s)) {
-        dm_numeric_cols(D, dm_remote_column(D, s, "scale"))
-        e <- sprintf("CAST(%s AS DOUBLE)", dm_qi(D, s))
+        xtx_numeric_cols(D, xtx_remote_column(D, s, "scale"))
+        e <- sprintf("CAST(%s AS DOUBLE)", xtx_qi(D, s))
     } else if (is.numeric(s) && length(s) == 1L && is.null(dim(s))) {
-        e <- dm_sql_double(s)
+        e <- xtx_sql_double(s)
     } else {
         stop("A remote design can only be scaled by a number, the name of a column or a DBI::SQL() expression.",
              call. = FALSE)
@@ -873,33 +873,33 @@ dm_remote_scale_sql <- function(D, s, op) {
     if (op == "/") e <- sprintf("(CAST(1 AS DOUBLE) / %s)", e)
     out <- if (is.null(D$scale)) e else sprintf("%s * %s", D$scale, e)
     ## check the expression now
-    dm_remote_extend(D, c(`__dm_scale` = out), "scale")
+    xtx_remote_extend(D, c(`__xtx_scale` = out), "scale")
     out
 }
 
 #' @export
-Ops.dm_remote <- function(e1, e2) {
+Ops.xtx_remote <- function(e1, e2) {
     op <- .Generic
     if (nargs() == 1L) {
         if (op == "+") return(e1)
         if (op == "-") {
-            e1$scale <- dm_remote_scale_sql(e1, -1, "*")
+            e1$scale <- xtx_remote_scale_sql(e1, -1, "*")
             return(e1)
         }
     } else if (op %in% c("*", "/")) {
-        d1 <- inherits(e1, "dm_remote")
-        d2 <- inherits(e2, "dm_remote")
+        d1 <- inherits(e1, "xtx_remote")
+        d2 <- inherits(e2, "xtx_remote")
         if (d1 && d2) stop(sprintf("`%s` between two remote designs is not supported.", op), call. = FALSE)
         if (op == "/" && d2) stop("Only `design / scale` is supported, with the design first.", call. = FALSE)
         D <- if (d1) e1 else e2
         s <- if (d1) e2 else e1
         ## (a remote column of the design, as `e * D` or `D / w`: the design
-        ## moves to the column's frame, see dmp_scale(); tapx)
-        if (dm_is_column(s)) {
-            if (dm_ncols(s) != 1L) stop("A remote design is scaled by a column with one column.", call. = FALSE)
-            return(dmp_scale(D, if (op == "/") 1 / s else s))
+        ## moves to the column's frame, see xtx_p_scale(); tapx)
+        if (xtx_is_column(s)) {
+            if (xtx_ncols(s) != 1L) stop("A remote design is scaled by a column with one column.", call. = FALSE)
+            return(xtx_p_scale(D, if (op == "/") 1 / s else s))
         }
-        D$scale <- dm_remote_scale_sql(D, s, op)
+        D$scale <- xtx_remote_scale_sql(D, s, op)
         return(D)
     }
     stop(sprintf("`%s` is not supported for remote designs.", op), call. = FALSE)
@@ -909,24 +909,24 @@ Ops.dm_remote <- function(e1, e2) {
 ## remote design: both classes have Ops methods, so R asks which one to use
 ## (base::chooseOpsMethod(), R >= 4.3): the design's, which scales rows.
 #' @export
-chooseOpsMethod.dm_remote <- function(x, y, mx, my, cl, reverse) inherits(y, "design_column")
+chooseOpsMethod.xtx_remote <- function(x, y, mx, my, cl, reverse) inherits(y, "xtx_column")
 
 ## The design without its row scale.
-dm_remote_unscaled <- function(D) {
+xtx_remote_unscaled <- function(D) {
     D$scale <- NULL
     D
 }
 
 ## Is `b` the same remote design as `a` (up to the row scale)?
-dm_remote_same <- function(a, b) identical(a$id, b$id)
+xtx_remote_same <- function(a, b) identical(a$id, b$id)
 
 #' @export
-as.matrix.dm_remote <- function(x, force = FALSE, ...) as.matrix(dm_remote_collect(x, force))
+as.matrix.xtx_remote <- function(x, force = FALSE, ...) as.matrix(xtx_remote_collect(x, force))
 
-#' @method crossprod dm_remote
+#' @method crossprod xtx_remote
 #' @export
-crossprod.dm_remote <- function(x, y = NULL, ...) {
-    if (!inherits(x, "dm_remote"))
+crossprod.xtx_remote <- function(x, y = NULL, ...) {
+    if (!inherits(x, "xtx_remote"))
         stop("Only `crossprod(design)`, `crossprod(design, design)` and `crossprod(design, \"column\")` are supported, with a design first.",
              call. = FALSE)
     ## crossprod() is a primitive: its dispatch drops argument names, so
@@ -935,43 +935,43 @@ crossprod.dm_remote <- function(x, y = NULL, ...) {
     if (...length() || (!is.null(nm) && any(!nm %in% c("", "x", "y"))))
         stop("`crossprod()` of a remote design takes only `x` and `y`; for weights, scale the rows: `crossprod(D, \"w\" * D)`.",
              call. = FALSE)
-    if (is.null(y) || inherits(y, "dm_remote")) {
+    if (is.null(y) || inherits(y, "xtx_remote")) {
         ## X' diag(s_x s_y) X
-        if (!is.null(y) && !dm_remote_same(x, y))
+        if (!is.null(y) && !xtx_remote_same(x, y))
             stop("`crossprod(x, y)` of remote designs needs the same design, possibly with scaled rows.", call. = FALSE)
         ## (scales can read columns of a later frame: the products of the fit)
-        if (!is.null(y)) x <- dm_rebase(x, dm_frame_later(x, y))
-        w <- dm_sql_times(x$scale, if (is.null(y)) x$scale else y$scale)
-        return(dm_remote_moments(dm_remote_unscaled(x), w = w)$xtx)
+        if (!is.null(y)) x <- xtx_rebase(x, xtx_frame_later(x, y))
+        w <- xtx_sql_times(x$scale, if (is.null(y)) x$scale else y$scale)
+        return(xtx_remote_moments(xtx_remote_unscaled(x), w = w)$xtx)
     }
     ## X' diag(s_x) Y for columns: names, a DBI::SQL() expression, or the
     ## remote columns of the fitting core (primitives.R)
-    if (!dm_is_column(y) && !inherits(y, "SQL") && !is.character(y))
+    if (!xtx_is_column(y) && !inherits(y, "SQL") && !is.character(y))
         stop("For a remote design, `y` must be another remote design, column names or a DBI::SQL() expression.",
              call. = FALSE)
-    yc <- dm_remote_cols(x, y, "y", several = TRUE)
-    out <- dm_remote_moments(dm_remote_unscaled(yc$D), yc$sql, yc$D$scale, gram = FALSE)$xty
+    yc <- xtx_remote_cols(x, y, "y", several = TRUE)
+    out <- xtx_remote_moments(xtx_remote_unscaled(yc$D), yc$sql, yc$D$scale, gram = FALSE)$xty
     colnames(out) <- yc$names
     out
 }
 
-dm_remote_colsums <- function(x, group, reorder, mean) {
+xtx_remote_colsums <- function(x, group, reorder, mean) {
     if (!isTRUE(reorder))
         stop("Remote designs support only `reorder = TRUE`.", call. = FALSE)
     g <- NULL
     if (!is.null(group)) {
-        gc <- dm_remote_cols(x, group, "group", numeric = FALSE)
+        gc <- xtx_remote_cols(x, group, "group", numeric = FALSE)
         x <- gc$D
         g <- gc$sql
     }
     w <- x$scale
-    x <- dm_remote_unscaled(x)
-    cap <- dm_compress_cap(x, group = g, op = "colsums")
-    out <- if (!is.null(cap)) dm_sql_colsums(x, g, w, mean, cap = cap)
-    if (is.null(out)) dm_sql_colsums(x, g, w, mean) else out
+    x <- xtx_remote_unscaled(x)
+    cap <- xtx_compress_cap(x, group = g, op = "colsums")
+    out <- if (!is.null(cap)) xtx_sql_colsums(x, g, w, mean, cap = cap)
+    if (is.null(out)) xtx_sql_colsums(x, g, w, mean) else out
 }
 
-setOldClass("dm_remote")
+setOldClass("xtx_remote")
 
 #' @rdname design_remote
 #' @param x,object A remote design.
@@ -982,73 +982,73 @@ setOldClass("dm_remote")
 #'   its columns (`DBI::SQL()`).
 #' @param reorder Only `TRUE` (groups sorted) is supported.
 #' @export
-setMethod("colSums", "dm_remote", function(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE) {
-    dm_defaults_only(na.rm, dims)
-    dm_remote_colsums(x, group, reorder, mean = FALSE)
+setMethod("colSums", "xtx_remote", function(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE) {
+    xtx_defaults_only(na.rm, dims)
+    xtx_remote_colsums(x, group, reorder, mean = FALSE)
 })
 
 #' @rdname design_remote
 #' @export
-setMethod("colMeans", "dm_remote", function(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE) {
-    dm_defaults_only(na.rm, dims)
-    dm_remote_colsums(x, group, reorder, mean = TRUE)
+setMethod("colMeans", "xtx_remote", function(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE) {
+    xtx_defaults_only(na.rm, dims)
+    xtx_remote_colsums(x, group, reorder, mean = TRUE)
 })
 
 #' @rdname design_remote
 #' @export
-setMethod("rowSums", "dm_remote", function(x, na.rm = FALSE, dims = 1, ...) {
-    dm_defaults_only(na.rm, dims)
-    dm_column_label(dmp_mult(x, rep(1, ncol(x))), ".rowsum")
+setMethod("rowSums", "xtx_remote", function(x, na.rm = FALSE, dims = 1, ...) {
+    xtx_defaults_only(na.rm, dims)
+    xtx_column_label(xtx_p_mult(x, rep(1, ncol(x))), ".rowsum")
 })
 
 #' @rdname design_remote
 #' @export
-setMethod("rowMeans", "dm_remote", function(x, na.rm = FALSE, dims = 1, ...) {
-    dm_defaults_only(na.rm, dims)
-    dm_column_label(dmp_mult(x, rep(1 / ncol(x), ncol(x))), ".rowmean")
+setMethod("rowMeans", "xtx_remote", function(x, na.rm = FALSE, dims = 1, ...) {
+    xtx_defaults_only(na.rm, dims)
+    xtx_column_label(xtx_p_mult(x, rep(1 / ncol(x), ncol(x))), ".rowmean")
 })
 
 ## The rows of a remote design where a logical remote column, or a
-## DBI::SQL() predicate over its data, is TRUE (see dmp_subset()). Numeric
+## DBI::SQL() predicate over its data, is TRUE (see xtx_p_subset()). Numeric
 ## indices are refused: remote rows have no order.
 #' @export
-`[.dm_remote` <- function(x, i, j, ..., drop = FALSE) {
+`[.xtx_remote` <- function(x, i, j, ..., drop = FALSE) {
     if (!missing(j)) stop("Remote designs keep all their columns: use `D[i, ]`.", call. = FALSE)
     if (missing(i)) return(x)
     if (is.numeric(i) || is.logical(i))
         stop("Rows of a remote design are selected by a DBI::SQL() predicate or a logical remote column, not by position: remote rows have no order.",
              call. = FALSE)
-    dmp_subset(x, i)
+    xtx_p_subset(x, i)
 }
 
 ## A sparse matrix of the collected rows, with the guard of as.matrix().
-setAs("dm_remote", "CsparseMatrix", function(from) as(dm_remote_collect(from), "CsparseMatrix"))
-setAs("dm_remote", "dgCMatrix", function(from) as(dm_remote_collect(from), "CsparseMatrix"))
+setAs("xtx_remote", "CsparseMatrix", function(from) as(xtx_remote_collect(from), "CsparseMatrix"))
+setAs("xtx_remote", "dgCMatrix", function(from) as(xtx_remote_collect(from), "CsparseMatrix"))
 
 ## The in-memory design of the rows of a remote design, refused above
-## getOption("design.matrix.remote_max_rows", 1e5) rows unless force.
-dm_remote_collect <- function(x, force = FALSE) {
-    max_rows <- getOption("design.matrix.remote_max_rows", 1e5)
+## getOption("xtx.remote_max_rows", 1e5) rows unless force.
+xtx_remote_collect <- function(x, force = FALSE) {
+    max_rows <- getOption("xtx.remote_max_rows", 1e5)
     if (!isTRUE(force) && nrow(x) > max_rows)
-        stop(sprintf("The remote design has %s rows (more than %s): use `force = TRUE`, or raise the option `design.matrix.remote_max_rows`, to collect it in memory.",
-                     dm_fmt_count(nrow(x)), dm_fmt_count(max_rows)), call. = FALSE)
+        stop(sprintf("The remote design has %s rows (more than %s): use `force = TRUE`, or raise the option `xtx.remote_max_rows`, to collect it in memory.",
+                     xtx_fmt_count(nrow(x)), xtx_fmt_count(max_rows)), call. = FALSE)
     sc <- x$scale
-    x <- dm_remote_unscaled(x)
-    cols <- dm_remote_inputs(x)
+    x <- xtx_remote_unscaled(x)
+    cols <- xtx_remote_inputs(x)
     if (!is.null(sc)) {
-        x <- dm_remote_extend(x, c(`__dm_scale` = sc), "scale")
-        cols <- c(cols, "__dm_scale")
+        x <- xtx_remote_extend(x, c(`__xtx_scale` = sc), "scale")
+        cols <- c(cols, "__xtx_scale")
     }
-    chunk <- dm_query(x, dm_chunk_sql(x, cols))
-    cd <- dm_chunk_design(x, chunk)
-    if (is.null(sc)) cd$design else chunk$`__dm_scale`[cd$keep] * cd$design
+    chunk <- xtx_query(x, xtx_chunk_sql(x, cols))
+    cd <- xtx_chunk_design(x, chunk)
+    if (is.null(sc)) cd$design else chunk$`__xtx_scale`[cd$keep] * cd$design
 }
 
 #' @rdname design_remote
 #' @param sql For `summary()`: also print the generated SQL (the query that
 #'   computes the model variables, and the aggregates of `crossprod()`).
 #' @export
-summary.dm_remote <- function(object, sql = FALSE, ...) {
+summary.xtx_remote <- function(object, sql = FALSE, ...) {
     x <- object
     checkmate::assert_flag(sql)
     tab <- data.frame(
@@ -1059,15 +1059,15 @@ summary.dm_remote <- function(object, sql = FALSE, ...) {
     attr(tab, "engine") <- if (is.null(x$evaluated)) "sql" else sprintf("sql, on columns computed in R (%s)", x$evaluated)
     attr(tab, "scale") <- x$scale
     if (sql) {
-        attr(tab, "sql") <- c(paste0("-- model variables\n", dm_sql_base(x)),
-                              paste0("-- crossprod\n", dm_sql_moments(x, sql_only = TRUE)))
+        attr(tab, "sql") <- c(paste0("-- model variables\n", xtx_sql_base(x)),
+                              paste0("-- crossprod\n", xtx_sql_moments(x, sql_only = TRUE)))
     }
-    class(tab) <- c("summary.dm_remote", class(tab))
+    class(tab) <- c("summary.xtx_remote", class(tab))
     tab
 }
 
 #' @export
-print.summary.dm_remote <- function(x, ...) {
+print.summary.xtx_remote <- function(x, ...) {
     cat("engine: ", attr(x, "engine"), "\n", sep = "")
     if (!is.null(attr(x, "scale"))) cat("rows scaled by: ", attr(x, "scale"), "\n", sep = "")
     sql <- attr(x, "sql")
@@ -1082,8 +1082,8 @@ print.summary.dm_remote <- function(x, ...) {
 ## ---- the in-memory design of rows read from the database ----
 
 ## The query reading columns of the rows used.
-dm_chunk_sql <- function(D, cols) {
-    sel <- if (length(cols)) paste0("s.", dm_qi(D, cols), collapse = ", ") else "1 AS dm_one"
+xtx_chunk_sql <- function(D, cols) {
+    sel <- if (length(cols)) paste0("s.", xtx_qi(D, cols), collapse = ", ") else "1 AS xtx_one"
     sprintf("SELECT %s FROM (%s) AS s WHERE %s", sel, D$src$select, D$filter)
 }
 
@@ -1092,14 +1092,14 @@ dm_chunk_sql <- function(D, cols) {
 ## missing model variable (response included) are dropped, as na.omit()
 ## drops them, unless the design keeps them (na.pass).
 ## Returns list(design, keep = rows of the chunk kept, y = response).
-dm_chunk_design <- function(D, chunk) {
+xtx_chunk_design <- function(D, chunk) {
     plan <- D$plan
     na <- if (identical(D$na, "pass")) stats::na.pass else stats::na.omit
     mf <- design_frame(D$terms_full, chunk, xlev = plan$xlevels, na.action = na)
     ## variables of another type than in training: the error of predict.lm()
     if (!is.null(plan$data_classes)) stats::.checkMFClasses(plan$data_classes, mf)
     design <- design_matrix(plan$terms, mf, contrasts.arg = plan$contrasts)
-    if (isTRUE(plan$drop_intercept)) design <- dm_drop_intercept(design)
+    if (isTRUE(plan$drop_intercept)) design <- xtx_drop_intercept(design)
     omit <- attr(mf, "na.action")
     keep <- seq_len(nrow(chunk))
     if (length(omit)) keep <- keep[-omit]

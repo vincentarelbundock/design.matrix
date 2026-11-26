@@ -47,7 +47,7 @@ the data frame methods of \code{na.omit()} and \code{na.exclude()} or
 \verb{[.data.frame} are not the ones this package was written for, or if a
 self-test at load finds a difference, the corresponding shortcut is
 turned off; without shortcuts, \code{design_frame()} is \code{model.frame()}.
-Option \code{design.matrix.skip_na_copy = FALSE} turns both shortcuts off.
+Option \code{xtx.skip_na_copy = FALSE} turns both shortcuts off.
 }
 \examples{
 d <- data.frame(y = rnorm(10), x = rnorm(10), f = gl(2, 5))

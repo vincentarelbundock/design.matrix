@@ -4,14 +4,14 @@
 ##
 ##  * design_problem():  (remote_fit.R) design, response, weights and
 ##                       offset, as lm() and glm() extract them;
-##  * dmfit_check():     checks of the response, weights and offset;
-##  * dmfit_groups():    rows that share a design pattern (the dedup
+##  * xtx_fit_check():     checks of the response, weights and offset;
+##  * xtx_fit_groups():    rows that share a design pattern (the dedup
 ##                       machinery of algebra.R);
-##  * dmfit_suffstats(): per-pattern sufficient statistics of the response;
-##  * dmfit_ls():        a weighted least squares fit with lm()'s pivoting,
+##  * xtx_fit_suffstats(): per-pattern sufficient statistics of the response;
+##  * xtx_fit_ls():        a weighted least squares fit with lm()'s pivoting,
 ##                       on rows or on patterns;
-##  * dmfit_vcov():      the covariance matrix with NA for aliased columns;
-##  * dmfit_spec():      the design specification kept for predictions.
+##  * xtx_fit_vcov():      the covariance matrix with NA for aliased columns;
+##  * xtx_fit_spec():      the design specification kept for predictions.
 
 #' Linear models without the model matrix
 #'
@@ -36,10 +36,10 @@
 #' row, so a fit on millions of rows of categorical data costs about as
 #' much as one on its distinct patterns. Patterns are found by the
 #' deduplication machinery of the products (see [design_algebra] and the
-#' option `design.matrix.dedup`). With `compress = "auto"`, the fit is
+#' option `xtx.dedup`). With `compress = "auto"`, the fit is
 #' compressed when at most half the rows are distinct patterns, and the
 #' search for patterns gives up as soon as that is exceeded; the search is
-#' skipped when the option `design.matrix.dedup` is `FALSE`. `compress =
+#' skipped when the option `xtx.dedup` is `FALSE`. `compress =
 #' TRUE` always compresses (unless every row is distinct) and `FALSE` never
 #' does.
 #'
@@ -103,7 +103,7 @@
 #' @param ... For remote data (a DuckDB connection or Parquet paths as
 #'   `data`, or as `newdata` in `predict()`): `table`, `sql`, `engine` and
 #'   `chunk_size`; see [design_remote]. Otherwise not used.
-#' @return An object of class `"design_lm"`: a list with, among others,
+#' @return An object of class `"xtx_lm"`: a list with, among others,
 #'   `coefficients`, `sigma`, `df.residual`, `nobs`, `rank`, `pivot`, `R`
 #'   (the `p` by `p` factor of [design_qr], columns in pivoted order),
 #'   `rss`, `compressed` (whether the fit was compressed) and `patterns`
@@ -130,30 +130,30 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
                       contrasts = NULL, compress = "auto", tol = 1e-07,
                       model = TRUE, y = NULL, vcov = "iid", fixef.rm = "singleton", ...) {
     ## argument checks (checks.R)
-    design <- inherits(formula, c("design_matrix", "dm_remote"))
-    fe <- !design && dm_fe_has_bar(formula)
-    dm_check_call(design, c(data = !missing(data), subset = !missing(subset), na.action = !missing(na.action),
+    design <- inherits(formula, c("xtx_matrix", "xtx_remote"))
+    fe <- !design && xtx_fe_has_bar(formula)
+    xtx_check_call(design, c(data = !missing(data), subset = !missing(subset), na.action = !missing(na.action),
                             contrasts = !is.null(contrasts)), y, ...)
-    if (!design && !missing(na.action)) dm_check_na(na.action, fe)
-    dm_check_fit_args(compress, model, tol, vcov, fe = fe, subset = !missing(subset))
+    if (!design && !missing(na.action)) xtx_check_na(na.action, fe)
+    xtx_check_fit_args(compress, model, tol, vcov, fe = fe, subset = !missing(subset))
     ## fixed effects (fe.R)
     if (fe)
-        return(dm_fe_lm(match.call(), parent.frame(), formula, contrasts, compress, tol, missing(tol),
-                        model, vcov, fixef.rm, dm_dots(...)))
+        return(xtx_fe_lm(match.call(), parent.frame(), formula, contrasts, compress, tol, missing(tol),
+                        model, vcov, fixef.rm, xtx_dots(...)))
     cl <- match.call()
     ## the design and columns of a data frame, remote data, a design matrix
     ## or a remote design (remote_fit.R)
-    P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, dm_dots(...),
+    P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, xtx_dots(...),
                         frame = environment())
-    fit <- dmfit_lm(P$x, P$y, P$w, P$off, compress, tol, intercept = P$intercept)
+    fit <- xtx_fit_lm(P$x, P$y, P$w, P$off, compress, tol, intercept = P$intercept)
     fit$call <- cl
     fit$terms <- P$terms
     fit$contrasts <- P$contrasts
     fit$xlevels <- P$xlevels
-    fit$na.action <- dm_na_result(P)
+    fit$na.action <- xtx_na_result(P)
     fit$offset_call <- P$offset_call
     fit$env <- P$env
-    fit$method <- switch(dm_engine(P$x), sql = if (fit$compressed) "patterns" else "SQL moments")
+    fit$method <- switch(xtx_engine(P$x), sql = if (fit$compressed) "patterns" else "SQL moments")
     ## (the rows of a remote design, which later queries reuse)
     if (!is.null(fit$method)) assign("n", fit$rows, envir = P$x$cache)
     ## (the data of a remote fit or a fit on a design: always kept)
@@ -165,7 +165,7 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
 ## The response of a model frame, as model.response(mf, "numeric") but
 ## without names: on a large frame, turning compact row names into a
 ## character vector costs more than the fit.
-dmfit_response <- function(mf) {
+xtx_fit_response <- function(mf) {
     if (attr(attr(mf, "terms"), "response") == 0L) return(NULL)
     v <- mf[[1L]]
     if (!is.numeric(v) && !is.logical(v))
@@ -183,14 +183,14 @@ dmfit_response <- function(mf) {
 ## Response minus offset, and checks of the response, weights and offset,
 ## as lm.wfit() makes them, in one pass (one query remotely). Columns:
 ## numeric vectors in memory, remote columns (primitives.R).
-dmfit_check <- function(n, y, weights, offset) {
+xtx_fit_check <- function(n, y, weights, offset) {
     if (n == 0L) stop("0 (non-NA) cases", call. = FALSE)
     z <- if (is.null(offset)) y else y - offset
     w <- weights
-    s <- dmc_sums(dmc_count(dmc_is_finite(z), negate = TRUE),
-                  if (!is.null(w)) dmc_count(dmc_present(w) & w >= 0, negate = TRUE) else 0,
-                  if (!is.null(w)) dmc_count(abs(w) == Inf) else 0,
-                  if (!is.null(w)) dmc_count(w != 0) else 1)
+    s <- xtx_c_sums(xtx_c_count(xtx_c_is_finite(z), negate = TRUE),
+                  if (!is.null(w)) xtx_c_count(xtx_c_present(w) & w >= 0, negate = TRUE) else 0,
+                  if (!is.null(w)) xtx_c_count(abs(w) == Inf) else 0,
+                  if (!is.null(w)) xtx_c_count(w != 0) else 1)
     if (s[1L] > 0) stop("NA/NaN/Inf in 'y'", call. = FALSE)
     if (s[2L] > 0) stop("missing or negative weights not allowed", call. = FALSE)
     if (s[3L] > 0) stop("NA/NaN/Inf in 'weights'", call. = FALSE)
@@ -199,22 +199,22 @@ dmfit_check <- function(n, y, weights, offset) {
 }
 
 ## Number of observations (non-zero weights) and sum of the log weights.
-dmfit_wstats <- function(n, weights) {
+xtx_fit_wstats <- function(n, weights) {
     if (is.null(weights)) return(list(nobs = n, sumlogw = 0))
-    s <- dmc_sums(dmc_count(weights != 0), dmc_ifelse(weights != 0, log(weights), 0))
+    s <- xtx_c_sums(xtx_c_count(weights != 0), xtx_c_ifelse(weights != 0, log(weights), 0))
     list(nobs = s[1L], sumlogw = s[2L])
 }
 
 ## Groups of rows that share a design pattern, or NULL when the fit should
 ## not be compressed. `compress = "auto"` follows the option
-## `design.matrix.dedup` (its "auto" search gives up beyond n / 2
+## `xtx.dedup` (its "auto" search gives up beyond n / 2
 ## patterns); TRUE searches in any case. Either way, a fit on more than
 ## half as many patterns as rows is not worth compressing.
-dmfit_groups <- function(x, compress) {
+xtx_fit_groups <- function(x, compress) {
     if (isFALSE(compress) || nrow(x) < 2L) return(NULL)
     J <- as_jac(x)
     if (!jac_kernel_ok(J)) return(NULL)
-    g <- if (isTRUE(compress)) dm_groups(J, force = TRUE) else dm_groups(J, cost = Inf)
+    g <- if (isTRUE(compress)) xtx_dedup_groups(J, force = TRUE) else xtx_dedup_groups(J, cost = Inf)
     if (is.null(g)) return(NULL)
     if (length(g$first) == nrow(x)) return(NULL)
     if (!isTRUE(compress) && length(g$first) > 0.5 * nrow(x)) return(NULL)
@@ -225,7 +225,7 @@ dmfit_groups <- function(x, compress) {
 ## the sum of the weights, the weighted mean, and the weighted sum of
 ## squares within patterns (computed around the means, which avoids the
 ## cancellation of sum(w z^2) - sum(w) mean^2).
-dmfit_suffstats <- function(z, w, map, G) {
+xtx_fit_suffstats <- function(z, w, map, G) {
     if (is.null(w)) {
         sw <- tabulate(map, nbins = G)
         swz <- drop(rowsum(z, map, reorder = TRUE))
@@ -248,17 +248,17 @@ dmfit_suffstats <- function(z, w, map, G) {
 }
 
 ## A least squares fit of z (response minus offset) on x with weights w,
-## compressed to patterns when dmfit_groups() finds them.
-dmfit_lm <- function(x, y, weights = NULL, offset = NULL, compress = "auto",
+## compressed to patterns when xtx_fit_groups() finds them.
+xtx_fit_lm <- function(x, y, weights = NULL, offset = NULL, compress = "auto",
                      tol = 1e-07, intercept = TRUE) {
     n <- nrow(x)
-    z <- dmfit_check(n, y, weights, offset)
-    st <- dmfit_wstats(n, weights)
+    z <- xtx_fit_check(n, y, weights, offset)
+    st <- xtx_fit_wstats(n, weights)
     nobs <- st$nobs
     ## integers, as in lm() (remote counts are doubles)
     if (is.double(nobs) && nobs < .Machine$integer.max) nobs <- as.integer(nobs)
     sumlogw <- st$sumlogw
-    g <- dmp_patterns(x, z, weights, compress)
+    g <- xtx_p_patterns(x, z, weights, compress)
     if (!is.null(g)) {
         xs <- g$x
         zs <- g$z
@@ -272,7 +272,7 @@ dmfit_lm <- function(x, y, weights = NULL, offset = NULL, compress = "auto",
         ## (rows with zero weight count for nothing in the sums)
         within <- 0
     }
-    out <- dmfit_ls(xs, zs, ws, tol, intercept)
+    out <- xtx_fit_ls(xs, zs, ws, tol, intercept)
     out$rss <- out$rss + within
     out$df.residual <- nobs - out$rank
     ## as many observations as coefficients: the fit is exact, and what is
@@ -285,8 +285,8 @@ dmfit_lm <- function(x, y, weights = NULL, offset = NULL, compress = "auto",
     out$compressed <- !is.null(g)
     out$patterns <- nrow(xs)
     out$rows <- n
-    out$spec <- dmfit_spec(x)
-    class(out) <- "design_lm"
+    out$spec <- xtx_fit_spec(x)
+    class(out) <- "xtx_lm"
     out
 }
 
@@ -295,11 +295,11 @@ dmfit_lm <- function(x, y, weights = NULL, offset = NULL, compress = "auto",
 ## the pivoted factor, the weighted residual sum of squares and the
 ## explained sum of squares (around the weighted mean with an intercept,
 ## around zero without), as summary.lm() computes it.
-dmfit_ls <- function(x, z, w, tol, intercept, sums = TRUE) {
+xtx_fit_ls <- function(x, z, w, tol, intercept, sums = TRUE) {
     p <- ncol(x)
     cn <- colnames(x)
     if (p == 0L) {
-        rss <- dm_colsum(if (is.null(w)) z^2 else dmc_ifelse(w > 0, w * z^2, 0))
+        rss <- xtx_colsum(if (is.null(w)) z^2 else xtx_c_ifelse(w > 0, w * z^2, 0))
         return(list(coefficients = numeric(0),
                     rank = 0L, pivot = integer(0), R = matrix(0, 0, 0),
                     tol = tol, rss = rss, mss = 0, intercept = intercept))
@@ -308,32 +308,32 @@ dmfit_ls <- function(x, z, w, tol, intercept, sums = TRUE) {
     ## memory, remote columns for a remote design)
     sw <- if (is.null(w)) NULL else sqrt(w)
     Y <- if (is.null(sw)) z else sw * z
-    q <- dmqr_for(dmp_scale(x, sw), tol, Y)
-    b <- dmqr_coef(q, Y)
-    beta <- dmqr_full(q, b)[, 1L]
+    q <- xtx_qr_for(xtx_p_scale(x, sw), tol, Y)
+    b <- xtx_qr_coef(q, Y)
+    beta <- xtx_qr_full(q, b)[, 1L]
     coef <- beta
     coef[setdiff(seq_len(p), q$pivot[seq_len(q$rank)])] <- NA_real_
     names(coef) <- cn
     ## (the weighted least squares steps of a GLM need only the solution)
     if (!sums) return(list(coefficients = coef, rank = q$rank, pivot = q$pivot, R = q$R, tol = tol))
-    ## (remotely pending: its view is made only if dmc_ls_sums() reads it,
+    ## (remotely pending: its view is made only if xtx_c_ls_sums() reads it,
     ## on the frame of z and w)
-    f <- dmp_mult(x, beta)
+    f <- xtx_p_mult(x, beta)
     ww <- if (is.null(w)) 1 else w
     ## w v^2, 0 for rows with zero weight (whose squares can overflow)
-    wsq <- function(v) if (is.null(w)) v^2 else dmc_ifelse(w > 0, w * v^2, 0)
+    wsq <- function(v) if (is.null(w)) v^2 else xtx_c_ifelse(w > 0, w * v^2, 0)
     mo <- attr(b, "moments")
     rss <- NULL
     if (!is.null(mo)) {
         ## from the moments of the solution, when the factorization has them
         ## (a remote design: no pass over its products): rss = z'Wz - b.h,
         ## mss = b'Gb - (sum w f)^2 / sum w, with the intercept column of G
-        ## giving sum w f; dmc_ls_sums() below when cancellation would
+        ## giving sum w f; xtx_c_ls_sums() below when cancellation would
         ## cost accuracy
         zz <- if (is.null(w) && length(q$response_ss) == 1L) {
             c(q$response_ss, q$weight_sum)
         } else {
-            dmc_sums(wsq(z), ww + 0 * z)
+            xtx_c_sums(wsq(z), ww + 0 * z)
         }
         bh <- sum(mo$b * mo$h)
         rss_m <- zz[1L] - bh
@@ -346,7 +346,7 @@ dmfit_ls <- function(x, z, w, tol, intercept, sums = TRUE) {
     }
     if (is.null(rss)) {
         ## (primitives_fused.R: in memory one pass in C)
-        s <- dmc_ls_sums(z, f, w, intercept)
+        s <- xtx_c_ls_sums(z, f, w, intercept)
         rss <- s[1L]
         mss <- s[2L]
     }
@@ -357,7 +357,7 @@ dmfit_ls <- function(x, z, w, tol, intercept, sums = TRUE) {
 
 ## sigma^2 (R11' R11)^-1 in the original column order, NA for aliased
 ## columns.
-dmfit_vcov <- function(object, scale) {
+xtx_fit_vcov <- function(object, scale) {
     p <- length(object$coefficients)
     if (p == 0L) return(matrix(numeric(0), 0L, 0L))
     nm <- names(object$coefficients)
@@ -372,19 +372,19 @@ dmfit_vcov <- function(object, scale) {
 
 ## The design specification for predictions on new data (NULL when the
 ## design cannot be reused, such as a dense design from a fitted model).
-dmfit_spec <- function(x) {
+xtx_fit_spec <- function(x) {
     tryCatch(design_matrix(x, newdata = NULL), error = function(e) NULL)
 }
 
 ## Coefficients with aliased columns set to zero.
-dmfit_beta <- function(object) {
+xtx_fit_beta <- function(object) {
     b <- object$coefficients
     b[is.na(b)] <- 0
     unname(b)
 }
 
 ## The kept data, or an error.
-dmfit_data <- function(object, what) {
+xtx_fit_data <- function(object, what) {
     if (is.null(object$data))
         stop(sprintf("%s needs the fit's data: refit with `model = TRUE`, or use `predict(fit, newdata)`.",
                      what), call. = FALSE)
@@ -392,23 +392,23 @@ dmfit_data <- function(object, what) {
 }
 
 ## X b for a design, without the offset.
-dmfit_linpred <- function(object, D) {
-    if (ncol(D) == 0L) return(dmc_const(D, 0))
-    dmp_mult(D, dmfit_beta(object))
+xtx_fit_linpred <- function(object, D) {
+    if (ncol(D) == 0L) return(xtx_c_const(D, 0))
+    xtx_p_mult(D, xtx_fit_beta(object))
 }
 
 #' @export
-print.design_lm <- function(x, digits = max(3L, getOption("digits") - 3L), ...) {
+print.xtx_lm <- function(x, digits = max(3L, getOption("digits") - 3L), ...) {
     if (!is.null(x$call)) cat("\nCall:\n", paste(deparse(x$call), sep = "\n", collapse = "\n"), "\n", sep = "")
-    dmfit_print_rows(x)
-    dmfit_print_coef(x, digits)
+    xtx_fit_print_rows(x)
+    xtx_fit_print_coef(x, digits)
     cat("\n")
     invisible(x)
 }
 
 ## The coefficient table of summary(), with rows of NA for aliased
 ## coefficients, as print.summary.lm() prints it.
-dmfit_print_coefmat <- function(x, digits, signif.stars, ...) {
+xtx_fit_print_coefmat <- function(x, digits, signif.stars, ...) {
     if (length(x$aliased) == 0L) {
         cat("\nNo Coefficients\n")
         return(invisible())
@@ -428,15 +428,15 @@ dmfit_print_coefmat <- function(x, digits, signif.stars, ...) {
 
 ## How the fit was computed: on patterns, or (remotely) from sums over the
 ## rows (`method`).
-dmfit_print_rows <- function(x, prefix = "\n") {
+xtx_fit_print_rows <- function(x, prefix = "\n") {
     if (isTRUE(x$compressed)) {
-        cat(sprintf("%sFitted on %s design patterns of %s rows.\n", prefix, dm_fmt_count(x$patterns), dm_fmt_count(x$rows)))
+        cat(sprintf("%sFitted on %s design patterns of %s rows.\n", prefix, xtx_fmt_count(x$patterns), xtx_fmt_count(x$rows)))
     } else if (!is.null(x$method)) {
-        cat(sprintf("%sFitted from %s of %s rows.\n", prefix, x$method, dm_fmt_count(x$rows)))
+        cat(sprintf("%sFitted from %s of %s rows.\n", prefix, x$method, xtx_fmt_count(x$rows)))
     }
 }
 
-dmfit_print_coef <- function(x, digits, none = "\nNo coefficients\n") {
+xtx_fit_print_coef <- function(x, digits, none = "\nNo coefficients\n") {
     if (length(x$coefficients)) {
         cat("\nCoefficients:\n")
         print.default(format(x$coefficients, digits = digits), print.gap = 2L, quote = FALSE)
@@ -446,68 +446,68 @@ dmfit_print_coef <- function(x, digits, none = "\nNo coefficients\n") {
 }
 
 #' @export
-coef.design_lm <- function(object, ...) object$coefficients
+coef.xtx_lm <- function(object, ...) object$coefficients
 
 #' @export
-vcov.design_lm <- function(object, ...) dmfit_vcov(object, object$sigma^2)
+vcov.xtx_lm <- function(object, ...) xtx_fit_vcov(object, object$sigma^2)
 
 #' @export
-sigma.design_lm <- function(object, ...) object$sigma
+sigma.xtx_lm <- function(object, ...) object$sigma
 
 #' @export
-nobs.design_lm <- function(object, ...) object$nobs
+nobs.xtx_lm <- function(object, ...) object$nobs
 
 #' @export
-deviance.design_lm <- function(object, ...) object$rss
+deviance.xtx_lm <- function(object, ...) object$rss
 
 #' @export
-df.residual.design_lm <- function(object, ...) object$df.residual
+df.residual.xtx_lm <- function(object, ...) object$df.residual
 
 #' @export
-logLik.design_lm <- function(object, ...) {
+logLik.xtx_lm <- function(object, ...) {
     N <- object$nobs
     val <- 0.5 * (object$sumlogw - N * (log(2 * pi) + 1 - log(N) + log(object$rss)))
     structure(val, nall = N, nobs = N, df = object$rank + 1L, class = "logLik")
 }
 
 #' @export
-formula.design_lm <- function(x, ...) {
+formula.xtx_lm <- function(x, ...) {
     if (is.null(x$terms)) return(NULL)
     stats::formula(x$terms)
 }
 
 #' @export
-terms.design_lm <- function(x, ...) {
+terms.xtx_lm <- function(x, ...) {
     if (is.null(x$terms)) stop("The fit has no terms: it was not fitted from a formula.", call. = FALSE)
     x$terms
 }
 
 #' @export
-model.frame.design_lm <- function(formula, ...) {
+model.frame.xtx_lm <- function(formula, ...) {
     if (is.null(formula$model))
         stop("The fit has no model frame: refit `design_lm()` with `model = TRUE`.", call. = FALSE)
     formula$model
 }
 
 #' @export
-residuals.design_lm <- function(object, ...) {
+residuals.xtx_lm <- function(object, ...) {
     ## (y - offset) - X b on the rows of the fit: a vector in memory, the
     ## remote design with .fitted and .resid columns remotely
-    rw <- dmfit_predict_rows(object, NULL, NULL, list(), "residuals()")
-    xb <- dmfit_linpred(object, rw$D)
+    rw <- xtx_fit_predict_rows(object, NULL, NULL, list(), "residuals()")
+    xb <- xtx_fit_linpred(object, rw$D)
     fit <- if (is.null(rw$off)) xb else xb + rw$off
-    dmp_output(rw$D, list(.fitted = fit, .resid = rw$z - xb), design = TRUE,
-               memory = function(d) dm_na_pad(rw$na_act, d$.resid, rw$D, stats::naresid))
+    xtx_p_output(rw$D, list(.fitted = fit, .resid = rw$z - xb), design = TRUE,
+               memory = function(d) xtx_na_pad(rw$na_act, d$.resid, rw$D, stats::naresid))
 }
 
 #' @export
-fitted.design_lm <- function(object, ...) {
+fitted.xtx_lm <- function(object, ...) {
     ## (one implementation with predict(): a vector in memory; a table with
     ## .fitted and .resid remotely)
-    dmfit_predict(object, resid = TRUE, what = "fitted()")
+    xtx_fit_predict(object, resid = TRUE, what = "fitted()")
 }
 
-#' @param object A `"design_lm"` object.
+#' @param object A `"xtx_lm"` object.
 #' @param newdata A data frame of new observations. Omitted, predictions
 #'   are the fitted values (which need `model = TRUE`).
 #' @param se.fit Return standard errors of the predictions?
@@ -519,7 +519,7 @@ fitted.design_lm <- function(object, ...) {
 #'   [stats::predict.lm()].
 #' @rdname design_lm
 #' @export
-predict.design_lm <- function(object, newdata, se.fit = FALSE,
+predict.xtx_lm <- function(object, newdata, se.fit = FALSE,
                               interval = c("none", "confidence", "prediction"),
                               level = 0.95, na.action = stats::na.pass,
                               rankdeficient = c("warnif", "simple", "non-estim", "NA", "NAwarn"),
@@ -529,7 +529,7 @@ predict.design_lm <- function(object, newdata, se.fit = FALSE,
     checkmate::assert_flag(se.fit)
     checkmate::assert_number(level, lower = 0, upper = 1)
     no_data <- missing(newdata) || is.null(newdata)
-    dmfit_predict(object, if (no_data) NULL else newdata, na.action, list(...), se.fit = se.fit,
+    xtx_fit_predict(object, if (no_data) NULL else newdata, na.action, list(...), se.fit = se.fit,
                   interval = interval, level = level, rankdeficient = rankdeficient, tol = tol)
 }
 
@@ -537,14 +537,14 @@ predict.design_lm <- function(object, newdata, se.fit = FALSE,
 ## (a column, or NULL), the weights of the training rows (for prediction
 ## intervals), the response minus offsets of the training rows (for
 ## residuals) and their na.action. One description for both backends.
-dmfit_predict_rows <- function(object, newdata, na.action, dots, what) {
+xtx_fit_predict_rows <- function(object, newdata, na.action, dots, what) {
     if (is.null(newdata)) {
-        dat <- dmfit_data(object, what)
+        dat <- xtx_fit_data(object, what)
         z <- if (is.null(dat$offset)) dat$y else dat$y - dat$offset
         return(list(D = dat$design, off = dat$offset, w = dat$weights, z = z, training = TRUE,
                     na_act = object$na.action))
     }
-    nd <- dmfit_newdata(object, newdata, na.action, dots)
+    nd <- xtx_fit_newdata(object, newdata, na.action, dots)
     list(D = nd$D, off = nd$off, w = NULL, z = NULL, training = FALSE, na_act = NULL)
 }
 
@@ -554,27 +554,27 @@ dmfit_predict_rows <- function(object, newdata, na.action, dots, what) {
 ## as predict.lm() evaluates them): list(D, off). The data are a data frame
 ## (in memory) or remote data (a DuckDB connection or Parquet paths, with
 ## the `table`, `sql`, `engine` and `chunk_size` of `dots`).
-dmfit_newdata <- function(object, newdata, na.action = stats::na.pass, dots = list()) {
+xtx_fit_newdata <- function(object, newdata, na.action = stats::na.pass, dots = list()) {
     if (is.null(object$spec)) stop("This design cannot be applied to new data.", call. = FALSE)
-    if (dm_is_remote_source(newdata))
-        return(dm_remote_new_offset(object, do.call(design_matrix, c(list(object$spec, newdata, na.action = na.action), dots))))
+    if (xtx_is_remote_source(newdata))
+        return(xtx_remote_new_offset(object, do.call(design_matrix, c(list(object$spec, newdata, na.action = na.action), dots))))
     if (length(dots)) stop("Unknown arguments: ", paste(names(dots), collapse = ", "), call. = FALSE)
     D <- design_matrix(object$spec, newdata, na.action = na.action)
-    list(D = D, off = dmfit_new_offset(object, newdata, D))
+    list(D = D, off = xtx_fit_new_offset(object, newdata, D))
 }
 
 ## Predictions, standard errors, intervals and non-estimable cases of a
 ## linear fit, computed once on the primitives (primitives.R); the result is
 ## a vector, matrix or list in memory (as predict.lm()), a table remotely.
-dmfit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, dots = list(),
+xtx_fit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, dots = list(),
                           se.fit = FALSE, interval = "none", level = 0.95,
                           rankdeficient = "warnif", tol = 1e-06, resid = FALSE, what = "predict() without `newdata`") {
-    rw <- dmfit_predict_rows(object, newdata, na.action, dots, what)
+    rw <- xtx_fit_predict_rows(object, newdata, na.action, dots, what)
     D <- rw$D
     no_data <- is.null(newdata)
     ## (remotely the products below are pending: each binds at its first
     ## use, on the frame of the columns it is used with)
-    fit <- dmfit_linpred(object, D)
+    fit <- xtx_fit_linpred(object, D)
     xb <- fit
     if (!is.null(rw$off)) fit <- fit + rw$off
     nonest <- NULL
@@ -585,10 +585,10 @@ dmfit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, do
             warning(gettextf("%s; consider predict(., rankdeficient=\"NA\")", msg), call. = FALSE)
         } else {
             checkmate::assert_number(tol, lower = 0)
-            nonest <- dmfit_nonestimable(object, D, tol)
-            k <- dm_colsum(dmc_count(nonest))
+            nonest <- xtx_fit_nonestimable(object, D, tol)
+            k <- xtx_colsum(xtx_c_count(nonest))
             if (startsWith(rankdeficient, "NA")) {
-                fit <- dmc_ifelse(nonest, NA_real_, fit)
+                fit <- xtx_c_ifelse(nonest, NA_real_, fit)
                 if (rankdeficient == "NAwarn" && k > 0)
                     warning(gettextf("%s: NAs produced for non-estimable cases", msg), call. = FALSE)
                 nonest <- NULL
@@ -604,9 +604,9 @@ dmfit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, do
         ## the unscaled covariance with aliased rows and columns zeroed, then
         ## the residual variance (NaN for a saturated fit, as in predict.lm())
         res_var <- object$sigma^2
-        V <- dmfit_vcov(object, 1)
+        V <- xtx_fit_vcov(object, 1)
         V[is.na(V)] <- 0
-        ip <- if (ncol(D) == 0L) dmc_const(fit, 0) else dmp_quad(D, V)
+        ip <- if (ncol(D) == 0L) xtx_c_const(fit, 0) else xtx_p_quad(D, V)
         se <- sqrt(ip * res_var)
         if (interval != "none") {
             pred_var <- res_var
@@ -638,7 +638,7 @@ dmfit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, do
     if (!is.null(nonest)) cols$.nonestim <- nonest
     na_act <- rw$na_act
     ## remotely a table; in memory, the values of predict.lm()
-    dmp_output(D, cols, na = na_act,
+    xtx_p_output(D, cols, na = na_act,
                attrs = if (se.fit) list(df = object$df.residual, residual.scale = object$sigma),
                memory = function(d) {
         rn <- dimnames(D)[[1L]]
@@ -663,7 +663,7 @@ dmfit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, do
 ## Rows of D whose predictions are not estimable from a rank-deficient fit:
 ## rows with a component, relative to their norm, in the null space of the
 ## design (as predict.lm() determines them).
-dmfit_nonestimable <- function(object, D, tol) {
+xtx_fit_nonestimable <- function(object, D, tol) {
     p <- length(object$coefficients)
     k <- object$rank
     tR <- t(object$R)
@@ -672,10 +672,10 @@ dmfit_nonestimable <- function(object, D, tol) {
     B <- matrix(0, p, p - k)
     B[object$pivot, ] <- nb
     ## (a logical vector in memory, a logical column remotely)
-    Xb <- dmp_mult(D, B)
-    Xb_norm <- sqrt(dmc_rowsums(Xb * Xb))
+    Xb <- xtx_p_mult(D, B)
+    Xb_norm <- sqrt(xtx_c_rowsums(Xb * Xb))
     ## (remotely both products bind together, at the first use of the result)
-    X_norm <- sqrt(dmp_quad(D, diag(1, p)))
+    X_norm <- sqrt(xtx_p_quad(D, diag(1, p)))
     tol * X_norm <= Xb_norm
 }
 
@@ -683,7 +683,7 @@ dmfit_nonestimable <- function(object, D, tol) {
 ## argument of the call, evaluated on `newdata` as predict.lm() evaluates
 ## them, for the rows of `D`, the design of `newdata` (which can omit rows
 ## with missing values).
-dmfit_new_offset <- function(object, newdata, D) {
+xtx_fit_new_offset <- function(object, newdata, D) {
     tt <- object$terms
     if (is.null(tt)) return(NULL)
     off <- NULL
@@ -713,14 +713,14 @@ dmfit_new_offset <- function(object, newdata, D) {
 }
 
 #' @export
-summary.design_lm <- function(object, ...) {
+summary.xtx_lm <- function(object, ...) {
     p <- object$rank
     rdf <- object$df.residual
     rss <- object$rss
     resvar <- rss / rdf
     est <- object$coefficients
     aliased <- is.na(est)
-    V <- dmfit_vcov(object, resvar)
+    V <- xtx_fit_vcov(object, resvar)
     keep <- !aliased
     se <- sqrt(diag(V)[keep])
     tval <- est[keep] / se
@@ -741,17 +741,17 @@ summary.design_lm <- function(object, ...) {
     } else {
         ans$r.squared <- ans$adj.r.squared <- 0
     }
-    ans$cov.unscaled <- dmfit_vcov(object, 1)
-    class(ans) <- "summary.design_lm"
+    ans$cov.unscaled <- xtx_fit_vcov(object, 1)
+    class(ans) <- "summary.xtx_lm"
     ans
 }
 
 #' @export
-print.summary.design_lm <- function(x, digits = max(3L, getOption("digits") - 3L),
+print.summary.xtx_lm <- function(x, digits = max(3L, getOption("digits") - 3L),
                                     signif.stars = getOption("show.signif.stars"), ...) {
     if (!is.null(x$call)) cat("\nCall:\n", paste(deparse(x$call), sep = "\n", collapse = "\n"), "\n", sep = "")
-    dmfit_print_rows(x)
-    dmfit_print_coefmat(x, digits, signif.stars, ...)
+    xtx_fit_print_rows(x)
+    xtx_fit_print_coefmat(x, digits, signif.stars, ...)
     cat("\nResidual standard error:", format(signif(x$sigma, digits)),
         "on", x$df[2L], "degrees of freedom\n")
     if (!is.null(x$fstatistic)) {

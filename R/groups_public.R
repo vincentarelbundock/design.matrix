@@ -1,7 +1,7 @@
 ## Public groupings (Kata design.matrix#0ncx, tier T2 of pg3k): documented
-## wrappers over the coded groupings of the fitting core (dmc_dense_codes(),
-## dmc_codes(), dmp_groupsum_codes(), dmp_crosstab_codes(), dmc_lookup(),
-## dmp_nested(); see primitives.R and primitives_lookup.R). A grouping
+## wrappers over the coded groupings of the fitting core (xtx_c_dense_codes(),
+## xtx_c_codes(), xtx_p_groupsum_codes(), xtx_p_crosstab_codes(), xtx_c_lookup(),
+## xtx_p_nested(); see primitives.R and primitives_lookup.R). A grouping
 ## (class design_groups) holds integer codes 1..G of the rows of a design
 ## (an integer vector in memory, a pending lookup column remotely), G, and
 ## the levels of the key per code, sorted as the levels of fixed effects.
@@ -37,7 +37,7 @@
 #'   lie within one group of `g2`)?
 #'
 #' @section The grouping object:
-#' A list of class `design_groups` with elements
+#' A list of class `xtx_groups` with elements
 #' \describe{
 #'   \item{`codes`}{The group of each row, integers `1..G`: in memory an
 #'     integer vector with one value per row of the design; for a remote
@@ -174,20 +174,20 @@
 #' @name design_groups
 #' @export
 design_groups <- function(x, key) {
-    remote <- inherits(x, "dm_remote")
-    if (!remote && !inherits(x, "design_matrix"))
+    remote <- inherits(x, "xtx_remote")
+    if (!remote && !inherits(x, "xtx_matrix"))
         stop("`x` must be a design: a `design_matrix` or a remote design.", call. = FALSE)
-    if (remote) x <- dm_remote_unscaled(x)
-    parts <- dm_groups_parts(key)
+    if (remote) x <- xtx_remote_unscaled(x)
+    parts <- xtx_groups_parts(key)
     if (!length(parts)) stop("`key` must name at least one variable.", call. = FALSE)
-    nms <- dm_groups_names(parts)
+    nms <- xtx_groups_names(parts)
     if (remote) {
-        kc <- dm_groups_key_remote(x, parts)
-        cd <- dmc_dense_codes(kc)
+        kc <- xtx_groups_key_remote(x, parts)
+        cd <- xtx_c_dense_codes(kc)
         lv <- cd$levels
         names(lv) <- nms
         miss <- vapply(lv, anyNA, NA)
-        if (any(miss)) stop(dm_groups_na_msg(nms[miss][1L]), call. = FALSE)
+        if (any(miss)) stop(xtx_groups_na_msg(nms[miss][1L]), call. = FALSE)
         ## (as in memory, where logical keys are coded as integers)
         for (j in seq_along(lv)) if (is.logical(lv[[j]])) lv[[j]] <- as.integer(lv[[j]])
         codes <- cd$codes$codes
@@ -196,25 +196,25 @@ design_groups <- function(x, key) {
         r <- fr$pend[[length(fr$pend)]]
         base <- fr
         base$pend <- NULL
-        return(structure(list(codes = codes, G = as.integer(cd$codes$G), levels = lv, n = dm_nrows(x),
+        return(structure(list(codes = codes, G = as.integer(cd$codes$G), levels = lv, n = xtx_nrows(x),
                               design = x, lookup = list(frame = base, recipe = r)),
-                         class = "design_groups"))
+                         class = "xtx_groups"))
     }
-    kd <- dm_groups_key_memory(x, parts, nms)
-    cd <- dmc_dense_codes(kd)
+    kd <- xtx_groups_key_memory(x, parts, nms)
+    cd <- xtx_c_dense_codes(kd)
     lv <- cd$levels
     names(lv) <- nms
     rownames(lv) <- NULL
     structure(list(codes = cd$codes$codes, G = as.integer(cd$codes$G), levels = lv, n = nrow(x), design = x),
-              class = "design_groups")
+              class = "xtx_groups")
 }
 
 #' @rdname design_groups
 #' @export
 group_sums <- function(col, g) {
-    dm_groups_check(g, "g")
-    col <- dm_groups_col(col, g, "col")
-    out <- dmp_groupsum_codes(col, dm_groups_codes(g))
+    xtx_groups_check(g, "g")
+    col <- xtx_groups_col(col, g, "col")
+    out <- xtx_p_groupsum_codes(col, xtx_groups_codes(g))
     dimnames(out) <- NULL
     out
 }
@@ -222,33 +222,33 @@ group_sums <- function(col, g) {
 #' @rdname design_groups
 #' @export
 group_crosstab <- function(g1, g2, w = NULL) {
-    dm_groups_check(g1, "g1")
-    dm_groups_check(g2, "g2")
-    dm_groups_same(g1, g2)
+    xtx_groups_check(g1, "g1")
+    xtx_groups_check(g2, "g2")
+    xtx_groups_same(g1, g2)
     if (!is.null(w)) {
-        w <- dm_groups_col(w, g1, "w")
-        if (dm_ncols(w) != 1L) stop("`w` must be one column.", call. = FALSE)
+        w <- xtx_groups_col(w, g1, "w")
+        if (xtx_ncols(w) != 1L) stop("`w` must be one column.", call. = FALSE)
         if (is.matrix(w)) w <- w[, 1L]
     }
-    a <- dm_groups_codes(g1)
-    b <- dm_groups_codes(g2)
-    if (dm_is_column(a$codes) && !is.null(w)) {
-        ## (as dmp_crosstab_codes(), with the count of missing weights: a
+    a <- xtx_groups_codes(g1)
+    b <- xtx_groups_codes(g2)
+    if (xtx_is_column(a$codes) && !is.null(w)) {
+        ## (as xtx_p_crosstab_codes(), with the count of missing weights: a
         ## pair with one is NA, as the sum in memory)
-        res <- dm_group_query(list(a$codes, b$codes), list(w), nulls = TRUE)
+        res <- xtx_group_query(list(a$codes, b$codes), list(w), nulls = TRUE)
         v <- as.double(res$v1)
         v[as.numeric(res$n1) > 0] <- NA_real_
-        ct <- .Call(C_dm_fe_crosstabs, as.integer(res$g2), list(as.integer(res$g1)), v, b$G, a$G,
+        ct <- .Call(C_xtx_fe_crosstabs, as.integer(res$g2), list(as.integer(res$g1)), v, b$G, a$G,
                     design_threads())[[1L]]
-        return(dm_ct_matrix(ct, a$G, b$G))
+        return(xtx_ct_matrix(ct, a$G, b$G))
     }
-    dmp_crosstab_codes(a, b, w)
+    xtx_p_crosstab_codes(a, b, w)
 }
 
 #' @rdname design_groups
 #' @export
 group_lookup <- function(values, g) {
-    dm_groups_check(g, "g")
+    xtx_groups_check(g, "g")
     if (is.data.frame(values)) values <- as.matrix(values)
     if (!(is.numeric(values) || is.logical(values)) || !(is.null(dim(values)) || length(dim(values)) == 2L))
         stop("`values` must be a numeric vector or matrix.", call. = FALSE)
@@ -260,43 +260,43 @@ group_lookup <- function(values, g) {
     } else {
         values <- as.double(values)
     }
-    dmc_lookup(values, dm_groups_codes(g))
+    xtx_c_lookup(values, xtx_groups_codes(g))
 }
 
 #' @rdname design_groups
 #' @export
 group_nested <- function(g1, g2) {
-    dm_groups_check(g1, "g1")
-    dm_groups_check(g2, "g2")
-    dm_groups_same(g1, g2)
+    xtx_groups_check(g1, "g1")
+    xtx_groups_check(g2, "g2")
+    xtx_groups_same(g1, g2)
     if (identical(g1, g2)) return(TRUE)
-    ## (dmp_nested(a, b): is each level of b within one level of a?)
-    dmp_nested(dm_groups_codes(g2), dm_groups_codes(g1))
+    ## (xtx_p_nested(a, b): is each level of b within one level of a?)
+    xtx_p_nested(xtx_groups_codes(g2), xtx_groups_codes(g1))
 }
 
 #' @rdname design_groups
 #' @export
-format.design_groups <- function(x, ...) {
-    remote <- dm_is_column(x$codes)
+format.xtx_groups <- function(x, ...) {
+    remote <- xtx_is_column(x$codes)
     where <- if (remote) {
-        con <- dm_con(unclass(x$codes)$frame)
+        con <- xtx_con(unclass(x$codes)$frame)
         open <- tryCatch(DBI::dbIsValid(con), error = function(e) FALSE)
-        sprintf("%s rows, on <%s>%s", if (is.null(x$n)) "?" else dm_fmt_count(x$n), class(con)[1L],
+        sprintf("%s rows, on <%s>%s", if (is.null(x$n)) "?" else xtx_fmt_count(x$n), class(con)[1L],
                 if (open) "" else " (closed)")
     } else {
-        sprintf("%s rows, in memory", dm_fmt_count(x$n))
+        sprintf("%s rows, in memory", xtx_fmt_count(x$n))
     }
-    top <- sprintf("<design_groups: %s group%s of %s; %s>", dm_fmt_count(x$G), if (identical(x$G, 1L)) "" else "s",
+    top <- sprintf("<design_groups: %s group%s of %s; %s>", xtx_fmt_count(x$G), if (identical(x$G, 1L)) "" else "s",
                    paste(names(x$levels), collapse = ", "), where)
     shown <- utils::head(x$levels, 6L)
     body <- if (nrow(shown)) paste0("  ", utils::capture.output(print(shown, row.names = TRUE)))
-    if (x$G > 6L) body <- c(body, sprintf("  ... (%s more)", dm_fmt_count(x$G - 6L)))
+    if (x$G > 6L) body <- c(body, sprintf("  ... (%s more)", xtx_fmt_count(x$G - 6L)))
     c(top, body)
 }
 
 #' @rdname design_groups
 #' @export
-print.design_groups <- function(x, ...) {
+print.xtx_groups <- function(x, ...) {
     cat(format(x), sep = "\n")
     invisible(x)
 }
@@ -307,12 +307,12 @@ print.design_groups <- function(x, ...) {
 ## is_name = v is the name of a variable). Character vectors at the top
 ## level are names; the columns of a data frame are values; in a list, a
 ## single string is a name and other vectors are values.
-dm_groups_parts <- function(key) {
+xtx_groups_parts <- function(key) {
     one <- function(v, nm = NULL, in_df = FALSE) {
-        if (dm_is_column(v)) {
+        if (xtx_is_column(v)) {
             lab <- unclass(v)$label
-            return(lapply(seq_len(dm_ncols(v)), function(j) list(v = v[, j], name = if (!is.null(nm) && nzchar(nm)) {
-                if (dm_ncols(v) == 1L) nm else paste0(nm, j)
+            return(lapply(seq_len(xtx_ncols(v)), function(j) list(v = v[, j], name = if (!is.null(nm) && nzchar(nm)) {
+                if (xtx_ncols(v) == 1L) nm else paste0(nm, j)
             } else lab[j], is_name = FALSE)))
         }
         if (inherits(v, "SQL"))
@@ -323,7 +323,7 @@ dm_groups_parts <- function(key) {
             return(list(list(v = v, name = if (!is.null(nm) && nzchar(nm)) nm else v, is_name = TRUE)))
         list(list(v = v, name = if (!is.null(nm) && nzchar(nm)) nm, is_name = FALSE))
     }
-    if (dm_is_column(key) || inherits(key, "SQL")) return(one(key))
+    if (xtx_is_column(key) || inherits(key, "SQL")) return(one(key))
     if (is.character(key) && is.null(dim(key))) {
         if (anyNA(key) || any(!nzchar(key))) stop("`key`: variable names must not be missing or empty.", call. = FALSE)
         return(unlist(lapply(key, one), recursive = FALSE))
@@ -341,32 +341,32 @@ dm_groups_parts <- function(key) {
 
 ## The names of the key variables (the columns of the levels): given, else
 ## "key" (one part) or "key1", "key2", ...; unique.
-dm_groups_names <- function(parts) {
+xtx_groups_names <- function(parts) {
     nms <- vapply(parts, function(p) if (is.null(p$name) || is.na(p$name)) "" else as.character(p$name), "")
     blank <- !nzchar(nms)
     nms[blank] <- if (length(parts) == 1L) "key" else paste0("key", seq_along(parts))[blank]
     make.unique(nms)
 }
 
-dm_groups_na_msg <- function(nm) {
+xtx_groups_na_msg <- function(nm) {
     sprintf(paste("`key` has missing values (variable `%s`): every row of the design needs a group.",
                   "Select the rows with a key first (for a remote design, `D[DBI::SQL(\"%s IS NOT NULL\"), ]`;",
                   "in memory, make the design from those rows)."), nm, nm)
 }
 
 ## The key of a remote design as one column (one SQL expression per part).
-dm_groups_key_remote <- function(D, parts) {
+xtx_groups_key_remote <- function(D, parts) {
     sqls <- character()
     for (p in parts) {
         v <- p$v
-        kc <- if (dm_is_column(v)) {
+        kc <- if (xtx_is_column(v)) {
             if (!identical(unclass(v)$frame$id, D$id))
                 stop("`key`: a column of another remote design.", call. = FALSE)
-            dm_remote_cols(D, v, "key")
+            xtx_remote_cols(D, v, "key")
         } else if (inherits(v, "SQL")) {
-            dm_remote_cols(D, v, "key")
+            xtx_remote_cols(D, v, "key")
         } else if (p$is_name) {
-            dm_remote_cols(D, v, "key", numeric = FALSE)
+            xtx_remote_cols(D, v, "key", numeric = FALSE)
         } else {
             stop(paste("`key`: for a remote design, give names of columns of the remote data,",
                        "DBI::SQL() expressions or design_column()s of the design (remote rows have no",
@@ -377,17 +377,17 @@ dm_groups_key_remote <- function(D, parts) {
         D <- kc$D
         sqls <- c(sqls, kc$sql)
     }
-    dm_column(D, sqls)
+    xtx_column(D, sqls)
 }
 
 ## The key of a design in memory as a data frame (one column per part).
-dm_groups_key_memory <- function(x, parts, nms) {
+xtx_groups_key_memory <- function(x, parts, nms) {
     n <- nrow(x)
-    vars <- (if (dm_is_comb(x)) x$design else x)$vars
+    vars <- (if (xtx_is_comb(x)) x$design else x)$vars
     cols <- lapply(seq_along(parts), function(j) {
         p <- parts[[j]]
         v <- p$v
-        if (dm_is_column(v)) stop("`key`: a remote column, and the design is in memory.", call. = FALSE)
+        if (xtx_is_column(v)) stop("`key`: a remote column, and the design is in memory.", call. = FALSE)
         if (inherits(v, "SQL"))
             stop("`key`: a DBI::SQL() expression is a key only of a remote design; in memory, pass the values.",
                  call. = FALSE)
@@ -409,7 +409,7 @@ dm_groups_key_memory <- function(x, parts, nms) {
         if (length(v) != n)
             stop(sprintf("`key`: variable `%s` has %d values, not one per row of the design (%d).", nms[j],
                          length(v), n), call. = FALSE)
-        if (anyNA(v)) stop(dm_groups_na_msg(nms[j]), call. = FALSE)
+        if (anyNA(v)) stop(xtx_groups_na_msg(nms[j]), call. = FALSE)
         ## (other attributes, such as names, would change the coding path)
         if (!is.factor(v)) attributes(v) <- NULL
         v
@@ -420,17 +420,17 @@ dm_groups_key_memory <- function(x, parts, nms) {
 
 ## Stop unless g is a grouping whose codes can be used (in memory: integer
 ## codes within 1..G, one per row: the kernels index by them).
-dm_groups_check <- function(g, what) {
-    if (!inherits(g, "design_groups"))
+xtx_groups_check <- function(g, what) {
+    if (!inherits(g, "xtx_groups"))
         stop(sprintf("`%s` must be a grouping made by design_groups().", what), call. = FALSE)
     G <- g$G
     if (!is.integer(G) || length(G) != 1L || is.na(G) || G < 0L || !is.data.frame(g$levels) || nrow(g$levels) != G)
         stop(sprintf("`%s` is not a valid grouping (G and levels).", what), call. = FALSE)
     cd <- g$codes
-    if (dm_is_column(cd)) {
-        if (!inherits(g$design, "dm_remote") || is.null(g$lookup) || dm_ncols(cd) != 1L)
+    if (xtx_is_column(cd)) {
+        if (!inherits(g$design, "xtx_remote") || is.null(g$lookup) || xtx_ncols(cd) != 1L)
             stop(sprintf("`%s` is not a valid grouping (remote codes).", what), call. = FALSE)
-        dm_column_valid(cd)
+        xtx_column_valid(cd)
         return(invisible(g))
     }
     if (!is.integer(cd) || !is.null(dim(cd)) || length(cd) != g$n)
@@ -444,15 +444,15 @@ dm_groups_check <- function(g, what) {
 }
 
 ## Stop unless two groupings are of the same design.
-dm_groups_same <- function(g1, g2) {
-    r1 <- dm_is_column(g1$codes)
-    r2 <- dm_is_column(g2$codes)
+xtx_groups_same <- function(g1, g2) {
+    r1 <- xtx_is_column(g1$codes)
+    r2 <- xtx_is_column(g2$codes)
     if (r1 != r2) stop("One grouping is in memory and the other remote.", call. = FALSE)
     same <- if (r1) {
         identical(g1$design$id, g2$design$id)
     } else {
-        t1 <- dm_groups_token(g1$design)
-        t2 <- dm_groups_token(g2$design)
+        t1 <- xtx_groups_token(g1$design)
+        t2 <- xtx_groups_token(g2$design)
         isTRUE(g1$n == g2$n) && (is.null(t1) || is.null(t2) || identical(t1, t2))
     }
     if (!same) stop("The groupings are of different designs.", call. = FALSE)
@@ -461,35 +461,35 @@ dm_groups_same <- function(g1, g2) {
 
 ## (in memory, a design made from a model frame keeps an environment of
 ## its own, which its scaled versions share; NULL for a dense design)
-dm_groups_token <- function(x) {
-    e <- (if (dm_is_comb(x)) x$design else x)$cache
+xtx_groups_token <- function(x) {
+    e <- (if (xtx_is_comb(x)) x$design else x)$cache
     if (is.environment(e)) e
 }
 
-## The codes of a grouping as dmc_codes(). Remotely, a fresh pending lookup
+## The codes of a grouping as xtx_c_codes(). Remotely, a fresh pending lookup
 ## of the codes (a new recipe: its own column name, the same lookup table
 ## and join as the one design_groups() made), on the settled frame of the
 ## key, so that it binds on top of the other operands of each use.
-dm_groups_codes <- function(g) {
-    if (!dm_is_column(g$codes)) return(dmc_codes(g$codes, g$G))
+xtx_groups_codes <- function(g) {
+    if (!xtx_is_column(g$codes)) return(xtx_c_codes(g$codes, g$G))
     r0 <- g$lookup$recipe
     fr <- g$lookup$frame
-    col <- paste0("__dm_gc", substr(dm_tmp_name("g"), 3L, 10L))
-    r <- dm_recipe("lookup", deps = list(), items = sprintf("l.v1 AS %s", dm_qi(fr, col)),
+    col <- paste0("__xtx_gc", substr(xtx_tmp_name("g"), 3L, 10L))
+    r <- xtx_recipe("lookup", deps = list(), items = sprintf("l.v1 AS %s", xtx_qi(fr, col)),
                    table = r0$table, on = r0$on, col = col, type = r0$type)
     fr$pend <- list(r)
-    dmc_codes(dm_column(fr, sprintf("s.%s", dm_qi(fr, col))), g$G)
+    xtx_c_codes(xtx_column(fr, sprintf("s.%s", xtx_qi(fr, col))), g$G)
 }
 
 ## A column for grouping g (see the documentation of `col`): in memory a
 ## double vector or matrix with one row per row of the design; remotely a
 ## design_column of the design of g.
-dm_groups_col <- function(col, g, what) {
-    remote <- dm_is_column(g$codes)
+xtx_groups_col <- function(col, g, what) {
+    remote <- xtx_is_column(g$codes)
     ## (a number: a constant column)
     if (is.numeric(col) && length(col) == 1L && is.null(dim(col))) {
         if (!is.finite(col)) stop(sprintf("`%s`: a constant column must be finite.", what), call. = FALSE)
-        return(if (remote) dmc_const(g$design, col) else rep(as.double(col), g$n))
+        return(if (remote) xtx_c_const(g$design, col) else rep(as.double(col), g$n))
     }
     if (is.character(col) || inherits(col, "SQL")) {
         if (!length(col)) stop(sprintf("`%s` must name at least one column.", what), call. = FALSE)
@@ -497,21 +497,21 @@ dm_groups_col <- function(col, g, what) {
         col <- lapply(cols, function(cn) design_column(g$design, cn))
         if (length(col) == 1L) col <- col[[1L]]
     }
-    if (is.list(col) && !is.data.frame(col) && !dm_is_column(col)) {
+    if (is.list(col) && !is.data.frame(col) && !xtx_is_column(col)) {
         if (!length(col)) stop(sprintf("`%s` has no columns.", what), call. = FALSE)
-        col <- if (any(vapply(col, dm_is_column, NA))) do.call(dmc_cbind, unname(col)) else do.call(cbind, unname(col))
+        col <- if (any(vapply(col, xtx_is_column, NA))) do.call(xtx_c_cbind, unname(col)) else do.call(cbind, unname(col))
     }
     if (remote) {
-        if (!dm_is_column(col))
+        if (!xtx_is_column(col))
             stop(sprintf(paste("`%s`: for a remote grouping, a column of its design (a design_column(), a",
                                "column name or DBI::SQL()); remote rows have no order, so values in R cannot",
                                "be matched with them."), what), call. = FALSE)
         if (!identical(unclass(col)$frame$id, g$design$id))
             stop(sprintf("`%s` is a column of another remote design than the grouping.", what), call. = FALSE)
-        dm_column_valid(col)
+        xtx_column_valid(col)
         return(col)
     }
-    if (dm_is_column(col)) stop(sprintf("`%s` is a remote column, and the grouping is in memory.", what), call. = FALSE)
+    if (xtx_is_column(col)) stop(sprintf("`%s` is a remote column, and the grouping is in memory.", what), call. = FALSE)
     if (is.data.frame(col)) col <- as.matrix(col)
     if (!(is.numeric(col) || is.logical(col)) || !(is.null(dim(col)) || length(dim(col)) == 2L))
         stop(sprintf("`%s` must be a numeric vector or matrix.", what), call. = FALSE)

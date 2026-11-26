@@ -2,17 +2,17 @@
 % Please edit documentation in R/columns_public.R
 \name{column_arithmetic}
 \alias{column_arithmetic}
-\alias{Summary.design_column}
-\alias{mean.design_column}
+\alias{Summary.xtx_column}
+\alias{mean.xtx_column}
 \alias{col_ifelse}
 \alias{col_pmin}
 \alias{col_pmax}
 \alias{col_sums}
 \title{Summaries and arithmetic of columns}
 \usage{
-\method{Summary}{design_column}(..., na.rm = FALSE)
+\method{Summary}{xtx_column}(..., na.rm = FALSE)
 
-\method{mean}{design_column}(x, trim = 0, na.rm = FALSE, ...)
+\method{mean}{xtx_column}(x, trim = 0, na.rm = FALSE, ...)
 
 col_ifelse(test, yes, no)
 

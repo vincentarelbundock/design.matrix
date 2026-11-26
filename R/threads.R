@@ -1,4 +1,4 @@
-#' Number of threads used by design.matrix
+#' Number of threads used by xtx
 #'
 #' The dense fill and the row-wise kernels (`%*%`, [quadratic_diagonal()])
 #' can run on several threads. Each row is computed independently, so the
@@ -12,7 +12,7 @@
 #' run on one thread.
 #'
 #' The default follows fixest: half of the available threads (rounded up),
-#' and one thread during `R CMD check`. The option `design.matrix.threads`,
+#' and one thread during `R CMD check`. The option `xtx.threads`,
 #' which takes the same values as `n`, replaces that default. The available
 #' threads are those OpenMP reports, capped by the environment variable
 #' `OMP_THREAD_LIMIT`; without OpenMP, one.
@@ -30,31 +30,31 @@
 #' @export
 design_threads <- function(n = NULL) {
     if (is.null(n)) {
-        n <- getOption("design.matrix.threads")
-        if (is.null(n)) n <- if (dm_is_r_check()) 1L else 0.5
-        return(dm_resolve_threads(n, warn = FALSE))
+        n <- getOption("xtx.threads")
+        if (is.null(n)) n <- if (xtx_is_r_check()) 1L else 0.5
+        return(xtx_resolve_threads(n, warn = FALSE))
     }
-    n <- dm_resolve_threads(n, warn = TRUE)
-    options(design.matrix.threads = n)
+    n <- xtx_resolve_threads(n, warn = TRUE)
+    options(xtx.threads = n)
     invisible(n)
 }
 
 ## The available threads: OpenMP's maximum, capped by OMP_THREAD_LIMIT.
-dm_max_threads <- function() {
+xtx_max_threads <- function() {
     lim <- suppressWarnings(as.integer(Sys.getenv("OMP_THREAD_LIMIT")))
     if (is.na(lim) || lim < 1L) lim <- .Machine$integer.max
-    max(1L, min(.Call(C_dm_omp_max_threads), lim))
+    max(1L, min(.Call(C_xtx_omp_max_threads), lim))
 }
 
 ## n (a count >= 0, 0 for all, or a fraction in (0, 1)) as a number of
-## threads in 1 .. dm_max_threads(), as fixest's check_set_nthreads().
-dm_resolve_threads <- function(n, warn) {
+## threads in 1 .. xtx_max_threads(), as fixest's check_set_nthreads().
+xtx_resolve_threads <- function(n, warn) {
     ok <- is.numeric(n) && length(n) == 1L && !is.na(n) &&
         ((n > 0 && n < 1) || (n >= 0 && n == round(n)))
     if (!ok)
         stop("`n` must be a number of threads (0 for all of them) or a fraction strictly between 0 and 1.",
              call. = FALSE)
-    m <- dm_max_threads()
+    m <- xtx_max_threads()
     if (n == 0) return(m)
     if (n < 1) return(max(1L, as.integer(ceiling(m * n))))
     if (n > m) {
@@ -66,6 +66,6 @@ dm_resolve_threads <- function(n, warn) {
 }
 
 ## Under R CMD check, detected as fixest does (many _R_CHECK* variables).
-dm_is_r_check <- function() {
+xtx_is_r_check <- function() {
     sum(grepl("_R_CHECK", names(Sys.getenv()), fixed = TRUE)) > 10
 }

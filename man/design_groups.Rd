@@ -6,8 +6,8 @@
 \alias{group_crosstab}
 \alias{group_lookup}
 \alias{group_nested}
-\alias{format.design_groups}
-\alias{print.design_groups}
+\alias{format.xtx_groups}
+\alias{print.xtx_groups}
 \title{Groupings of the rows of a design}
 \usage{
 design_groups(x, key)
@@ -20,9 +20,9 @@ group_lookup(values, g)
 
 group_nested(g1, g2)
 
-\method{format}{design_groups}(x, ...)
+\method{format}{xtx_groups}(x, ...)
 
-\method{print}{design_groups}(x, ...)
+\method{print}{xtx_groups}(x, ...)
 }
 \arguments{
 \item{x}{For \code{design_groups()}, a design: a \code{design_matrix} or a remote
@@ -96,7 +96,7 @@ lie within one group of \code{g2})?
 }
 \section{The grouping object}{
 
-A list of class \code{design_groups} with elements
+A list of class \code{xtx_groups} with elements
 \describe{
 \item{\code{codes}}{The group of each row, integers \code{1..G}: in memory an
 integer vector with one value per row of the design; for a remote

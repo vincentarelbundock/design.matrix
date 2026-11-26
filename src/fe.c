@@ -1,18 +1,18 @@
 /*
- *  design.matrix: kernels for linear models with fixed effects (R/fe.R).
+ *  xtx: kernels for linear models with fixed effects (R/fe.R).
  *
- *  dm_fe_gsum():       group sums of the columns of a matrix (codes 1..G);
- *  dm_fe_crosstabs():  weighted crosstabs of a code vector with others, as
+ *  xtx_fe_gsum():       group sums of the columns of a matrix (codes 1..G);
+ *  xtx_fe_crosstabs():  weighted crosstabs of a code vector with others, as
  *                      the compressed rows of G_a x G_b sparse matrices
  *                      with sorted, unique column indices;
- *  dm_fe_components(): connected components of the bipartite graph whose
+ *  xtx_fe_components(): connected components of the bipartite graph whose
  *                      edges are the (a, b) pairs of a crosstab;
- *  dm_fe_struct_gsum(): grouped sums of the design's structured moments,
+ *  xtx_fe_struct_gsum(): grouped sums of the design's structured moments,
  *                      the weights and other columns, for every FE at once,
  *                      and dense crosstabs of pairs of FE, in one pass;
- *  dm_fe_code():       codes of an FE variable and rows per level;
- *  dm_fe_schur():      the reduced system, formed (lower triangle);
- *  dm_fe_ichol(), dm_fe_pcg(): IC(0) and preconditioned conjugate
+ *  xtx_fe_code():       codes of an FE variable and rows per level;
+ *  xtx_fe_schur():      the reduced system, formed (lower triangle);
+ *  xtx_fe_ichol(), xtx_fe_pcg(): IC(0) and preconditioned conjugate
  *                      gradients for the reduced system, formed or
  *                      applied matrix-free.
  *
@@ -26,13 +26,13 @@
 #include <stdint.h>
 #include <R.h>
 #include <Rinternals.h>
-#include "dm.h"
+#include "xtx.h"
 #include "structured.h"
 
 /* The kernels that index by code (accumulators, ranks, markers) check
    the codes first: an integer vector with every value in 1..G (no NA).
    One branch-free pass over the codes, small next to the kernels. */
-void dm_check_codes(SEXP codes_, int G)
+void xtx_check_codes(SEXP codes_, int G)
 {
     if (TYPEOF(codes_) != INTSXP) error("internal error: codes must be integer");
     R_xlen_t n = XLENGTH(codes_);
@@ -45,7 +45,7 @@ void dm_check_codes(SEXP codes_, int G)
 
 /* G x k matrix of sums of the columns of W (n x k) within codes 1..G.  On
    several threads: fixed row chunks with their own sums, added in chunk
-   order (dm_reduce_threads()); one thread is the single-threaded pass. */
+   order (xtx_reduce_threads()); one thread is the single-threaded pass. */
 static void gsum_rows(const int *codes, R_xlen_t n, int G, int k, const double *w,
 		      R_xlen_t i0, R_xlen_t i1, double *o)
 {
@@ -56,31 +56,31 @@ static void gsum_rows(const int *codes, R_xlen_t n, int G, int k, const double *
     }
 }
 
-SEXP dm_fe_gsum(SEXP codes_, SEXP G_, SEXP W, SEXP nthreads_)
+SEXP xtx_fe_gsum(SEXP codes_, SEXP G_, SEXP W, SEXP nthreads_)
 {
     R_xlen_t n = XLENGTH(codes_);
     int G = asInteger(G_), k = ncols(W);
     if (nrows(W) != n) error("non-conformable arguments");
-    dm_check_codes(codes_, G);
+    xtx_check_codes(codes_, G);
     const int *codes = INTEGER(codes_);
     const double *w = REAL(W);
     SEXP out = PROTECT(allocMatrix(REALSXP, G, k));
     double *o = REAL(out);
     R_xlen_t len = (R_xlen_t) G * k;
     memset(o, 0, sizeof(double) * (size_t) len);
-    int T = dm_reduce_threads(asInteger(nthreads_), n, (double) n * k, (double) len);
+    int T = xtx_reduce_threads(asInteger(nthreads_), n, (double) n * k, (double) len);
     if (T == 1) {
 	gsum_rows(codes, n, G, k, w, 0, n, o);
     } else {
-	double **acc = dm_chunk_acc(o, T, len);
+	double **acc = xtx_chunk_acc(o, T, len);
 #ifdef _OPENMP
 #pragma omp parallel for num_threads(T) schedule(static)
 #endif
 	for (int t = 0; t < T; t++) {
-	    if (t > 0) dm_zero(acc[t], len);
-	    gsum_rows(codes, n, G, k, w, dm_chunk_start(n, T, t, 1), dm_chunk_start(n, T, t + 1, 1), acc[t]);
+	    if (t > 0) xtx_zero(acc[t], len);
+	    gsum_rows(codes, n, G, k, w, xtx_chunk_start(n, T, t, 1), xtx_chunk_start(n, T, t + 1, 1), acc[t]);
 	}
-	dm_combine(acc, T, len);
+	xtx_combine(acc, T, len);
     }
     UNPROTECT(1);
     return out;
@@ -126,7 +126,7 @@ static void ct_sort(int *jj, double *xx, R_xlen_t m, ct_entry *tmp)
     for (R_xlen_t e = 0; e < m; e++) { jj[e] = tmp[e].j; xx[e] = tmp[e].x; }
 }
 
-SEXP dm_fe_crosstabs(SEXP a_, SEXP bs_, SEXP w_, SEXP Ga_, SEXP Gb_, SEXP nthreads_)
+SEXP xtx_fe_crosstabs(SEXP a_, SEXP bs_, SEXP w_, SEXP Ga_, SEXP Gb_, SEXP nthreads_)
 {
     R_xlen_t n = XLENGTH(a_);
     int Ga = asInteger(Ga_), K = LENGTH(bs_);
@@ -134,11 +134,11 @@ SEXP dm_fe_crosstabs(SEXP a_, SEXP bs_, SEXP w_, SEXP Ga_, SEXP Gb_, SEXP nthrea
     const double *w = isNull(w_) ? NULL : REAL(w_);
     if (w && XLENGTH(w_) != n) error("internal error: one weight per row");
     if (LENGTH(Gb_) != K) error("internal error: one G per code vector");
-    dm_check_codes(a_, Ga);
+    xtx_check_codes(a_, Ga);
     const int **b = (const int **) R_alloc(K > 0 ? K : 1, sizeof(int *));
     for (int k = 0; k < K; k++) {
 	if (XLENGTH(VECTOR_ELT(bs_, k)) != n) error("internal error: one code per row");
-	dm_check_codes(VECTOR_ELT(bs_, k), Gb[k]);
+	xtx_check_codes(VECTOR_ELT(bs_, k), Gb[k]);
 	b[k] = INTEGER(VECTOR_ELT(bs_, k));
     }
     /* the rows by level of a: start[g] .. start[g + 1] in ord (or in the
@@ -159,7 +159,7 @@ SEXP dm_fe_crosstabs(SEXP a_, SEXP bs_, SEXP w_, SEXP Ga_, SEXP Gb_, SEXP nthrea
 	for (R_xlen_t i = 0; i < n; i++) ord[pos[a[i] - 1]++] = (int) i;
     }
 #define ROW(t) (sorted ? (t) : (R_xlen_t) ord[t])
-    int T = dm_worker_count(asInteger(nthreads_), n / DM_RED_MIN_ROWS);
+    int T = xtx_worker_count(asInteger(nthreads_), n / XTX_RED_MIN_ROWS);
     if (T > Ga) T = Ga > 0 ? Ga : 1;
     /* levels of thread t: lv[t] .. lv[t + 1], about n / T rows each */
     int *lv = (int *) R_alloc((size_t) T + 1, sizeof(int));
@@ -252,12 +252,12 @@ SEXP dm_fe_crosstabs(SEXP a_, SEXP bs_, SEXP w_, SEXP Ga_, SEXP Gb_, SEXP nthrea
 }
 
 /* Is code b nested in code a (each level of b in one level of a)? */
-SEXP dm_fe_nested(SEXP a_, SEXP b_, SEXP Gb_)
+SEXP xtx_fe_nested(SEXP a_, SEXP b_, SEXP Gb_)
 {
     R_xlen_t n = XLENGTH(a_);
     int Gb = asInteger(Gb_);
     if (XLENGTH(b_) != n) error("internal error: one code per row");
-    dm_check_codes(b_, Gb);
+    xtx_check_codes(b_, Gb);
     const int *a = INTEGER(a_), *b = INTEGER(b_);
     int *first = (int *) R_alloc((size_t) Gb + 1, sizeof(int));
     for (int g = 0; g <= Gb; g++) first[g] = 0;
@@ -270,7 +270,7 @@ SEXP dm_fe_nested(SEXP a_, SEXP b_, SEXP Gb_)
 }
 
 /* values[codes], NA for codes out of 1..length(values) or NA. */
-SEXP dm_fe_lookup(SEXP values_, SEXP codes_)
+SEXP xtx_fe_lookup(SEXP values_, SEXP codes_)
 {
     /* values: a vector, or a G x K matrix (then an n x K matrix) */
     int mat = isMatrix(values_);
@@ -304,7 +304,7 @@ static int uf_find(int *parent, int x)
 /* Components of the bipartite graph with edges (i[e], j[e]) (0-based, i in
    0..Ga-1, j in 0..Gb-1): the 1-based component of each b level, numbered
    in order of first appearance among the b levels. */
-SEXP dm_fe_components(SEXP i_, SEXP j_, SEXP Ga_, SEXP Gb_)
+SEXP xtx_fe_components(SEXP i_, SEXP j_, SEXP Ga_, SEXP Gb_)
 {
     R_xlen_t ne = XLENGTH(i_);
     int Ga = asInteger(Ga_), Gb = asInteger(Gb_);
@@ -330,7 +330,7 @@ SEXP dm_fe_components(SEXP i_, SEXP j_, SEXP Ga_, SEXP Gb_)
 }
 
 /* ------------------------------------------------------------------------
-   Structured grouped sums (see R/fe.R, dm_fe_moments()).
+   Structured grouped sums (see R/fe.R, xtx_fe_moments()).
 
    For each fixed effect k with codes c_k (1..G_k), a Q x G_k matrix whose
    column g holds, over the rows i with c_k(i) = g:
@@ -350,10 +350,10 @@ SEXP dm_fe_components(SEXP i_, SEXP j_, SEXP Ga_, SEXP Gb_)
    the compressed columns (by a) list(p, i, x) of the G_b x G_a matrix
    (entries with no rows left out; w > 0, so every entry with rows is
    positive).  Each sum is over its rows in row order, as the sparse
-   kernel (dm_fe_crosstabs()) has them.
+   kernel (xtx_fe_crosstabs()) has them.
 
    On several threads: fixed row chunks (whole blocks of BLOCK rows), each
-   with its own sums, added in chunk order (dm_reduce_threads()); one
+   with its own sums, added in chunk order (xtx_reduce_threads()); one
    thread is the single-threaded pass.  Returns the nk matrices, then the
    P crosstabs.
    ------------------------------------------------------------------------ */
@@ -408,7 +408,7 @@ static void struct_gsum_rows(const gsum_ctx *C, R_xlen_t i0_, R_xlen_t i1, doubl
     }
 }
 
-SEXP dm_fe_struct_gsum(SEXP setup, SEXP vars, SEXP w_, SEXP codes_, SEXP G_, SEXP Y_, SEXP terms_,
+SEXP xtx_fe_struct_gsum(SEXP setup, SEXP vars, SEXP w_, SEXP codes_, SEXP G_, SEXP Y_, SEXP terms_,
 		       SEXP pairs_, SEXP nthreads_)
 {
     sctx S;
@@ -451,7 +451,7 @@ SEXP dm_fe_struct_gsum(SEXP setup, SEXP vars, SEXP w_, SEXP codes_, SEXP G_, SEX
     for (int k = 0; k < nk; k++) {
 	SEXP ck = VECTOR_ELT(codes_, k);
 	if (XLENGTH(ck) != n) error("internal error: one code per row");
-	dm_check_codes(ck, G[k]);
+	xtx_check_codes(ck, G[k]);
 	codes[k] = INTEGER(ck);
     }
     int *pa = (int *) R_alloc(np > 0 ? np : 1, sizeof(int)), *pb = (int *) R_alloc(np > 0 ? np : 1, sizeof(int));
@@ -467,7 +467,7 @@ SEXP dm_fe_struct_gsum(SEXP setup, SEXP vars, SEXP w_, SEXP codes_, SEXP G_, SEX
     for (int q = 0; q < np; q++) off[nk + q + 1] = off[nk + q] + (R_xlen_t) G[pa[q]] * G[pb[q]];
     R_xlen_t len = off[nk + np];
     work = (double) n * (nk * (work + K) + np);
-    int T = dm_reduce_threads(asInteger(nthreads_), n, work, (double) len);
+    int T = xtx_reduce_threads(asInteger(nthreads_), n, work, (double) len);
     SEXP out = PROTECT(allocVector(VECSXP, nk + np));
     double **mats = (double **) R_alloc(nk > 0 ? nk : 1, sizeof(double *));
     for (int k = 0; k < nk; k++) {
@@ -518,11 +518,11 @@ SEXP dm_fe_struct_gsum(SEXP setup, SEXP vars, SEXP w_, SEXP codes_, SEXP G_, SEX
 #pragma omp parallel for num_threads(T) schedule(static)
 #endif
 	for (int t = 0; t < T; t++) {
-	    if (t > 0) dm_zero(bufs[t], len);
-	    struct_gsum_rows(&C, dm_chunk_start(n, T, t, BLOCK), dm_chunk_start(n, T, t + 1, BLOCK),
+	    if (t > 0) xtx_zero(bufs[t], len);
+	    struct_gsum_rows(&C, xtx_chunk_start(n, T, t, BLOCK), xtx_chunk_start(n, T, t + 1, BLOCK),
 			     acc[t], pacc[t], F[t], N[t], wb[t]);
 	}
-	dm_combine(bufs, T, len);
+	xtx_combine(bufs, T, len);
     }
     if (!direct)
 	for (int k = 0; k < nk; k++) memcpy(mats[k], buf0 + off[k], sizeof(double) * (size_t) Q * G[k]);
@@ -559,19 +559,19 @@ SEXP dm_fe_struct_gsum(SEXP setup, SEXP vars, SEXP w_, SEXP codes_, SEXP G_, SEX
 /* Codes of the values of an FE variable (no missing values), and the rows
    per level (for the removal of singletons), in one pass over the rows:
 
-   dm_fe_code(v, maxrange): v integer, logical or double.  When v is
+   xtx_fe_code(v, maxrange): v integer, logical or double.  When v is
    integer valued with a range below maxrange, by direct indexing: codes
    1..G in increasing order of the values; returns list(codes, G, values,
    counts).  Otherwise, and for character vectors, by hashing:
    codes in order of first appearance; returns list(codes, G, values,
    counts, FALSE), the values in order of first appearance, which the
-   caller sorts and passes to dm_fe_recode().  NULL for a vector with
+   caller sorts and passes to xtx_fe_recode().  NULL for a vector with
    missing values or of another type.  Doubles are equal when ==
    (0 and -0), as for unique() and match(); strings by their cached
    CHARSXP (the caller checks that the values are unique as strings,
    which they are unless the same string comes in two encodings).
 
-   dm_fe_recode(codes, rank): rank[codes], in place on a fresh copy. */
+   xtx_fe_recode(codes, rank): rank[codes], in place on a fresh copy. */
 
 static inline uint64_t fe_mix(uint64_t h)
 {
@@ -701,7 +701,7 @@ static SEXP fe_code_hash(SEXP v)
     return out;
 }
 
-SEXP dm_fe_code(SEXP v, SEXP maxrange_)
+SEXP xtx_fe_code(SEXP v, SEXP maxrange_)
 {
     R_xlen_t n = XLENGTH(v);
     double maxrange = asReal(maxrange_);
@@ -769,10 +769,10 @@ SEXP dm_fe_code(SEXP v, SEXP maxrange_)
     return out;
 }
 
-SEXP dm_fe_recode(SEXP codes_, SEXP rank_)
+SEXP xtx_fe_recode(SEXP codes_, SEXP rank_)
 {
     R_xlen_t n = XLENGTH(codes_);
-    dm_check_codes(codes_, LENGTH(rank_));
+    xtx_check_codes(codes_, LENGTH(rank_));
     const int *c = INTEGER_RO(codes_), *rk = INTEGER_RO(rank_);
     SEXP out = PROTECT(allocVector(INTSXP, n));
     int *o = INTEGER(out);
@@ -784,7 +784,7 @@ SEXP dm_fe_recode(SEXP codes_, SEXP rank_)
 /* ------------------------------------------------------------------------
    Preconditioned conjugate gradients for the reduced fixed-effect system.
 
-   dm_fe_ichol(): incomplete Cholesky factor with no fill, IC(0), of a
+   xtx_fe_ichol(): incomplete Cholesky factor with no fill, IC(0), of a
    symmetric matrix given by its lower triangle in compressed columns
    (p, i, x; row indices sorted within columns, diagonal first); with
    omega > 0, the modified factor MIC(0) (relaxed by omega): fill that the
@@ -795,7 +795,7 @@ SEXP dm_fe_recode(SEXP codes_, SEXP rank_)
    Returns the factor's values (same pattern), or NULL on a breakdown
    (a non-positive pivot).
 
-   dm_fe_schur(): the reduced system R = A - N diag(d) N' as its lower
+   xtx_fe_schur(): the reduced system R = A - N diag(d) N' as its lower
    triangle in compressed columns (rows sorted, diagonal first), A
    symmetric given by its lower triangle (the same layout), N a sparse
    matrix in compressed columns (rows sorted) whose rows map to the rows of
@@ -806,9 +806,9 @@ SEXP dm_fe_recode(SEXP codes_, SEXP rank_)
    of column j.  Gives up (returns NULL) as soon as the lower triangle has
    more than cap_nnz nonzeros or the sum of the squared column counts (the
    cost of IC(0) of R) exceeds cap_work: R is then applied without being
-   formed (dm_fe_pcg() with N).
+   formed (xtx_fe_pcg() with N).
 
-   dm_fe_pcg(): conjugate gradients for R X = B, one recursion per column
+   xtx_fe_pcg(): conjugate gradients for R X = B, one recursion per column
    of B (all columns advance together and share each product with R), R
    symmetric positive (semi)definite: R = A (lower triangle in compressed
    columns) or, when N is given, R = A - N diag(d) N' applied without
@@ -831,7 +831,7 @@ SEXP dm_fe_recode(SEXP codes_, SEXP rank_)
    single-threaded code.
    ------------------------------------------------------------------------ */
 
-SEXP dm_fe_ichol(SEXP p_, SEXP i_, SEXP x_, SEXP n_, SEXP omega_)
+SEXP xtx_fe_ichol(SEXP p_, SEXP i_, SEXP x_, SEXP n_, SEXP omega_)
 {
     int n = asInteger(n_);
     double omega = asReal(omega_);
@@ -901,7 +901,7 @@ static int int_cmp(const void *u, const void *v)
     return (a > b) - (a < b);
 }
 
-SEXP dm_fe_schur(SEXP ap_, SEXP ai_, SEXP ax_, SEXP np_, SEXP ni_, SEXP nx_, SEXP map_,
+SEXP xtx_fe_schur(SEXP ap_, SEXP ai_, SEXP ax_, SEXP np_, SEXP ni_, SEXP nx_, SEXP map_,
 		 SEXP d_, SEXP cap_nnz_, SEXP cap_work_)
 {
     int m = length(ap_) - 1, G = length(np_) - 1;
@@ -1103,7 +1103,7 @@ static void fe_op(int n, int nc, const int *ap, const int *ai, const double *ax,
 }
 
 /* ------------------------------------------------------------------------
-   dm_fe_pcg() on T > 1 threads.
+   xtx_fe_pcg() on T > 1 threads.
 
    Products y = R x: A as its full symmetric pattern in compressed rows
    (fp, fi, fx: row k lists (j, a) for each entry a at (k, j) or (j, k) of
@@ -1116,7 +1116,7 @@ static void fe_op(int n, int nc, const int *ap, const int *ai, const double *ax,
    nonzeros, decides only which thread computes what).
 
    Sums over the n rows (p'Rp, ||r||, ||x||, r'z): the rows split into T
-   chunks by dm_chunk_start() (boundaries from n and T only), one partial
+   chunks by xtx_chunk_start() (boundaries from n and T only), one partial
    sum per chunk and column, the partial sums added in chunk order: the
    same for a given T.
 
@@ -1339,7 +1339,7 @@ static void pcg_dot(int n, int nc, int T, const double *a, const double *b, doub
     for (int t = 0; t < T; t++) {
 	double *at = acc + (size_t) t * stride;
 	for (int c = 0; c < nc; c++) at[c] = 0.0;
-	R_xlen_t k0 = dm_chunk_start(n, T, t, 1), k1 = dm_chunk_start(n, T, t + 1, 1);
+	R_xlen_t k0 = xtx_chunk_start(n, T, t, 1), k1 = xtx_chunk_start(n, T, t + 1, 1);
 	for (R_xlen_t k = k0; k < k1; k++) {
 	    const double *ak = a + (size_t) k * nc, *bk = b + (size_t) k * nc;
 	    for (int c = 0; c < nc; c++) at[c] += ak[c] * bk[c];
@@ -1352,8 +1352,8 @@ static void pcg_dot(int n, int nc, int T, const double *a, const double *b, doub
     }
 }
 
-/* Threads for the products and sums of dm_fe_pcg(): one for small systems
-   (fewer than 2 x 4096 rows, or fewer than DM_RED_MIN_WORK multiply-adds
+/* Threads for the products and sums of xtx_fe_pcg(): one for small systems
+   (fewer than 2 x 4096 rows, or fewer than XTX_RED_MIN_WORK multiply-adds
    per thread and iteration).  requested < 0: -requested threads whatever
    the size (for the tests). */
 static int pcg_threads(int requested, int n, int nc, double nnzA, double nnzN)
@@ -1366,12 +1366,12 @@ static int pcg_threads(int requested, int n, int nc, double nnzA, double nnzN)
 	return T < n ? T : n;
     }
     double work = (double) nc * (2.0 * nnzA + 2.0 * nnzN + 8.0 * n);
-    int T = dm_worker_count(requested, n / 4096);
-    while (T > 1 && work < DM_RED_MIN_WORK * T) T--;
+    int T = xtx_worker_count(requested, n / 4096);
+    while (T > 1 && work < XTX_RED_MIN_WORK * T) T--;
     return T;
 }
 
-SEXP dm_fe_pcg(SEXP ap_, SEXP ai_, SEXP ax_, SEXP np_, SEXP ni_, SEXP nx_, SEXP map_, SEXP d_,
+SEXP xtx_fe_pcg(SEXP ap_, SEXP ai_, SEXP ax_, SEXP np_, SEXP ni_, SEXP nx_, SEXP map_, SEXP d_,
 	       SEXP lp_, SEXP li_, SEXP lx_, SEXP B_, SEXP X0_, SEXP bmin_, SEXP tol_, SEXP maxit_,
 	       SEXP nthreads_)
 {
@@ -1541,7 +1541,7 @@ SEXP dm_fe_pcg(SEXP ap_, SEXP ai_, SEXP ax_, SEXP np_, SEXP ni_, SEXP nx_, SEXP 
 	    for (int t = 0; t < T; t++) {
 		double *a_rr = acc + (size_t) t * stride, *a_xx = a_rr + nc, *a_rz = a_xx + nc;
 		for (int c = 0; c < 3 * nc; c++) a_rr[c] = 0.0;
-		R_xlen_t k0 = dm_chunk_start(n, T, t, 1), k1 = dm_chunk_start(n, T, t + 1, 1);
+		R_xlen_t k0 = xtx_chunk_start(n, T, t, 1), k1 = xtx_chunk_start(n, T, t + 1, 1);
 		for (R_xlen_t k = k0; k < k1; k++) {
 		    double dk = dinv[k];
 		    for (int c = 0; c < nc; c++) {

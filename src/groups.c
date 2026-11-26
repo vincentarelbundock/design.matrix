@@ -1,10 +1,10 @@
 /*
- *  design.matrix: groups of identical rows.
+ *  xtx: groups of identical rows.
  *
  *  Two rows of a design (or Jacobian) give the same row-wise results when
  *  every input the row's entries depend on has the same bits: the codes of
  *  the factors and the values of the numeric variables used by the terms,
- *  the per-row scales, and an optional group code.  dm_row_groups() hashes
+ *  the per-row scales, and an optional group code.  xtx_row_groups() hashes
  *  those bits, confirms every match by comparing the bits exactly, and
  *  returns, for each row, the 1-based id of its pattern (in order of first
  *  appearance) and the 1-based index of each pattern's first row.
@@ -17,7 +17,7 @@
 #include <limits.h>
 #include <R.h>
 #include <Rinternals.h>
-#include "dm.h"
+#include "xtx.h"
 
 typedef struct {
     int nint, ndbl;
@@ -31,13 +31,13 @@ static void add_dbl(keycols *K, const double *x) { K->dc[K->ndbl++] = x; }
 /* Key columns of one design: variables used by a term with columns. */
 static void design_keys(keycols *K, SEXP setup, SEXP variable, R_xlen_t n)
 {
-    SEXP factors = VECTOR_ELT(setup, DM_SETUP_FACTORS);
-    const int *nlevs = INTEGER(VECTOR_ELT(setup, DM_SETUP_NLEVS)),
-	*columns = INTEGER(VECTOR_ELT(setup, DM_SETUP_COLUMNS)),
-	*count = INTEGER(VECTOR_ELT(setup, DM_SETUP_COUNT));
-    int rhs_response = asInteger(VECTOR_ELT(setup, DM_SETUP_RHS_RESPONSE)),
-	nVar = asInteger(VECTOR_ELT(setup, DM_SETUP_NVAR)),
-	nterms = asInteger(VECTOR_ELT(setup, DM_SETUP_NTERMS));
+    SEXP factors = VECTOR_ELT(setup, XTX_SETUP_FACTORS);
+    const int *nlevs = INTEGER(VECTOR_ELT(setup, XTX_SETUP_NLEVS)),
+	*columns = INTEGER(VECTOR_ELT(setup, XTX_SETUP_COLUMNS)),
+	*count = INTEGER(VECTOR_ELT(setup, XTX_SETUP_COUNT));
+    int rhs_response = asInteger(VECTOR_ELT(setup, XTX_SETUP_RHS_RESPONSE)),
+	nVar = asInteger(VECTOR_ELT(setup, XTX_SETUP_NVAR)),
+	nterms = asInteger(VECTOR_ELT(setup, XTX_SETUP_NTERMS));
     const int *fac = nterms > 0 ? INTEGER(factors) : NULL;
     for (int i = 0; i < nVar; i++) {
 	int used = 0;
@@ -57,8 +57,8 @@ static void design_keys(keycols *K, SEXP setup, SEXP variable, R_xlen_t n)
 
 static int design_nkeys(SEXP setup, SEXP variable)
 {
-    const int *columns = INTEGER(VECTOR_ELT(setup, DM_SETUP_COLUMNS));
-    int nVar = asInteger(VECTOR_ELT(setup, DM_SETUP_NVAR)), total = 0;
+    const int *columns = INTEGER(VECTOR_ELT(setup, XTX_SETUP_COLUMNS));
+    int nVar = asInteger(VECTOR_ELT(setup, XTX_SETUP_NVAR)), total = 0;
     for (int i = 0; i < nVar; i++)
 	total += columns[i] > 0 ? ncols(VECTOR_ELT(variable, i)) : 0;
     return total;
@@ -98,13 +98,13 @@ static R_INLINE int same_row(const keycols *K, R_xlen_t a, R_xlen_t b)
     return 1;
 }
 
-/* .Call(C_dm_row_groups, setup1, vars1, s1, setup2, vars2, s2, group, max_ratio)
+/* .Call(C_xtx_row_groups, setup1, vars1, s1, setup2, vars2, s2, group, max_ratio)
    Returns NULL as soon as more than max_ratio * n distinct rows are seen. */
-SEXP dm_row_groups(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
+SEXP xtx_row_groups(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
 		   SEXP s2, SEXP group, SEXP max_ratio_)
 {
-    SEXP var1 = PROTECT(dm_vars(setup1, vars1));
-    SEXP var2 = PROTECT(isNull(setup2) ? R_NilValue : dm_vars(setup2, vars2));
+    SEXP var1 = PROTECT(xtx_vars(setup1, vars1));
+    SEXP var2 = PROTECT(isNull(setup2) ? R_NilValue : xtx_vars(setup2, vars2));
     R_xlen_t n = nrows(VECTOR_ELT(vars1, 0));
     if (n > INT_MAX) error("too many rows");
     double max_ratio = asReal(max_ratio_);

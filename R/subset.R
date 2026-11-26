@@ -24,7 +24,7 @@
 #' D <- design_matrix(~ x * f, d)
 #' as.matrix(D[c(2, 5), ])
 #' @export
-`[.design_matrix` <- function(x, i, j, ..., drop = FALSE) {
+`[.xtx_matrix` <- function(x, i, j, ..., drop = FALSE) {
     if (!missing(j)) {
         stop("Only rows of a design matrix can be selected, as in `x[i, ]`.", call. = FALSE)
     }
@@ -34,21 +34,21 @@
     }
     if (missing(i)) return(x)
     n <- nrow(x)
-    rows <- dm_row_index(i, n)
+    rows <- xtx_row_index(i, n)
     ## Row names of a design are unique, so selected names repeat exactly
     ## when the indices do: one counting pass, shared by both designs of a
     ## combination.
     dup <- length(rows) > 1L && any(tabulate(rows, nbins = n) > 1L)
-    out <- dm_rows(x, rows, dup)
-    dm_carry_groups(x, out, rows)
+    out <- xtx_rows(x, rows, dup)
+    xtx_carry_groups(x, out, rows)
     out
 }
 
 ## Cached groups of identical rows carry over to the selected rows: rows in
 ## one group still have the same bits in every input. Renumbered in order of
-## first appearance, as dm_groups() numbers them. A failed search (FALSE) is
-## not carried over, since the subset may have fewer distinct rows.
-dm_carry_groups <- function(x, out, rows) {
+## first appearance, as xtx_dedup_groups() numbers them. A failed search
+## (FALSE) is not carried over, since the subset may have fewer distinct rows.
+xtx_carry_groups <- function(x, out, rows) {
     g <- if (is.environment(x$cache)) x$cache$groups else NULL
     if (!is.list(g)) return(invisible(NULL))
     m <- g$map[rows]
@@ -59,7 +59,7 @@ dm_carry_groups <- function(x, out, rows) {
 }
 
 ## Positive row indices from a matrix-style subscript.
-dm_row_index <- function(i, n) {
+xtx_row_index <- function(i, n) {
     if (is.logical(i)) {
         if (anyNA(i)) stop("Row indices cannot be missing.", call. = FALSE)
         if (length(i) != n) {
@@ -83,18 +83,18 @@ dm_row_index <- function(i, n) {
 
 ## Rows `rows` (positive, within range) of a design or combination; `dup`:
 ## whether `rows` repeats an index.
-dm_rows <- function(x, rows, dup) {
-    if (dm_is_comb(x)) {
+xtx_rows <- function(x, rows, dup) {
+    if (xtx_is_comb(x)) {
         pick <- function(s) if (length(s) > 1L) s[rows] else s
         ## each design carries its own cached groups
-        d1 <- dm_rows(x$design, rows, dup)
-        dm_carry_groups(x$design, d1, rows)
+        d1 <- xtx_rows(x$design, rows, dup)
+        xtx_carry_groups(x$design, d1, rows)
         d2 <- NULL
         if (!is.null(x$design2)) {
-            d2 <- dm_rows(x$design2, rows, dup)
-            dm_carry_groups(x$design2, d2, rows)
+            d2 <- xtx_rows(x$design2, rows, dup)
+            xtx_carry_groups(x$design2, d2, rows)
         }
-        return(dm_combine(d1, pick(x$scale), d2, pick(x$scale2)))
+        return(xtx_combine(d1, pick(x$scale), d2, pick(x$scale2)))
     }
     out <- x
     out$cache <- new.env(parent = emptyenv())
@@ -109,16 +109,16 @@ dm_rows <- function(x, rows, dup) {
     }
     vars <- x$vars
     att <- attributes(vars)
-    new <- lapply(vars, dm_var_rows, rows = rows)
+    new <- lapply(vars, xtx_var_rows, rows = rows)
     attributes(new) <- att
-    attr(new, "row.names") <- dm_row_names(att[["row.names"]], rows, dup)
+    attr(new, "row.names") <- xtx_row_names(att[["row.names"]], rows, dup)
     out$vars <- new
     out
 }
 
 ## Rows of one prepared variable, keeping its attributes (factor levels,
 ## class and contrasts; the parameters of poly() and the like).
-dm_var_rows <- function(v, rows) {
+xtx_var_rows <- function(v, rows) {
     att <- attributes(v)
     if (is.matrix(v)) {
         y <- unclass(v)[rows, , drop = FALSE]
@@ -135,7 +135,7 @@ dm_var_rows <- function(v, rows) {
 }
 
 ## Row names of the selected rows, as `[.data.frame` gives them.
-dm_row_names <- function(rn, rows, dup) {
+xtx_row_names <- function(rn, rows, dup) {
     new <- if (is.integer(rn) && length(rn) == 2L && is.na(rn[1L])) rows else rn[rows]
     if (dup) new <- make.unique(as.character(new))
     new

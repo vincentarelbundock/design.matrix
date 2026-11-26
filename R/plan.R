@@ -84,13 +84,13 @@ design_plan.formula <- function(object, data, contrasts.arg = NULL, xlev = NULL,
     mf <- design_frame(object, data, xlev = xlev)
     tt <- attr(mf, "terms")
     xlevels <- stats::.getXlevels(tt, mf)
-    prep <- dm_prepare(tt, mf, contrasts.arg, NULL, FALSE)
+    prep <- xtx_prepare(tt, mf, contrasts.arg, NULL, FALSE)
     contr <- if (is.null(prep)) {
         attr(stats::model.matrix(tt, mf, contrasts.arg = contrasts.arg), "contrasts")
     } else {
         prep$contrasts
     }
-    dm_new_plan(tt, xlevels, contr, data)
+    xtx_new_plan(tt, xlevels, contr, data)
 }
 
 #' @rdname design_plan
@@ -112,11 +112,11 @@ design_plan.default <- function(object, ...) {
     }
     drop_intercept <- isTRUE(parts$drop_intercept)
     key <- list(parts$terms, xlevels, parts$contrasts, drop_intercept)
-    plan <- dm_plan_cache_get(key)
+    plan <- xtx_plan_cache_get(key)
     if (is.null(plan)) {
-        plan <- dm_new_plan(parts$terms, xlevels, parts$contrasts, NULL,
+        plan <- xtx_new_plan(parts$terms, xlevels, parts$contrasts, NULL,
                             drop_intercept = drop_intercept)
-        dm_plan_cache_set(key, plan)
+        xtx_plan_cache_set(key, plan)
     }
     plan
 }
@@ -128,36 +128,36 @@ design_plan.default <- function(object, ...) {
 ## (stored by reference in `plan$lazy`) is reused by later calls, such as
 ## repeated `design_matrix(fit, newdata = batch)`. Keys are compared with
 ## identical(), which compares environments by address; the cache keeps the
-## most recently used `dm_plan_cache_size` plans.
-dm_plan_cache <- new.env(parent = emptyenv())
-dm_plan_cache$entries <- list()
-dm_plan_cache_size <- 16L
+## most recently used `xtx_plan_cache_size` plans.
+xtx_plan_cache <- new.env(parent = emptyenv())
+xtx_plan_cache$entries <- list()
+xtx_plan_cache_size <- 16L
 
-dm_plan_cache_get <- function(key) {
-    entries <- dm_plan_cache$entries
+xtx_plan_cache_get <- function(key) {
+    entries <- xtx_plan_cache$entries
     for (i in seq_along(entries)) {
         if (identical(entries[[i]]$key, key)) {
-            if (i > 1L) dm_plan_cache$entries <- c(entries[i], entries[-i])
+            if (i > 1L) xtx_plan_cache$entries <- c(entries[i], entries[-i])
             return(entries[[i]]$plan)
         }
     }
     NULL
 }
 
-dm_plan_cache_clear <- function() {
-    dm_plan_cache$entries <- list()
+xtx_plan_cache_clear <- function() {
+    xtx_plan_cache$entries <- list()
     invisible(NULL)
 }
 
-dm_plan_cache_set <- function(key, plan) {
-    entries <- c(list(list(key = key, plan = plan)), dm_plan_cache$entries)
-    if (length(entries) > dm_plan_cache_size) entries <- entries[seq_len(dm_plan_cache_size)]
-    dm_plan_cache$entries <- entries
+xtx_plan_cache_set <- function(key, plan) {
+    entries <- c(list(list(key = key, plan = plan)), xtx_plan_cache$entries)
+    if (length(entries) > xtx_plan_cache_size) entries <- entries[seq_len(xtx_plan_cache_size)]
+    xtx_plan_cache$entries <- entries
     invisible(plan)
 }
 
 ## Assemble the plan on first reuse, without evaluating the training formula again.
-dm_plan_for_design <- function(design) {
+xtx_plan_for_design <- function(design) {
     if (!is.null(design$plan)) return(design$plan)
     if (!is.null(design$cache$plan)) return(design$cache$plan)
     tt <- design$training_terms
@@ -178,7 +178,7 @@ dm_plan_for_design <- function(design) {
     ## model.matrix converts logicals to factors after building the model frame.
     classes <- attr(frame, "dataClasses")
     xlevels <- xlevels[!names(xlevels) %in% names(classes)[classes == "logical"]]
-    plan <- dm_new_plan(tt, xlevels, design$contrasts, data = NULL,
+    plan <- xtx_new_plan(tt, xlevels, design$contrasts, data = NULL,
                         data_classes = classes)
     design$cache$plan <- plan
     plan
@@ -191,7 +191,7 @@ dm_plan_for_design <- function(design) {
 ## `data_classes`: the classes of the training variables (the "dataClasses"
 ## attribute of the training model frame's terms), which new data must
 ## match as in predict.lm(); NULL when unknown (no check).
-dm_new_plan <- function(tt, xlevels, contrasts, data, drop_intercept = FALSE,
+xtx_new_plan <- function(tt, xlevels, contrasts, data, drop_intercept = FALSE,
                         data_classes = attr(tt, "dataClasses")) {
     ttx <- stats::delete.response(tt)
     ## With the response also on the right-hand side (y ~ y + x),
@@ -208,7 +208,7 @@ dm_new_plan <- function(tt, xlevels, contrasts, data, drop_intercept = FALSE,
                            contrasts = contrasts, fast = NULL, lazy = NULL,
                            drop_intercept = drop_intercept,
                            data_classes = data_classes),
-                      class = "design_plan")
+                      class = "xtx_plan")
     if (is.null(data)) {
         plan$lazy <- new.env(parent = emptyenv())
         plan$lazy$fast <- NULL
@@ -216,20 +216,20 @@ dm_new_plan <- function(tt, xlevels, contrasts, data, drop_intercept = FALSE,
     } else {
         ## Skeleton for the fast path: the set-up of the training data on the
         ## plan's own terms, built through the general path.
-        plan$fast <- tryCatch(dm_fast_spec(plan, data), error = function(e) NULL)
+        plan$fast <- tryCatch(xtx_fast_spec(plan, data), error = function(e) NULL)
     }
     plan
 }
 
 #' @export
-print.design_plan <- function(x, ...) {
+print.xtx_plan <- function(x, ...) {
     cat("<design_plan>\n")
     cat("terms:   ", deparse2(stats::formula(x$terms)), "\n")
     if (length(x$xlevels))
         cat("factors: ", paste(names(x$xlevels), collapse = ", "), "\n")
     fast <- if (!is.null(x$fast) || !is.null(x$lazy$fast)) {
         "yes"
-    } else if (!is.null(x$lazy) && x$lazy$failures < dm_lazy_attempts) {
+    } else if (!is.null(x$lazy) && x$lazy$failures < xtx_lazy_attempts) {
         "on first use"
     } else {
         "no"
@@ -246,13 +246,13 @@ print.design_plan <- function(x, ...) {
 ## evaluated twice. Everything else model.frame() does (variable names,
 ## xlev, na.action, row names) is unchanged, because the variable names
 ## come from the "variables" attribute, which is untouched.
-dm_apply_general <- function(plan, newdata, na.action, vals = NULL) {
+xtx_apply_general <- function(plan, newdata, na.action, vals = NULL) {
     tt <- plan$terms
     data <- newdata
     ## (with no variables, as in y ~ 1, there is nothing to reuse, and
     ## paste0() would still return one placeholder name)
     if (length(vals)) {
-        ph <- paste0(".dm_var_", seq_along(vals))
+        ph <- paste0(".xtx_var_", seq_along(vals))
         attr(tt, "predvars") <- as.call(c(list(as.name("list")), lapply(ph, as.name)))
         data <- vals
         names(data) <- ph
@@ -267,7 +267,7 @@ dm_apply_general <- function(plan, newdata, na.action, vals = NULL) {
     if (!is.null(plan$data_classes)) stats::.checkMFClasses(plan$data_classes, mf)
     d <- design_matrix(plan$terms, mf, contrasts.arg = plan$contrasts)
     ## the fast path reuses this set-up, so it drops the column too
-    if (isTRUE(plan$drop_intercept)) d <- dm_drop_intercept(d)
+    if (isTRUE(plan$drop_intercept)) d <- xtx_drop_intercept(d)
     d
 }
 
@@ -275,7 +275,7 @@ dm_apply_general <- function(plan, newdata, na.action, vals = NULL) {
 ## the set-up was built, with the intercept, so the other columns are those
 ## of the model with an intercept; the fill and the kernels only read
 ## `intercept` to decide whether to write the first column.
-dm_drop_intercept <- function(d) {
+xtx_drop_intercept <- function(d) {
     if (identical(d$path, "dense")) {
         X <- d$dense
         a <- attr(X, "assign")
@@ -302,21 +302,21 @@ dm_drop_intercept <- function(d) {
 ## applied to. Data that warns may be unusual, so the next data is tried
 ## instead; after this many data sets that do not allow a fast path, the plan
 ## stops trying.
-dm_lazy_attempts <- 3L
+xtx_lazy_attempts <- 3L
 
-dm_apply_plan <- function(plan, newdata, na.action) {
+xtx_apply_plan <- function(plan, newdata, na.action) {
     eligible <- is.data.frame(newdata) &&
         (identical(na.action, stats::na.pass) || identical(na.action, "na.pass"))
-    if (!eligible) return(dm_apply_general(plan, newdata, na.action))
+    if (!eligible) return(xtx_apply_general(plan, newdata, na.action))
     spec <- if (is.null(plan$lazy)) plan$fast else plan$lazy$fast
     if (!is.null(spec)) {
-        d <- dm_apply_fast(plan, spec, newdata)
-        if (inherits(d, "design_matrix")) return(d)
-        if (!is.null(d)) return(dm_apply_general(plan, newdata, na.action, vals = d))
-    } else if (!is.null(plan$lazy) && plan$lazy$failures < dm_lazy_attempts) {
-        g <- dm_apply_general_checked(plan, newdata)
+        d <- xtx_apply_fast(plan, spec, newdata)
+        if (inherits(d, "xtx_matrix")) return(d)
+        if (!is.null(d)) return(xtx_apply_general(plan, newdata, na.action, vals = d))
+    } else if (!is.null(plan$lazy) && plan$lazy$failures < xtx_lazy_attempts) {
+        g <- xtx_apply_general_checked(plan, newdata)
         if (!g$warned) {
-            spec <- tryCatch(dm_fast_spec_from(plan, g$design, g$vals),
+            spec <- tryCatch(xtx_fast_spec_from(plan, g$design, g$vals),
                              error = function(e) NULL)
             if (is.null(spec)) {
                 plan$lazy$failures <- plan$lazy$failures + 1L
@@ -326,26 +326,26 @@ dm_apply_plan <- function(plan, newdata, na.action) {
         }
         return(g$design)
     }
-    dm_apply_general(plan, newdata, na.action)
+    xtx_apply_general(plan, newdata, na.action)
 }
 
 ## The general path with na.pass, noting whether it warned (the warnings
 ## still reach the caller). The variables are evaluated once, here, and
 ## handed to the general path, so that the fast path can be described from
 ## the same values without evaluating any transformation again.
-dm_apply_general_checked <- function(plan, data) {
+xtx_apply_general_checked <- function(plan, data) {
     warned <- FALSE
     vals <- NULL
     d <- withCallingHandlers({
-        vals <- eval(dm_plan_predvars(plan), data, environment(plan$terms))
-        dm_apply_general(plan, data, stats::na.pass, vals = vals)
+        vals <- eval(xtx_plan_predvars(plan), data, environment(plan$terms))
+        xtx_apply_general(plan, data, stats::na.pass, vals = vals)
     }, warning = function(w) {
         warned <<- TRUE
     })
     list(design = d, warned = warned, vals = vals)
 }
 
-dm_plan_predvars <- function(plan) {
+xtx_plan_predvars <- function(plan) {
     pv <- attr(plan$terms, "predvars")
     if (is.null(pv)) pv <- attr(plan$terms, "variables")
     pv
@@ -353,17 +353,17 @@ dm_plan_predvars <- function(plan) {
 
 ## Describe each variable of the training model frame, as the fast path
 ## must reproduce it. Returns NULL when the fast path cannot be used.
-dm_fast_spec <- function(plan, data) {
-    g <- dm_apply_general_checked(plan, data)
+xtx_fast_spec <- function(plan, data) {
+    g <- xtx_apply_general_checked(plan, data)
     if (g$warned) return(NULL)
-    dm_fast_spec_from(plan, g$design, g$vals)
+    xtx_fast_spec_from(plan, g$design, g$vals)
 }
 
 ## `d`: the design that the general path built, without warnings, from
 ## `vals`, the plan's variables evaluated on the data.
-dm_fast_spec_from <- function(plan, d, vals) {
+xtx_fast_spec_from <- function(plan, d, vals) {
     ttx <- plan$terms
-    pv <- dm_plan_predvars(plan)
+    pv <- xtx_plan_predvars(plan)
     exprs <- as.list(pv)[-1L]
     if (!length(exprs)) return(NULL)
     if (!identical(d$path, "general")) return(NULL)
@@ -424,7 +424,7 @@ dm_fast_spec_from <- function(plan, d, vals) {
 
 ## Build the list that the general path would hand to the C routine, or
 ## return NULL to fall back to the general path.
-dm_apply_fast <- function(plan, spec, newdata) {
+xtx_apply_fast <- function(plan, spec, newdata) {
     n <- .row_names_info(newdata, 2L)
     if (n < 1L) return(NULL)
     specs <- spec$vars
@@ -476,5 +476,5 @@ dm_apply_fast <- function(plan, spec, newdata) {
     }
     names(out) <- spec$names
     attr(out, "row.names") <- .row_names_info(newdata, 0L)
-    dm_new_design(plan$terms, out, spec$contrasts, setup = spec$setup, path = "fast")
+    xtx_new_design(plan$terms, out, spec$contrasts, setup = spec$setup, path = "fast")
 }

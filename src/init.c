@@ -1,12 +1,12 @@
 #include <R.h>
 #include <Rinternals.h>
 #include <R_ext/Rdynload.h>
-#include "dm.h"
+#include "xtx.h"
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
-SEXP dm_omp_max_threads(void)
+SEXP xtx_omp_max_threads(void)
 {
 #ifdef _OPENMP
     return ScalarInteger(omp_get_max_threads());
@@ -16,58 +16,58 @@ SEXP dm_omp_max_threads(void)
 }
 
 static const R_CallMethodDef CallEntries[] = {
-    {"dm_setup", (DL_FUNC) &dm_setup, 3},
-    {"dm_fill", (DL_FUNC) &dm_fill, 3},
-    {"dm_jac_mult", (DL_FUNC) &dm_jac_mult, 9},
-    {"dm_jac_crossprod", (DL_FUNC) &dm_jac_crossprod, 11},
-    {"dm_jac_quad", (DL_FUNC) &dm_jac_quad, 9},
-    {"dm_jac_sparse", (DL_FUNC) &dm_jac_sparse, 6},
-    {"dm_jac_dense", (DL_FUNC) &dm_jac_dense, 7},
-    {"dm_row_groups", (DL_FUNC) &dm_row_groups, 8},
-    {"dm_jac_entries_mean", (DL_FUNC) &dm_jac_entries_mean, 7},
-    {"dm_jac_finite", (DL_FUNC) &dm_jac_finite, 7},
-    {"dm_jac_gram", (DL_FUNC) &dm_jac_gram, 15},
-    {"dm_chol_pivot", (DL_FUNC) &dm_chol_pivot, 8},
-    {"dm_struct_ok", (DL_FUNC) &dm_struct_ok, 3},
-    {"dm_struct_info", (DL_FUNC) &dm_struct_info, 2},
-    {"dm_struct_gram", (DL_FUNC) &dm_struct_gram, 4},
-    {"dm_struct_xty", (DL_FUNC) &dm_struct_xty, 4},
-    {"dm_struct_mult", (DL_FUNC) &dm_struct_mult, 5},
-    {"dm_kron_mode", (DL_FUNC) &dm_kron_mode, 3},
-    {"dm_min_nonzero", (DL_FUNC) &dm_min_nonzero, 2},
-    {"dm_all_finite", (DL_FUNC) &dm_all_finite, 1},
-    {"dm_col_norms", (DL_FUNC) &dm_col_norms, 1},
-    {"dm_in_range", (DL_FUNC) &dm_in_range, 3},
-    {"dm_codes_ok", (DL_FUNC) &dm_codes_ok, 2},
-    {"dm_int_unique", (DL_FUNC) &dm_int_unique, 1},
-    {"dm_str_unique", (DL_FUNC) &dm_str_unique, 1},
-    {"dm_fe_gsum", (DL_FUNC) &dm_fe_gsum, 4},
-    {"dm_fe_crosstabs", (DL_FUNC) &dm_fe_crosstabs, 6},
-    {"dm_fe_components", (DL_FUNC) &dm_fe_components, 4},
-    {"dm_fe_struct_gsum", (DL_FUNC) &dm_fe_struct_gsum, 9},
-    {"dm_fe_code", (DL_FUNC) &dm_fe_code, 2},
-    {"dm_fe_recode", (DL_FUNC) &dm_fe_recode, 2},
-    {"dm_fe_nested", (DL_FUNC) &dm_fe_nested, 3},
-    {"dm_fe_lookup", (DL_FUNC) &dm_fe_lookup, 2},
-    {"dm_fe_ichol", (DL_FUNC) &dm_fe_ichol, 5},
-    {"dm_fe_pcg", (DL_FUNC) &dm_fe_pcg, 17},
-    {"dm_fe_schur", (DL_FUNC) &dm_fe_schur, 10},
-    {"dm_ifelse", (DL_FUNC) &dm_ifelse, 3},
-    {"dm_notnan", (DL_FUNC) &dm_notnan, 1},
-    {"dm_fe_fitted_add", (DL_FUNC) &dm_fe_fitted_add, 3},
-    {"dm_fe_resid", (DL_FUNC) &dm_fe_resid, 6},
-    {"dm_fe_moments", (DL_FUNC) &dm_fe_moments, 2},
-    {"dm_glm_working", (DL_FUNC) &dm_glm_working, 7},
-    {"dm_poisson_dev", (DL_FUNC) &dm_poisson_dev, 3},
-    {"dm_unwrap_vars", (DL_FUNC) &dm_unwrap_vars, 1},
-    {"dm_levels_unused", (DL_FUNC) &dm_levels_unused, 2},
-    {"dm_ls_sums", (DL_FUNC) &dm_ls_sums, 4},
-    {"dm_binomial_ll", (DL_FUNC) &dm_binomial_ll, 4},
-    {"dm_omp_max_threads", (DL_FUNC) &dm_omp_max_threads, 0},
+    {"xtx_setup", (DL_FUNC) &xtx_setup, 3},
+    {"xtx_fill", (DL_FUNC) &xtx_fill, 3},
+    {"xtx_jac_mult", (DL_FUNC) &xtx_jac_mult, 9},
+    {"xtx_jac_crossprod", (DL_FUNC) &xtx_jac_crossprod, 11},
+    {"xtx_jac_quad", (DL_FUNC) &xtx_jac_quad, 9},
+    {"xtx_jac_sparse", (DL_FUNC) &xtx_jac_sparse, 6},
+    {"xtx_jac_dense", (DL_FUNC) &xtx_jac_dense, 7},
+    {"xtx_row_groups", (DL_FUNC) &xtx_row_groups, 8},
+    {"xtx_jac_entries_mean", (DL_FUNC) &xtx_jac_entries_mean, 7},
+    {"xtx_jac_finite", (DL_FUNC) &xtx_jac_finite, 7},
+    {"xtx_jac_gram", (DL_FUNC) &xtx_jac_gram, 15},
+    {"xtx_chol_pivot", (DL_FUNC) &xtx_chol_pivot, 8},
+    {"xtx_struct_ok", (DL_FUNC) &xtx_struct_ok, 3},
+    {"xtx_struct_info", (DL_FUNC) &xtx_struct_info, 2},
+    {"xtx_struct_gram", (DL_FUNC) &xtx_struct_gram, 4},
+    {"xtx_struct_xty", (DL_FUNC) &xtx_struct_xty, 4},
+    {"xtx_struct_mult", (DL_FUNC) &xtx_struct_mult, 5},
+    {"xtx_kron_mode", (DL_FUNC) &xtx_kron_mode, 3},
+    {"xtx_min_nonzero", (DL_FUNC) &xtx_min_nonzero, 2},
+    {"xtx_all_finite", (DL_FUNC) &xtx_all_finite, 1},
+    {"xtx_col_norms", (DL_FUNC) &xtx_col_norms, 1},
+    {"xtx_in_range", (DL_FUNC) &xtx_in_range, 3},
+    {"xtx_codes_ok", (DL_FUNC) &xtx_codes_ok, 2},
+    {"xtx_int_unique", (DL_FUNC) &xtx_int_unique, 1},
+    {"xtx_str_unique", (DL_FUNC) &xtx_str_unique, 1},
+    {"xtx_fe_gsum", (DL_FUNC) &xtx_fe_gsum, 4},
+    {"xtx_fe_crosstabs", (DL_FUNC) &xtx_fe_crosstabs, 6},
+    {"xtx_fe_components", (DL_FUNC) &xtx_fe_components, 4},
+    {"xtx_fe_struct_gsum", (DL_FUNC) &xtx_fe_struct_gsum, 9},
+    {"xtx_fe_code", (DL_FUNC) &xtx_fe_code, 2},
+    {"xtx_fe_recode", (DL_FUNC) &xtx_fe_recode, 2},
+    {"xtx_fe_nested", (DL_FUNC) &xtx_fe_nested, 3},
+    {"xtx_fe_lookup", (DL_FUNC) &xtx_fe_lookup, 2},
+    {"xtx_fe_ichol", (DL_FUNC) &xtx_fe_ichol, 5},
+    {"xtx_fe_pcg", (DL_FUNC) &xtx_fe_pcg, 17},
+    {"xtx_fe_schur", (DL_FUNC) &xtx_fe_schur, 10},
+    {"xtx_ifelse", (DL_FUNC) &xtx_ifelse, 3},
+    {"xtx_notnan", (DL_FUNC) &xtx_notnan, 1},
+    {"xtx_fe_fitted_add", (DL_FUNC) &xtx_fe_fitted_add, 3},
+    {"xtx_fe_resid", (DL_FUNC) &xtx_fe_resid, 6},
+    {"xtx_fe_moments", (DL_FUNC) &xtx_fe_moments, 2},
+    {"xtx_glm_working", (DL_FUNC) &xtx_glm_working, 7},
+    {"xtx_poisson_dev", (DL_FUNC) &xtx_poisson_dev, 3},
+    {"xtx_unwrap_vars", (DL_FUNC) &xtx_unwrap_vars, 1},
+    {"xtx_levels_unused", (DL_FUNC) &xtx_levels_unused, 2},
+    {"xtx_ls_sums", (DL_FUNC) &xtx_ls_sums, 4},
+    {"xtx_binomial_ll", (DL_FUNC) &xtx_binomial_ll, 4},
+    {"xtx_omp_max_threads", (DL_FUNC) &xtx_omp_max_threads, 0},
     {NULL, NULL, 0}
 };
 
-void R_init_design_matrix(DllInfo *dll)
+void R_init_xtx(DllInfo *dll)
 {
     R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
     R_useDynamicSymbols(dll, FALSE);

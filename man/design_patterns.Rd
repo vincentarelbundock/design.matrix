@@ -29,9 +29,9 @@ expression, or a \code{\link[=design_column]{design_column()}} of the design.}
 \item{compress}{\code{"auto"} (default), \code{TRUE} or \code{FALSE}. With \code{"auto"}, the
 patterns are returned only when compression pays (few patterns
 relative to rows): in memory, following the option
-\code{design.matrix.dedup} (see \link{design_algebra}) and at most half as many
+\code{xtx.dedup} (see \link{design_algebra}) and at most half as many
 patterns as rows; remotely, following the option
-\code{design.matrix.remote_compress} (see \link{design_remote}). The two backends
+\code{xtx.remote_compress} (see \link{design_remote}). The two backends
 can therefore decide differently with \code{"auto"}. With \code{TRUE}, the
 patterns are returned unless every row is a pattern of its own. With
 \code{FALSE}, \code{NULL} is returned.}

@@ -2,7 +2,7 @@
 #'
 #' `qr(x)` decomposes a `design_matrix` as `X P = Q R` without forming the
 #' dense matrix `X` or the `n` by `p` matrix `Q`. It returns an object of
-#' class `"design_qr"`, which the usual base R functions accept: `qr.coef()`,
+#' class `"xtx_qr"`, which the usual base R functions accept: `qr.coef()`,
 #' `qr.fitted()`, `qr.resid()`, `qr.qty()`, `qr.qy()`, `qr.Q()`, `qr.R()` and
 #' `solve()`. This gives least squares coefficients, fitted values and
 #' residuals at the cost of a few passes over the rows.
@@ -53,8 +53,8 @@
 #' **Calling the methods.** `qr.coef()`, `qr.fitted()`, `qr.resid()`,
 #' `qr.qty()`, `qr.qy()`, `qr.Q()` and `qr.R()` are S4 generics created by
 #' this package (as the Matrix package does for its decompositions): they
-#' dispatch when design.matrix is attached, or when called as
-#' `design.matrix::qr.coef()`. Calls to `base::qr.coef()` (for example from
+#' dispatch when xtx is attached, or when called as
+#' `xtx::qr.coef()`. Calls to `base::qr.coef()` (for example from
 #' code in another package that imports base's function) do not dispatch,
 #' and stop because the object is not a base QR decomposition. `qr()` and
 #' `solve()` are S3 generics and always dispatch.
@@ -62,7 +62,7 @@
 #' @param x A `design_matrix`.
 #' @param tol The tolerance for detecting aliased columns, as in [qr()].
 #' @param ... Not used.
-#' @return An object of class `"design_qr"`: a list with `design` (`x`),
+#' @return An object of class `"xtx_qr"`: a list with `design` (`x`),
 #'   `R` (the `p` by `p` upper triangular factor, columns in pivoted
 #'   order), `rank`, `pivot` and `tol`.
 #' @examples
@@ -76,9 +76,9 @@
 NULL
 
 #' @rdname design_qr
-#' @method qr design_matrix
+#' @method qr xtx_matrix
 #' @export
-qr.design_matrix <- function(x, tol = 1e-07, ...) {
+qr.xtx_matrix <- function(x, tol = 1e-07, ...) {
     checkmate::assert_number(tol, lower = 0, finite = TRUE)
     dots <- list(...)
     if (isTRUE(dots$LAPACK))
@@ -88,48 +88,48 @@ qr.design_matrix <- function(x, tol = 1e-07, ...) {
     if (!all(is.finite(G))) {
         if (!all(finite_rows(x))) stop("NA/NaN/Inf in 'x'", call. = FALSE)
         ## finite entries whose squares overflow
-        return(dmqr_dense(x, tol))
+        return(xtx_qr_dense(x, tol))
     }
     dg <- diag(G)
     ## squares near the limits of double precision lose the column's scale
-    if (any(dg > 1e280 | (dg > 0 & dg < 1e-280))) return(dmqr_dense(x, tol))
-    ch <- dmqr_chol(x, G, tol)
-    if (is.null(ch)) return(dmqr_dense(x, tol))
-    ch <- dmqr_center_memory(x, G, ch)
+    if (any(dg > 1e280 | (dg > 0 & dg < 1e-280))) return(xtx_qr_dense(x, tol))
+    ch <- xtx_qr_chol(x, G, tol)
+    if (is.null(ch)) return(xtx_qr_dense(x, tol))
+    ch <- xtx_qr_center_memory(x, G, ch)
     R <- ch$R
     cn <- colnames(x)
     if (!is.null(cn)) colnames(R) <- cn[ch$pivot]
     out <- structure(list(design = x, R = R, rank = ch$rank, pivot = ch$pivot, tol = tol),
-                     class = "design_qr")
+                     class = "xtx_qr")
     out$centered <- ch$centered
     out
 }
 
 ## In memory, the factor of a badly conditioned X'X takes the values of the
-## centered design, as remotely (dmqr_remote(), dmqr_centered()); the
+## centered design, as remotely (xtx_qr_remote(), xtx_qr_centered()); the
 ## columns kept and their order still come from the uncentered X'X, as in
 ## lm(). The normal equations lose about kappa^2 * eps (kappa: the
-## condition number of X with columns scaled to unit norm, see dmqr_coef()):
+## condition number of X with columns scaled to unit norm, see xtx_qr_coef()):
 ## refinement recovers the coefficients but not R, hence vcov(). Centering
 ## costs a shifted copy of the numeric variables and one more crossprod(),
 ## so it is done only when kappa^2 > 1e6, where that loss could exceed
 ## about 2e-10 (with a margin for the estimate of kappa from rcond());
 ## below, the factor is that of X'X, unchanged.
-dmqr_center_memory <- function(x, G, ch) {
+xtx_qr_center_memory <- function(x, G, ch) {
     k <- ch$rank
-    if (k < 2L || !isTRUE(getOption("design.matrix.qr_center", TRUE))) return(ch)
-    if (!(dmqr_kappa2(ch$R[seq_len(k), seq_len(k), drop = FALSE]) > 1e6)) return(ch)
-    ctr <- dmqr_center_design(x)
+    if (k < 2L || !isTRUE(getOption("xtx.qr_center", TRUE))) return(ch)
+    if (!(xtx_qr_kappa2(ch$R[seq_len(k), seq_len(k), drop = FALSE]) > 1e6)) return(ch)
+    ctr <- xtx_qr_center_design(x)
     if (is.null(ctr)) return(ch)
     Gs <- crossprod(ctr$x)
     storage.mode(Gs) <- "double"
     if (!all(is.finite(Gs))) return(ch)
-    dmqr_centered(ch, G, ctr$T, ctr$x, list(xtx = Gs))
+    xtx_qr_centered(ch, G, ctr$T, ctr$x, list(xtx = Gs))
 }
 
 ## kappa^2 of the columns of a triangular factor scaled to unit norm (an
 ## estimate, from rcond()).
-dmqr_kappa2 <- function(R11) {
+xtx_qr_kappa2 <- function(R11) {
     k <- ncol(R11)
     kap <- 1 / rcond(R11 / rep(sqrt(colSums(R11^2)), each = k), triangular = TRUE)
     kap^2
@@ -137,14 +137,14 @@ dmqr_kappa2 <- function(R11) {
 
 ## An in-memory design (or one with rows scaled, as the weighted fits make
 ## it) with its numeric variables centered: list(x, T) with x = X T (see
-## dmp_center()), or NULL. The centering of a plain design is cached in it,
+## xtx_p_center()), or NULL. The centering of a plain design is cached in it,
 ## so that refits on reweighted copies (the steps of a GLM) center once;
 ## the cache holds the shifted numeric variables only. The sample that
 ## decides the shift does not change the session's random numbers.
-dmqr_center_design <- function(x) {
-    if (inherits(x, "dm_remote")) return(NULL)
+xtx_qr_center_design <- function(x) {
+    if (inherits(x, "xtx_remote")) return(NULL)
     sc <- NULL
-    if (dm_is_comb(x)) {
+    if (xtx_is_comb(x)) {
         if (!is.null(x$design2)) return(NULL)
         sc <- x$scale
         x <- x$design
@@ -155,16 +155,16 @@ dmqr_center_design <- function(x) {
     if (!is.null(hit) && identical(hit$key, key)) {
         ctr <- hit$value
     } else {
-        ctr <- dmqr_keep_seed(tryCatch(dmp_center(x), error = function(e) NULL))
+        ctr <- xtx_qr_keep_seed(tryCatch(xtx_p_center(x), error = function(e) NULL))
         x$cache$qr_center <- list(key = key, value = ctr)
     }
     if (is.null(ctr)) return(NULL)
-    if (!is.null(sc)) ctr$x <- dm_scale(ctr$x, sc)
+    if (!is.null(sc)) ctr$x <- xtx_scale(ctr$x, sc)
     ctr
 }
 
 ## The value of expr, leaving .Random.seed as it was.
-dmqr_keep_seed <- function(expr) {
+xtx_qr_keep_seed <- function(expr) {
     env <- globalenv()
     seed <- get0(".Random.seed", envir = env, inherits = FALSE)
     on.exit(if (is.null(seed)) {
@@ -178,36 +178,36 @@ dmqr_keep_seed <- function(expr) {
 ## The same factorization for a remote design, from the primitives (see
 ## primitives.R): X'X in the database, and the residual norms of suspect
 ## columns from products with the data. There is no dense fallback.
-#' @method qr dm_remote
+#' @method qr xtx_remote
 #' @export
-qr.dm_remote <- function(x, tol = 1e-07, ...) dmqr_remote(x, tol)
+qr.xtx_remote <- function(x, tol = 1e-07, ...) xtx_qr_remote(x, tol)
 
 ## (`Y`, remote columns: X'Y comes from the scan that computes X'X, and is
-## kept for dmqr_coef(), see dm_remote_gram_xty())
+## kept for xtx_qr_coef(), see xtx_remote_gram_xty())
 ##
 ## The columns kept and their order come from X'X (lm()'s rule, as in
 ## memory), but the values of the factor of the kept columns come from the
 ## X'X of the design with numeric variables shifted by their mean in a
 ## sample, when that design is X~ = X T with T unit upper triangular
-## (dm_center()): R = R~ T^-1. A numeric variable far from zero (x + 1e7)
+## (xtx_center()): R = R~ T^-1. A numeric variable far from zero (x + 1e7)
 ## makes X'X nearly singular, while the shifted one is well conditioned; the
 ## database sums X'X with another rounding than the in-memory kernels, so
 ## without the shift the factor would lose the accuracy that in-memory
 ## designs keep. The sums are then those of the shifted design only (one
 ## scan), and X'X = T^-T (X~'X~) T^-1 follows from them.
-dmqr_remote <- function(x, tol, Y = NULL) {
+xtx_qr_remote <- function(x, tol, Y = NULL) {
     checkmate::assert_number(tol, lower = 0, finite = TRUE)
-    ctr <- if (isTRUE(getOption("design.matrix.remote_center", TRUE))) dm_center(x)
+    ctr <- if (isTRUE(getOption("xtx.remote_center", TRUE))) xtx_center(x)
     mc <- xs <- NULL
     if (!is.null(ctr)) {
-        xs <- dm_shifted(x, ctr$shift)
+        xs <- xtx_shifted(x, ctr$shift)
         ## (not compressed: the design of the patterns would not be shifted)
-        op <- options(design.matrix.remote_compress = FALSE)
-        mc <- tryCatch(dm_remote_gram_xty(xs, Y), finally = options(op))
+        op <- options(xtx.remote_compress = FALSE)
+        mc <- tryCatch(xtx_remote_gram_xty(xs, Y), finally = options(op))
         if (!all(is.finite(mc$xtx))) mc <- NULL
     }
     if (is.null(mc)) {
-        mo <- dm_remote_gram_xty(x, Y)
+        mo <- xtx_remote_gram_xty(x, Y)
     } else {
         Ti <- backsolve(ctr$T, diag(ncol(ctr$T)))
         G <- crossprod(Ti, mc$xtx %*% Ti)
@@ -217,9 +217,9 @@ dmqr_remote <- function(x, tol, Y = NULL) {
     G <- mo$xtx
     storage.mode(G) <- "double"
     if (!all(is.finite(G))) stop("NA/NaN/Inf in 'x'", call. = FALSE)
-    ch <- dmqr_chol(x, G, tol)
+    ch <- xtx_qr_chol(x, G, tol)
     if (is.null(ch)) stop("The squares of some entries of the design underflow.", call. = FALSE)
-    if (!is.null(mc)) ch <- dmqr_centered(ch, G, ctr$T, xs, mc, Y)
+    if (!is.null(mc)) ch <- xtx_qr_centered(ch, G, ctr$T, xs, mc, Y)
     R <- ch$R
     cn <- colnames(x)
     if (!is.null(cn)) colnames(R) <- cn[ch$pivot]
@@ -227,28 +227,28 @@ dmqr_remote <- function(x, tol, Y = NULL) {
                    response_ss = if (is.null(mc)) mo$yty else mc$yty,
                    weight_sum = if (is.null(mc)) mo$sumw else mc$sumw,
                    centered = ch$centered, xty = mo$xty, xty_of = if (!is.null(mo$xty)) unclass(Y)$sql),
-              class = "design_qr")
+              class = "xtx_qr")
 }
 
 ## The factorization of a design for a least squares fit of the columns Y:
 ## qr(x), which remotely also computes X'Y in the same scan.
-dmqr_for <- function(x, tol, Y) {
-    if (inherits(x, "dm_remote") && dm_is_column(Y)) dmqr_remote(x, tol, Y) else qr(x, tol = tol)
+xtx_qr_for <- function(x, tol, Y) {
+    if (inherits(x, "xtx_remote") && xtx_is_column(Y)) xtx_qr_remote(x, tol, Y) else qr(x, tol = tol)
 }
 
 ## X'Y for the columns Y, from the scan of the factorization when it was
-## made for them (dmqr_for()), else computed.
-dmqr_xty <- function(q, D, Y) {
-    if (!is.null(q$xty) && dm_is_column(Y) && identical(q$xty_of, unclass(Y)$sql)) return(q$xty)
-    dmp_crossprod(D, Y)
+## made for them (xtx_qr_for()), else computed.
+xtx_qr_xty <- function(q, D, Y) {
+    if (!is.null(q$xty) && xtx_is_column(Y) && identical(q$xty_of, unclass(Y)$sql)) return(q$xty)
+    xtx_p_crossprod(D, Y)
 }
 
 ## The factor of a design with the values of the shifted design (see
-## dmqr_remote(); in memory, dmqr_center_memory()): `xs` the shifted
+## xtx_qr_remote(); in memory, xtx_qr_center_memory()): `xs` the shifted
 ## design, `mc` its X'X and (remotely) X'Y, `Tm` with X~ = X T. Unchanged
 ## when the kept columns do not allow it (a kept column of X~ uses an
 ## aliased column of X).
-dmqr_centered <- function(ch, G, Tm, xs, mc, Y = NULL) {
+xtx_qr_centered <- function(ch, G, Tm, xs, mc, Y = NULL) {
     if (ch$rank == 0L) return(ch)
     k <- ch$rank
     p <- length(ch$pivot)
@@ -256,11 +256,11 @@ dmqr_centered <- function(ch, G, Tm, xs, mc, Y = NULL) {
     al <- ch$pivot[seq_len(p) > k]
     ## The kept columns are in increasing order, so that T[keep, keep] is
     ## upper triangular and R~ T^-1 a triangular factor: lm()'s pivoting
-    ## (dm_chol_pivot()) takes columns in order and moves only the others
+    ## (xtx_chol_pivot()) takes columns in order and moves only the others
     ## to the end. Anything else would be a bug, not a design to fall back
     ## on silently.
     if (is.unsorted(keep)) stop("internal error: the kept columns are not in order", call. = FALSE)
-    if (!dm_uncenter_ok(Tm, keep, al)) return(ch)
+    if (!xtx_uncenter_ok(Tm, keep, al)) return(ch)
     Rt <- tryCatch(chol(unname(mc$xtx[keep, keep, drop = FALSE])), error = function(e) NULL)
     if (is.null(Rt)) return(ch)
     R11 <- Rt %*% backsolve(Tm[keep, keep, drop = FALSE], diag(k))
@@ -276,39 +276,39 @@ dmqr_centered <- function(ch, G, Tm, xs, mc, Y = NULL) {
 }
 
 ## Can a fit on the centered design X~ = X T be mapped back to X (qr():
-## dmqr_centered(); FE: dm_fe_uncenter())? Not when a kept column of X~
+## xtx_qr_centered(); FE: xtx_fe_uncenter())? Not when a kept column of X~
 ## uses an aliased column of X (T[aliased, kept] not zero).
-dm_uncenter_ok <- function(Tm, keep, al) !(length(al) && length(keep) && any(Tm[al, keep] != 0))
+xtx_uncenter_ok <- function(Tm, keep, al) !(length(al) && length(keep) && any(Tm[al, keep] != 0))
 
 ## A covariance (or bread) of the coefficients of X~ = X T mapped back to
 ## those of X: T V T' (Tk: T on the kept columns).
-dm_uncenter_cov <- function(Tk, V) Tk %*% V %*% t(Tk)
+xtx_uncenter_cov <- function(Tk, V) Tk %*% V %*% t(Tk)
 
 ## The remote design with numeric variables shifted (their SQL).
-dm_shifted <- function(x, shift) {
+xtx_shifted <- function(x, shift) {
     for (nm in names(shift))
-        x$vars[[nm]]$sql <- sprintf("(%s - %s)", x$vars[[nm]]$sql, dm_sql_double(shift[[nm]]))
+        x$vars[[nm]]$sql <- sprintf("(%s - %s)", x$vars[[nm]]$sql, xtx_sql_double(shift[[nm]]))
     x
 }
 
 ## Centering of the numeric variables of a remote design: list(shift (named
 ## by variable), T) with X(shifted) = X T, T unit upper triangular, or NULL
 ## (nothing to center, or no such T); from a sample of its rows.
-dm_center <- function(D) {
+xtx_center <- function(D) {
     ## (once for a design: its scaled copies share the cache)
-    if (is.null(D$cache$center)) D$cache$center <- list(dm_center_sample(D))
+    if (is.null(D$cache$center)) D$cache$center <- list(xtx_center_sample(D))
     D$cache$center[[1L]]
 }
 
-dm_center_sample <- function(D) {
+xtx_center_sample <- function(D) {
     plan <- D$plan
-    sample <- dm_remote_sample(D)
+    sample <- xtx_remote_sample(D)
     if (!nrow(sample)) return(NULL)
     mf <- tryCatch(design_frame(plan$terms, sample, xlev = plan$xlevels, na.action = stats::na.omit),
                    error = function(e) NULL)
     if (is.null(mf) || !nrow(mf)) return(NULL)
     if (D$p > 2000L) return(NULL)
-    dm_center_shift(mf, mf, function(fr) dm_frame_design(D, fr), D$p)
+    xtx_center_shift(mf, mf, function(fr) xtx_frame_design(D, fr), D$p)
 }
 
 ## The shift of the numeric variables of a model frame whose mean (in the
@@ -319,11 +319,11 @@ dm_center_sample <- function(D) {
 ## designs built by build(frame) with p columns: list(shift, T), or NULL.
 ## The columns of the frames are taken as stored (I(x^2), log(x): columns,
 ## shifted on their own when far from zero), in the prototypes as in the
-## shifted design (dm_shifted() remotely, dmp_center() in memory).
-## (For remote designs, dm_center(); in memory, dm_center_memory().)
-dm_center_shift <- function(stats_frame, proto_frame, build, p) {
+## shifted design (xtx_shifted() remotely, xtx_p_center() in memory).
+## (For remote designs, xtx_center(); in memory, xtx_center_memory().)
+xtx_center_shift <- function(stats_frame, proto_frame, build, p) {
     tt <- attr(stats_frame, "terms")
-    resp <- if (!is.null(tt) && attr(tt, "response") > 0L) dm_terms_vars(tt)$names[attr(tt, "response")]
+    resp <- if (!is.null(tt) && attr(tt, "response") > 0L) xtx_terms_vars(tt)$names[attr(tt, "response")]
     cand <- setdiff(names(stats_frame), resp)
     num <- cand[vapply(cand, function(nm) identical(stats::.MFclass(stats_frame[[nm]]), "numeric"), NA)]
     if (!length(num)) return(NULL)
@@ -374,18 +374,18 @@ dm_center_shift <- function(stats_frame, proto_frame, build, p) {
 }
 
 ## Centering of the numeric variables of an in-memory design (see
-## dmp_center()), from its terms mt and model frame mf: list(shift, T), with
+## xtx_p_center()), from its terms mt and model frame mf: list(shift, T), with
 ## the design of the shifted frame X~ = X T and T unit upper triangular, or
-## NULL. As dm_center() does for remote designs: only variables whose mean
+## NULL. As xtx_center() does for remote designs: only variables whose mean
 ## is large compared with their spread, and only when such a T exists
 ## (checked on prototype rows built, like the shifted design, from the
 ## frame's columns as stored).
-dm_center_memory <- function(mt, mf, contrasts) {
-    if (!isTRUE(getOption("design.matrix.fe_center", TRUE))) return(NULL)
+xtx_center_memory <- function(mt, mf, contrasts) {
+    if (!isTRUE(getOption("xtx.fe_center", TRUE))) return(NULL)
     if (attr(mt, "intercept") == 0L) return(NULL)
     ## the decision and the shift from a systematic sample of rows (any
     ## shift is exact; a shift near the mean keeps the sums accurate)
-    tv <- dm_terms_vars(mt)$names
+    tv <- xtx_terms_vars(mt)$names
     nr <- nrow(mf)
     idx <- if (nr > 1e5) unique(round(seq(1, nr, length.out = 1e5))) else seq_len(nr)
     st <- mf[idx, intersect(tv, names(mf)), drop = FALSE]
@@ -394,21 +394,21 @@ dm_center_memory <- function(mt, mf, contrasts) {
     attr(m0, "terms") <- mt
     p <- tryCatch(ncol(design_matrix(mt, m0, contrasts.arg = contrasts)), error = function(e) NA)
     if (is.na(p) || p > 2000L) return(NULL)
-    dm_center_shift(st, m0, function(fr) design_matrix(mt, fr, contrasts.arg = contrasts), p)
+    xtx_center_shift(st, m0, function(fr) design_matrix(mt, fr, contrasts.arg = contrasts), p)
 }
 
 ## The in-memory design of a model frame of the plan's terms.
-dm_frame_design <- function(D, mf) {
+xtx_frame_design <- function(D, mf) {
     plan <- D$plan
     d <- design_matrix(plan$terms, mf, contrasts.arg = plan$contrasts)
-    if (isTRUE(plan$drop_intercept)) d <- dm_drop_intercept(d)
+    if (isTRUE(plan$drop_intercept)) d <- xtx_drop_intercept(d)
     d
 }
 
 
 ## A design whose X'X loses its scale: the dense QR of qr(), kept in the
 ## object, so that every method gives the dense results.
-dmqr_dense <- function(x, tol) {
+xtx_qr_dense <- function(x, tol) {
     q <- base::qr(as.matrix(x), tol = tol)
     p <- ncol(x)
     R <- matrix(0, p, p)
@@ -417,11 +417,11 @@ dmqr_dense <- function(x, tol) {
     cn <- colnames(x)
     if (!is.null(cn)) colnames(R) <- cn[q$pivot]
     structure(list(design = x, R = R, rank = q$rank, pivot = q$pivot, tol = tol, dense = q),
-              class = "design_qr")
+              class = "xtx_qr")
 }
 
 ## Pivoted Cholesky factor of a symmetric matrix G with limited pivoting,
-## the one kernel of qr() and of fits with fixed effects (dm_chol_pivot()
+## the one kernel of qr() and of fits with fixed effects (xtx_chol_pivot()
 ## in kernels.c): columns in order, column j taken when its squared
 ## residual norm d after the columns taken before it is above tol *
 ## scale[j] (ties = "keep": d >= tol * scale[j], lm()'s rule; "drop":
@@ -430,19 +430,19 @@ dmqr_dense <- function(x, tol) {
 ## lo <= d <= hi cannot be judged from G (d is accurate to rounding only)
 ## and are suspects, judged by recheck(ch, cols), which returns list(dres
 ## = their squared residual norms computed from the data, taken = which of
-## them pass the rule) or NULL to give up (dm_pivchol() then returns NULL);
+## them pass the rule) or NULL to give up (xtx_pivchol() then returns NULL);
 ## the factorization is repeated until every suspect was judged against
 ## the columns actually taken before it. `dres`: squared residual norms
 ## known in advance (NA: not known). Returns list(R, rank, pivot,
 ## suspects), as the kernel.
-dm_pivchol <- function(G, scale, tol, ties = c("keep", "drop"), band = NULL, recheck = NULL,
+xtx_pivchol <- function(G, scale, tol, ties = c("keep", "drop"), band = NULL, recheck = NULL,
                        lup = ncol(G), dres = rep(NA_real_, ncol(G))) {
     ties <- match.arg(ties)
     p <- ncol(G)
     lo <- if (is.null(band)) double(0) else as.double(band$lo)
     hi <- if (is.null(band)) double(0) else as.double(band$hi)
     repeat {
-        ch <- .Call(C_dm_chol_pivot, G, as.double(scale), as.double(tol), ties == "keep", lo, hi,
+        ch <- .Call(C_xtx_chol_pivot, G, as.double(scale), as.double(tol), ties == "keep", lo, hi,
                     as.integer(lup), as.double(dres))
         names(ch) <- c("R", "rank", "pivot", "suspects")
         new <- ch$suspects[is.na(dres[ch$suspects])]
@@ -458,12 +458,12 @@ dm_pivchol <- function(G, scale, tol, ties = c("keep", "drop"), band = NULL, rec
     }
 }
 
-## Pivoted Cholesky factor of G = X'X with lm()'s rule (dm_pivchol()).
+## Pivoted Cholesky factor of G = X'X with lm()'s rule (xtx_pivchol()).
 ## Columns whose residual norm is too small to judge from G, or whose norm
 ## in G is zero, are suspects: their residual norms are computed from the
-## data (dmqr_resid2()). Returns NULL when a column with a zero norm in G is
+## data (xtx_qr_resid2()). Returns NULL when a column with a zero norm in G is
 ## not zero in the data (its square underflowed).
-dmqr_chol <- function(x, G, tol) {
+xtx_qr_chol <- function(x, G, tol) {
     p <- ncol(G)
     ## columns taken from G alone are clearly above tol
     susp <- max(1e-8, 100 * tol^2)
@@ -473,9 +473,9 @@ dmqr_chol <- function(x, G, tol) {
     ## entries can be so small that their squares underflow: when the
     ## design's smallest possible non-zero entry rules that out, zero
     ## columns need no check against the data.
-    if (any(dg == 0) && dmp_min_nonzero(x)^2 > 1e-300) dres[dg == 0] <- 0
+    if (any(dg == 0) && xtx_p_min_nonzero(x)^2 > 1e-300) dres[dg == 0] <- 0
     recheck <- function(ch, new) {
-        v <- dmqr_resid2(x, G, ch, new)
+        v <- xtx_qr_resid2(x, G, ch, new)
         if (any(v$nonzero & !(dg[new] > 0))) return(NULL)
         ## the kernel takes a column when dres >= tol^2 * G[j, j], that is,
         ## when its residual norm is at least tol times its norm (as
@@ -485,7 +485,7 @@ dmqr_chol <- function(x, G, tol) {
     }
     ## (every column with d <= susp * G[j, j], or a zero norm in G, is a
     ## suspect)
-    dm_pivchol(G, dg, tol^2, "keep", band = list(lo = rep(-Inf, p), hi = susp * dg), recheck = recheck,
+    xtx_pivchol(G, dg, tol^2, "keep", band = list(lo = rep(-Inf, p), hi = susp * dg), recheck = recheck,
                lup = min(nrow(x), p), dres = dres)
 }
 
@@ -494,7 +494,7 @@ dmqr_chol <- function(x, G, tol) {
 ## both computed from the data (one refinement step) and scaled so that
 ## neither overflows nor underflows; and whether the column has a non-zero
 ## entry. In blocks of columns.
-dmqr_resid2 <- function(x, G, ch, cols) {
+xtx_qr_resid2 <- function(x, G, ch, cols) {
     acc <- ch$pivot[seq_len(ch$rank)]
     R <- ch$R
     p <- ncol(G)
@@ -510,23 +510,23 @@ dmqr_resid2 <- function(x, G, ch, cols) {
             a <- sum(acc < j)
             A[[u]] <- acc[seq_len(a)]
             Ra <- R[seq_len(a), seq_len(a), drop = FALSE]
-            cf <- dmqr_bs(Ra, dmqr_bs(Ra, G[A[[u]], j, drop = FALSE], transpose = TRUE))
+            cf <- xtx_qr_bs(Ra, xtx_qr_bs(Ra, G[A[[u]], j, drop = FALSE], transpose = TRUE))
             M[j, u] <- 1
             M[A[[u]], u] <- -cf
             E[j, u] <- 1
         }
-        res <- dmp_mult(x, M)
+        res <- xtx_p_mult(x, M)
         h <- crossprod(x, res)
         for (u in seq_len(k)) {
             a <- length(A[[u]])
             Ra <- R[seq_len(a), seq_len(a), drop = FALSE]
             M[A[[u]], u] <- M[A[[u]], u] -
-                dmqr_bs(Ra, dmqr_bs(Ra, h[A[[u]], u, drop = FALSE], transpose = TRUE))
+                xtx_qr_bs(Ra, xtx_qr_bs(Ra, h[A[[u]], u, drop = FALSE], transpose = TRUE))
         }
         ## a column's norm is sqrt(G[j, j]), accurate to rounding, unless
         ## G[j, j] is zero (possibly underflow): then it comes from the data
         dz <- diag(G)[cols[blk]] == 0
-        nrm <- dmp_colnorms(dmp_mult(x, cbind(M, E[, dz, drop = FALSE])))
+        nrm <- xtx_p_colnorms(xtx_p_mult(x, cbind(M, E[, dz, drop = FALSE])))
         res_n <- nrm[seq_len(k)]
         col_n <- sqrt(diag(G)[cols[blk]])
         col_n[dz] <- nrm[k + seq_len(sum(dz))]
@@ -537,7 +537,7 @@ dmqr_resid2 <- function(x, G, ch, cols) {
 }
 
 #' @export
-print.design_qr <- function(x, ...) {
+print.xtx_qr <- function(x, ...) {
     cat(sprintf("<design_qr: %d x %d design, rank %d>\n",
                 nrow(x$design), ncol(x$design), x$rank))
     invisible(x)
@@ -545,7 +545,7 @@ print.design_qr <- function(x, ...) {
 
 ## y as a finite double matrix with `rows` rows; remembers whether it was a
 ## vector.
-dmqr_y <- function(y, rows, what = "y") {
+xtx_qr_y <- function(y, rows, what = "y") {
     vec <- !is.matrix(y)
     Y <- if (vec) matrix(y, ncol = 1L) else y
     if (!is.numeric(Y) && !is.logical(Y))
@@ -562,25 +562,25 @@ dmqr_y <- function(y, rows, what = "y") {
 
 ## R11 (the factor of the first `rank` pivoted columns) and triangular
 ## solves with it, which also work at rank 0.
-dmqr_R11 <- function(qr) {
+xtx_qr_R11 <- function(qr) {
     k <- qr$rank
     unname(qr$R[seq_len(k), seq_len(k), drop = FALSE])
 }
 
-dmqr_bs <- function(R11, rhs, transpose = FALSE) {
+xtx_qr_bs <- function(R11, rhs, transpose = FALSE) {
     if (nrow(R11) == 0L) return(matrix(0, 0L, ncol(rhs)))
     backsolve(R11, rhs, transpose = transpose)
 }
 
 ## Solve R11' R11 b = rhs.
-dmqr_solve <- function(qr, rhs) {
-    R11 <- dmqr_R11(qr)
-    dmqr_bs(R11, dmqr_bs(R11, rhs, transpose = TRUE))
+xtx_qr_solve <- function(qr, rhs) {
+    R11 <- xtx_qr_R11(qr)
+    xtx_qr_bs(R11, xtx_qr_bs(R11, rhs, transpose = TRUE))
 }
 
 ## Coefficients of the full design (zero for aliased columns, original
 ## column order) from those of the first `rank` pivoted columns.
-dmqr_full <- function(qr, b, fill = 0) {
+xtx_qr_full <- function(qr, b, fill = 0) {
     p <- ncol(qr$design)
     out <- matrix(fill, p, ncol(b))
     out[qr$pivot[seq_len(qr$rank)], ] <- b
@@ -592,54 +592,54 @@ dmqr_full <- function(qr, b, fill = 0) {
 ## one crossproduct with the design. Refinement stops once the correction
 ## is at the level of rounding, or stops shrinking (the attainable accuracy
 ## is reached), and after at most `steps` steps.
-dmqr_coef <- function(qr, Y, steps = 3L) {
+xtx_qr_coef <- function(qr, Y, steps = 3L) {
     k <- qr$rank
     D <- qr$design
     keep <- qr$pivot[seq_len(k)]
     if (!is.null(qr$dense))
         return(base::qr.coef(qr$dense, as.matrix(Y))[keep, , drop = FALSE])
     if (!is.null(qr$centered)) {
-        ## a remote design with numeric variables shifted (dmqr_centered()):
+        ## a remote design with numeric variables shifted (xtx_qr_centered()):
         ## X~'Y on the shifted design, solved with its well-conditioned
         ## factor, and mapped back (beta = T beta~)
         cc <- qr$centered
-        op <- options(design.matrix.remote_compress = FALSE)
+        op <- options(xtx.remote_compress = FALSE)
         on.exit(options(op))
-        ht <- dmqr_xty(cc, cc$design, Y)[keep, , drop = FALSE]
+        ht <- xtx_qr_xty(cc, cc$design, Y)[keep, , drop = FALSE]
         bt <- backsolve(cc$Rt, backsolve(cc$Rt, ht, transpose = TRUE))
         if (is.null(qr$G)) {
             ## in memory: refined from the residuals of the shifted design,
             ## as below
-            if (dmqr_kappa2(cc$Rt) > 64) bt <- dmqr_refine(cc$design, cc$Rt, keep, bt, Y, steps = steps)
+            if (xtx_qr_kappa2(cc$Rt) > 64) bt <- xtx_qr_refine(cc$design, cc$Rt, keep, bt, Y, steps = steps)
             return(cc$T %*% bt)
         }
         b <- cc$T %*% bt
-        ## the moments of the solution, for sums of squares (dmfit_ls())
+        ## the moments of the solution, for sums of squares (xtx_fit_ls())
         attr(b, "moments") <- list(b = bt, h = ht, G = crossprod(cc$Rt))
         return(b)
     }
-    h <- dmqr_xty(qr, D, Y)
-    b <- dmqr_solve(qr, h[keep, , drop = FALSE])
+    h <- xtx_qr_xty(qr, D, Y)
+    b <- xtx_qr_solve(qr, h[keep, , drop = FALSE])
     if (k == 0L) return(b)
     ## The normal equations lose about kappa^2 * eps of accuracy, where
     ## kappa is the condition number of X with columns scaled to unit norm
     ## (Cholesky is insensitive to column scaling). When that is already at
     ## the level of rounding, refinement cannot help.
-    R11 <- dmqr_R11(qr)
-    if (dmqr_kappa2(R11) > 64) b <- dmqr_refine(D, R11, keep, b, Y, qr$G, h, steps)
+    R11 <- xtx_qr_R11(qr)
+    if (xtx_qr_kappa2(R11) > 64) b <- xtx_qr_refine(D, R11, keep, b, Y, qr$G, h, steps)
     if (!is.null(qr$G)) attr(b, "moments") <- list(b = b, h = h[keep, , drop = FALSE], G = qr$G[keep, keep, drop = FALSE])
     b
 }
 
-## Iterative refinement, the one driver of qr() (dmqr_refine()) and of
-## fits with fixed effects (dm_fe_refine()): up to `steps` times, the
+## Iterative refinement, the one driver of qr() (xtx_qr_refine()) and of
+## fits with fixed effects (xtx_fe_refine()): up to `steps` times, the
 ## residual of the current solution (`residual(sol)`: a pass over the rows,
 ## or the moments already computed) and the corrected solution
 ## (`correct(sol, r)`, list(sol, ...): `sol` and what the stopping rule
 ## needs); stops after a step when stop(step, r, it) is TRUE (each caller's
 ## rule). Returns list(sol, r = the residual the last step started from
 ## (NULL without steps), stopped).
-dm_refine <- function(sol, residual, correct, steps, stop = function(step, r, it) FALSE) {
+xtx_refine <- function(sol, residual, correct, steps, stop = function(step, r, it) FALSE) {
     r <- NULL
     for (it in seq_len(steps)) {
         r <- residual(sol)
@@ -653,7 +653,7 @@ dm_refine <- function(sol, residual, correct, steps, stop = function(step, r, it
 ## Iterative refinement of b, the solution of R11'R11 b = X'Y for the
 ## columns `keep` of the design D (R11 their factor). Stops once the
 ## correction is at the level of rounding, or stops shrinking.
-dmqr_refine <- function(D, R11, keep, b, Y, G = NULL, h = NULL, steps = 3L) {
+xtx_qr_refine <- function(D, R11, keep, b, Y, G = NULL, h = NULL, steps = 3L) {
     p <- ncol(D)
     full <- function(b) {
         out <- matrix(0, p, ncol(b))
@@ -664,10 +664,10 @@ dmqr_refine <- function(D, R11, keep, b, Y, G = NULL, h = NULL, steps = 3L) {
     ## moments already computed (X'Y - X'X b), which refines the solution
     ## of the normal equations without another pass
     residual <- function(b) {
-        if (!is.null(G)) h - G %*% full(b) else dmp_crossprod(D, Y - dmp_mult(D, full(b)))
+        if (!is.null(G)) h - G %*% full(b) else xtx_p_crossprod(D, Y - xtx_p_mult(D, full(b)))
     }
     correct <- function(b, g) {
-        db <- dmqr_bs(R11, dmqr_bs(R11, g[keep, , drop = FALSE], transpose = TRUE))
+        db <- xtx_qr_bs(R11, xtx_qr_bs(R11, g[keep, , drop = FALSE], transpose = TRUE))
         list(sol = b + db, db = db)
     }
     last <- Inf
@@ -677,12 +677,12 @@ dmqr_refine <- function(D, R11, keep, b, Y, G = NULL, h = NULL, steps = 3L) {
         last <<- size
         FALSE
     }
-    dm_refine(b, residual, correct, steps, stop)$sol
+    xtx_refine(b, residual, correct, steps, stop)$sol
 }
 
 ## The result as a vector or a matrix like `y`, with row names `rows` and
 ## (for a matrix) the column names of `y`.
-dmqr_out <- function(out, yy, rows = yy$rows) {
+xtx_qr_out <- function(out, yy, rows = yy$rows) {
     if (yy$vec) {
         out <- out[, 1L]
         names(out) <- rows
@@ -693,111 +693,111 @@ dmqr_out <- function(out, yy, rows = yy$rows) {
 }
 
 ## A row-wise result of the methods (the columns `cols`, one or several):
-## a matrix or vector like `y` in memory (dmqr_out()), a table with columns
-## `prefix` (or prefix1, prefix2, ...) remotely (dmp_output()).
-dmqr_result <- function(qr, cols, prefix, yy, rows = yy$rows) {
-    k <- dm_ncols(cols)
+## a matrix or vector like `y` in memory (xtx_qr_out()), a table with columns
+## `prefix` (or prefix1, prefix2, ...) remotely (xtx_p_output()).
+xtx_qr_result <- function(qr, cols, prefix, yy, rows = yy$rows) {
+    k <- xtx_ncols(cols)
     nm <- if (k == 1L) prefix else paste0(prefix, seq_len(k))
-    dmp_output(qr$design, stats::setNames(lapply(seq_len(k), function(j) dmc_col(cols, j)), nm),
-               memory = function(d) dmqr_out(unname(as.matrix(d)), yy, rows))
+    xtx_p_output(qr$design, stats::setNames(lapply(seq_len(k), function(j) xtx_c_col(cols, j)), nm),
+               memory = function(d) xtx_qr_out(unname(as.matrix(d)), yy, rows))
 }
 
 ## The fitted values of y (a column, one or several).
-dmqr_fitted <- function(qr, Y) {
+xtx_qr_fitted <- function(qr, Y) {
     if (!is.null(qr$dense)) return(unname(base::qr.fitted(qr$dense, Y)))
-    dmp_mult(qr$design, dmqr_full(qr, dmqr_coef(qr, Y)))
+    xtx_p_mult(qr$design, xtx_qr_full(qr, xtx_qr_coef(qr, Y)))
 }
 
 #' @importFrom methods setOldClass
 NULL
-setOldClass("design_qr")
+setOldClass("xtx_qr")
 
 #' @rdname design_qr
-#' @param qr A `"design_qr"` object, from `qr()` on a `design_matrix`.
+#' @param qr A `"xtx_qr"` object, from `qr()` on a `design_matrix`.
 #' @param y A numeric vector or matrix: the response for `qr.coef()`,
 #'   `qr.fitted()`, `qr.resid()` and `qr.qty()` (`nrow(x)` rows), or the
 #'   values to multiply by `Q` for `qr.qy()` (`rank` rows).
 #' @param k The rank for `qr.fitted()`; only `qr$rank` is supported.
 #' @param complete,Dvec Not supported; only the defaults are accepted.
-#' @param a,b For `solve()`: a `"design_qr"` object and the right-hand side,
+#' @param a,b For `solve()`: a `"xtx_qr"` object and the right-hand side,
 #'   as in [solve.qr()].
 #' @exportMethod qr.coef
-setMethod("qr.coef", "design_qr", function(qr, y) {
-    yy <- dmp_y(qr$design, y)
-    b <- dmqr_coef(qr, yy$Y)
-    out <- dmqr_full(qr, b, fill = NA_real_)
-    dmqr_out(out, yy, colnames(qr$design))
+setMethod("qr.coef", "xtx_qr", function(qr, y) {
+    yy <- xtx_p_y(qr$design, y)
+    b <- xtx_qr_coef(qr, yy$Y)
+    out <- xtx_qr_full(qr, b, fill = NA_real_)
+    xtx_qr_out(out, yy, colnames(qr$design))
 })
 
 #' @rdname design_qr
 #' @exportMethod qr.fitted
-setMethod("qr.fitted", "design_qr", function(qr, y, k = qr$rank) {
+setMethod("qr.fitted", "xtx_qr", function(qr, y, k = qr$rank) {
     if (!identical(as.integer(k), as.integer(qr$rank)))
         stop("Only `k = qr$rank` is supported for design matrices.", call. = FALSE)
-    yy <- dmp_y(qr$design, y)
-    dmqr_result(qr, dmqr_fitted(qr, yy$Y), ".fitted", yy)
+    yy <- xtx_p_y(qr$design, y)
+    xtx_qr_result(qr, xtx_qr_fitted(qr, yy$Y), ".fitted", yy)
 })
 
 #' @rdname design_qr
 #' @exportMethod qr.resid
-setMethod("qr.resid", "design_qr", function(qr, y) {
-    yy <- dmp_y(qr$design, y)
-    dmqr_result(qr, yy$Y - dmqr_fitted(qr, yy$Y), ".resid", yy)
+setMethod("qr.resid", "xtx_qr", function(qr, y) {
+    yy <- xtx_p_y(qr$design, y)
+    xtx_qr_result(qr, yy$Y - xtx_qr_fitted(qr, yy$Y), ".resid", yy)
 })
 
 #' @rdname design_qr
 #' @exportMethod qr.qty
-setMethod("qr.qty", "design_qr", function(qr, y) {
+setMethod("qr.qty", "xtx_qr", function(qr, y) {
     k <- qr$rank
     keep <- qr$pivot[seq_len(k)]
-    yy <- dmp_y(qr$design, y)
+    yy <- xtx_p_y(qr$design, y)
     if (!is.null(qr$dense))
-        return(dmqr_out(base::qr.qty(qr$dense, yy$Y)[seq_len(k), , drop = FALSE], yy,
+        return(xtx_qr_out(base::qr.qty(qr$dense, yy$Y)[seq_len(k), , drop = FALSE], yy,
                         yy$rows[seq_len(k)]))
-    out <- dmqr_bs(dmqr_R11(qr), dmp_crossprod(qr$design, yy$Y)[keep, , drop = FALSE],
+    out <- xtx_qr_bs(xtx_qr_R11(qr), xtx_p_crossprod(qr$design, yy$Y)[keep, , drop = FALSE],
                    transpose = TRUE)
-    dmqr_out(out, yy, yy$rows[seq_len(k)])
+    xtx_qr_out(out, yy, yy$rows[seq_len(k)])
 })
 
 #' @rdname design_qr
 #' @exportMethod qr.qy
-setMethod("qr.qy", "design_qr", function(qr, y) {
+setMethod("qr.qy", "xtx_qr", function(qr, y) {
     k <- qr$rank
-    yy <- dmqr_y(y, k)
+    yy <- xtx_qr_y(y, k)
     if (!is.null(qr$dense)) {
         Z <- matrix(0, nrow(qr$design), ncol(yy$Y))
         Z[seq_len(k), ] <- yy$Y
-        return(dmqr_out(unname(base::qr.qy(qr$dense, Z)), yy, NULL))
+        return(xtx_qr_out(unname(base::qr.qy(qr$dense, Z)), yy, NULL))
     }
-    b <- dmqr_bs(dmqr_R11(qr), yy$Y)
-    dmqr_result(qr, dmp_mult(qr$design, dmqr_full(qr, b)), ".qy", yy, NULL)
+    b <- xtx_qr_bs(xtx_qr_R11(qr), yy$Y)
+    xtx_qr_result(qr, xtx_p_mult(qr$design, xtx_qr_full(qr, b)), ".qy", yy, NULL)
 })
 
 #' @rdname design_qr
 #' @exportMethod qr.Q
-setMethod("qr.Q", "design_qr", function(qr, complete = FALSE, Dvec) {
+setMethod("qr.Q", "xtx_qr", function(qr, complete = FALSE, Dvec) {
     if (!isFALSE(complete))
         stop("`complete = TRUE` is not supported for design matrices.", call. = FALSE)
     if (!missing(Dvec))
         stop("`Dvec` is not supported for design matrices.", call. = FALSE)
     k <- qr$rank
     if (!is.null(qr$dense)) return(unname(base::qr.Q(qr$dense)[, seq_len(k), drop = FALSE]))
-    dmqr_result(qr, dmp_mult(qr$design, dmqr_full(qr, dmqr_bs(dmqr_R11(qr), diag(1, k)))), ".Q",
+    xtx_qr_result(qr, xtx_p_mult(qr$design, xtx_qr_full(qr, xtx_qr_bs(xtx_qr_R11(qr), diag(1, k)))), ".Q",
                 list(vec = FALSE, cols = NULL), NULL)
 })
 
 #' @rdname design_qr
 #' @exportMethod qr.R
-setMethod("qr.R", "design_qr", function(qr, complete = FALSE) {
+setMethod("qr.R", "xtx_qr", function(qr, complete = FALSE) {
     if (!isFALSE(complete))
         stop("`complete = TRUE` is not supported for design matrices.", call. = FALSE)
     qr$R
 })
 
 #' @rdname design_qr
-#' @method solve design_qr
+#' @method solve xtx_qr
 #' @export
-solve.design_qr <- function(a, b, ...) {
+solve.xtx_qr <- function(a, b, ...) {
     n <- nrow(a$design)
     p <- ncol(a$design)
     if (a$rank != min(n, p)) stop("singular matrix 'a' in solve", call. = FALSE)

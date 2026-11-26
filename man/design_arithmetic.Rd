@@ -2,10 +2,10 @@
 % Please edit documentation in R/algebra.R
 \name{design_arithmetic}
 \alias{design_arithmetic}
-\alias{Ops.design_matrix}
+\alias{Ops.xtx_matrix}
 \title{Arithmetic on design matrices}
 \usage{
-\method{Ops}{design_matrix}(e1, e2)
+\method{Ops}{xtx_matrix}(e1, e2)
 }
 \arguments{
 \item{e1, e2}{A \code{design_matrix}, or a number or numeric vector for \code{*}

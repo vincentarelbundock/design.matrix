@@ -2,24 +2,24 @@
 % Please edit documentation in R/remote.R, R/remote_fit.R
 \name{design_remote}
 \alias{design_remote}
-\alias{coerce,dm_remote,CsparseMatrix-method}
-\alias{coerce,dm_remote,dgCMatrix-method}
-\alias{colSums,dm_remote-method}
-\alias{colMeans,dm_remote-method}
-\alias{rowSums,dm_remote-method}
-\alias{rowMeans,dm_remote-method}
-\alias{summary.dm_remote}
+\alias{coerce,xtx_remote,CsparseMatrix-method}
+\alias{coerce,xtx_remote,dgCMatrix-method}
+\alias{colSums,xtx_remote-method}
+\alias{colMeans,xtx_remote-method}
+\alias{rowSums,xtx_remote-method}
+\alias{rowMeans,xtx_remote-method}
+\alias{summary.xtx_remote}
 \title{Out-of-core designs on DuckDB}
 \usage{
-\S4method{colSums}{dm_remote}(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE)
+\S4method{colSums}{xtx_remote}(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE)
 
-\S4method{colMeans}{dm_remote}(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE)
+\S4method{colMeans}{xtx_remote}(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE)
 
-\S4method{rowSums}{dm_remote}(x, na.rm = FALSE, dims = 1, ...)
+\S4method{rowSums}{xtx_remote}(x, na.rm = FALSE, dims = 1, ...)
 
-\S4method{rowMeans}{dm_remote}(x, na.rm = FALSE, dims = 1, ...)
+\S4method{rowMeans}{xtx_remote}(x, na.rm = FALSE, dims = 1, ...)
 
-\method{summary}{dm_remote}(object, sql = FALSE, ...)
+\method{summary}{xtx_remote}(object, sql = FALSE, ...)
 }
 \arguments{
 \item{x, object}{A remote design.}
@@ -144,7 +144,7 @@ product becomes a view only when it is first read, on top of the
 products it is combined with (a product read before it is combined is
 made again, as one more view, next to the other).
 \item \code{as.matrix(D)} collects the rows and builds the dense matrix, only when
-there are at most \code{getOption("design.matrix.remote_max_rows", 1e5)} rows
+there are at most \code{getOption("xtx.remote_max_rows", 1e5)} rows
 or with \code{force = TRUE}.
 \item \code{design_matrix(D, newdata)} applies the design to a data frame, and
 \code{design_matrix(D, con, table = ...)} to other remote data.
@@ -161,7 +161,7 @@ factors and discrete numeric variables), \code{crossprod()}, \code{colSums()},
 of the rows also groups by the numeric variables, which returns each
 pattern with its number of rows and the sums of the weights and
 responses, and the result is computed from the design of the patterns,
-in memory. The option \code{design.matrix.remote_compress} controls it.
+in memory. The option \code{xtx.remote_compress} controls it.
 \code{TRUE} always compresses (unless every row is distinct); \code{FALSE} never
 does. With \code{"auto"} (default), the choice depends on the operation:
 \itemize{
@@ -183,12 +183,12 @@ the rows).
 }
 
 These thresholds are provisional. The option
-\code{design.matrix.remote_compress_ratio} (unset by default), when set, caps
+\code{xtx.remote_compress_ratio} (unset by default), when set, caps
 every one of these ratios: under \code{"auto"}, the patterns must then also be
 at most that fraction of the rows.
 
 In every case the number of patterns must also be at most
-\code{getOption("design.matrix.remote_compress_max", 1e6)}. To decide, a design
+\code{getOption("xtx.remote_compress_max", 1e6)}. To decide, a design
 with a continuous numeric column (a \code{DOUBLE} column with many distinct
 values in a sample of the rows) is not compressed, at almost no cost;
 otherwise the number of patterns is estimated over all the rows
@@ -209,7 +209,7 @@ With remote data, \code{\link[=design_matrix]{design_matrix()}}, \code{\link[=de
 table name, or a \code{SELECT} query; not with Parquet paths), \code{engine}
 (\code{"auto"}, or \code{"sql"} to refuse variables that must be evaluated in R)
 and \code{chunk_size} (rows per batch when variables are evaluated in R,
-default \code{getOption("design.matrix.chunk_size", 250000)}).
+default \code{getOption("xtx.chunk_size", 250000)}).
 }
 
 \section{Linear models}{
@@ -245,7 +245,7 @@ standard error, degrees of freedom, \code{logLik()}, \code{AIC()}, \code{BIC()} 
 \code{summary()} are those of \code{\link[=lm]{lm()}} on the same rows, up to rounding.
 
 Results that have one value per row are tables in the database (names of
-temporary views, of class \code{dm_remote_table}, with all the columns of the
+temporary views, of class \code{xtx_remote_table}, with all the columns of the
 remote data): \code{fitted(fit)} (columns \code{.fitted} and \code{.resid}; with
 \code{na.exclude}, the rows with missing values too, with \code{NULL}), and
 \code{predict(fit)} or \code{predict(fit, newdata = con, table = ...)} (column

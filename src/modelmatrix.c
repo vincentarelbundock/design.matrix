@@ -1,15 +1,15 @@
 /*
- *  design.matrix: exact, faster construction of model matrices.
+ *  xtx: exact, faster construction of model matrices.
  *
- *  dm_setup() and dm_fill() are a port of modelmatrix() from R's
+ *  xtx_setup() and xtx_fill() are a port of modelmatrix() from R's
  *  src/library/stats/src/model.c:
  *
  *    Copyright (C) 1997--2025  The R Core Team
  *    Copyright (C) 1995, 1996  Robert Gentleman and Ross Ihaka
  *
- *  The port splits R's single function in two.  dm_setup() performs every
+ *  The port splits R's single function in two.  xtx_setup() performs every
  *  check, contrast evaluation, warning and column-name computation in the
- *  same order as R.  dm_fill() allocates and fills the matrix.  The fill
+ *  same order as R.  xtx_fill() allocates and fills the matrix.  The fill
  *  performs exactly the same floating point operations, cell by cell, as
  *  R does; only the order in which rows are visited changes (row chunks,
  *  optionally on several threads), so the result is bitwise identical.
@@ -25,7 +25,7 @@
 #include <R.h>
 #include <Rinternals.h>
 #include <Rversion.h>
-#include "dm.h"
+#include "xtx.h"
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -84,21 +84,21 @@ static const char *type_name(SEXP x)
 #endif
 }
 
-/* Names of the elements of the list returned by dm_setup() (slots in dm.h). */
-static const char *setup_names[DM_SETUP_LEN + 1] = {
-    [DM_SETUP_FACTORS] = "factors", [DM_SETUP_CONTR1] = "contr1",
-    [DM_SETUP_CONTR2] = "contr2", [DM_SETUP_NLEVS] = "nlevs",
-    [DM_SETUP_COLUMNS] = "columns", [DM_SETUP_COUNT] = "count",
-    [DM_SETUP_RHS_RESPONSE] = "rhs_response", [DM_SETUP_INTERCEPT] = "intercept",
-    [DM_SETUP_XNAMES] = "xnames", [DM_SETUP_ASSIGN] = "assign",
-    [DM_SETUP_NVAR] = "nVar", [DM_SETUP_NTERMS] = "nterms",
-    [DM_SETUP_CONTRAST_ROWS] = "contrast_rows", [DM_SETUP_LEN] = ""
+/* Names of the elements of the list returned by xtx_setup() (slots in xtx.h). */
+static const char *setup_names[XTX_SETUP_LEN + 1] = {
+    [XTX_SETUP_FACTORS] = "factors", [XTX_SETUP_CONTR1] = "contr1",
+    [XTX_SETUP_CONTR2] = "contr2", [XTX_SETUP_NLEVS] = "nlevs",
+    [XTX_SETUP_COLUMNS] = "columns", [XTX_SETUP_COUNT] = "count",
+    [XTX_SETUP_RHS_RESPONSE] = "rhs_response", [XTX_SETUP_INTERCEPT] = "intercept",
+    [XTX_SETUP_XNAMES] = "xnames", [XTX_SETUP_ASSIGN] = "assign",
+    [XTX_SETUP_NVAR] = "nVar", [XTX_SETUP_NTERMS] = "nterms",
+    [XTX_SETUP_CONTRAST_ROWS] = "contrast_rows", [XTX_SETUP_LEN] = ""
 };
 
-/* .Call(C_dm_setup, terms, vars, rho)
+/* .Call(C_xtx_setup, terms, vars, rho)
  * The body follows R's modelmatrix() up to (but excluding) the allocation
  * of the design matrix. */
-SEXP dm_setup(SEXP terms, SEXP vars, SEXP rho)
+SEXP xtx_setup(SEXP terms, SEXP vars, SEXP rho)
 {
     SEXP factors, vnames, assign, xnames, count, contr1, contr2, nlevs,
 	ordered, columns, variable, var_i, expr, x;
@@ -172,7 +172,7 @@ SEXP dm_setup(SEXP terms, SEXP vars, SEXP rho)
 	    INTEGER(columns)[i] = ncols(var_i);
 	}
 	else if (isNumeric(var_i)) {
-	    /* R coerces here; we only need the column count, and dm_vars()
+	    /* R coerces here; we only need the column count, and xtx_vars()
 	       performs the same coercion when the values are needed. */
 	    LOGICAL(ordered)[i] = 0;
 	    INTEGER(nlevs)[i] = 0;
@@ -377,20 +377,20 @@ SEXP dm_setup(SEXP terms, SEXP vars, SEXP rho)
     }
 
     SEXP out = PROTECT(mkNamed(VECSXP, setup_names));
-    SET_VECTOR_ELT(out, DM_SETUP_FACTORS, factors);
-    SET_VECTOR_ELT(out, DM_SETUP_CONTR1, contr1);
-    SET_VECTOR_ELT(out, DM_SETUP_CONTR2, contr2);
-    SET_VECTOR_ELT(out, DM_SETUP_NLEVS, nlevs);
-    SET_VECTOR_ELT(out, DM_SETUP_COLUMNS, columns);
-    SET_VECTOR_ELT(out, DM_SETUP_COUNT, count);
-    SET_VECTOR_ELT(out, DM_SETUP_RHS_RESPONSE, ScalarInteger(rhs_response));
-    SET_VECTOR_ELT(out, DM_SETUP_INTERCEPT, ScalarInteger(intrcept));
-    SET_VECTOR_ELT(out, DM_SETUP_XNAMES, xnames);
-    SET_VECTOR_ELT(out, DM_SETUP_ASSIGN, assign);
-    SET_VECTOR_ELT(out, DM_SETUP_NVAR, ScalarInteger(nVar));
-    SET_VECTOR_ELT(out, DM_SETUP_NTERMS, ScalarInteger(nterms));
+    SET_VECTOR_ELT(out, XTX_SETUP_FACTORS, factors);
+    SET_VECTOR_ELT(out, XTX_SETUP_CONTR1, contr1);
+    SET_VECTOR_ELT(out, XTX_SETUP_CONTR2, contr2);
+    SET_VECTOR_ELT(out, XTX_SETUP_NLEVS, nlevs);
+    SET_VECTOR_ELT(out, XTX_SETUP_COLUMNS, columns);
+    SET_VECTOR_ELT(out, XTX_SETUP_COUNT, count);
+    SET_VECTOR_ELT(out, XTX_SETUP_RHS_RESPONSE, ScalarInteger(rhs_response));
+    SET_VECTOR_ELT(out, XTX_SETUP_INTERCEPT, ScalarInteger(intrcept));
+    SET_VECTOR_ELT(out, XTX_SETUP_XNAMES, xnames);
+    SET_VECTOR_ELT(out, XTX_SETUP_ASSIGN, assign);
+    SET_VECTOR_ELT(out, XTX_SETUP_NVAR, ScalarInteger(nVar));
+    SET_VECTOR_ELT(out, XTX_SETUP_NTERMS, ScalarInteger(nterms));
     /* One lazy row index per variable and contrast coding, shared by plans. */
-    SET_VECTOR_ELT(out, DM_SETUP_CONTRAST_ROWS,
+    SET_VECTOR_ELT(out, XTX_SETUP_CONTRAST_ROWS,
 		   allocVector(VECSXP, 2 * (R_xlen_t) nVar));
     UNPROTECT(13);
     return out;
@@ -400,14 +400,14 @@ SEXP dm_setup(SEXP terms, SEXP vars, SEXP rho)
    integer or double) variables coerced to double, exactly as R does.  A
    variable that no term uses (the response) is not read: it is left as it
    is, without a coerced copy at every call. */
-SEXP dm_vars(SEXP setup, SEXP vars)
+SEXP xtx_vars(SEXP setup, SEXP vars)
 {
-    int nVar = asInteger(VECTOR_ELT(setup, DM_SETUP_NVAR));
-    const int *nlevs = INTEGER(VECTOR_ELT(setup, DM_SETUP_NLEVS));
-    const int *count = INTEGER(VECTOR_ELT(setup, DM_SETUP_COUNT));
-    int rhs_response = asInteger(VECTOR_ELT(setup, DM_SETUP_RHS_RESPONSE)),
-	nterms = asInteger(VECTOR_ELT(setup, DM_SETUP_NTERMS));
-    const int *fac = nterms > 0 ? INTEGER(VECTOR_ELT(setup, DM_SETUP_FACTORS)) : NULL;
+    int nVar = asInteger(VECTOR_ELT(setup, XTX_SETUP_NVAR));
+    const int *nlevs = INTEGER(VECTOR_ELT(setup, XTX_SETUP_NLEVS));
+    const int *count = INTEGER(VECTOR_ELT(setup, XTX_SETUP_COUNT));
+    int rhs_response = asInteger(VECTOR_ELT(setup, XTX_SETUP_RHS_RESPONSE)),
+	nterms = asInteger(VECTOR_ELT(setup, XTX_SETUP_NTERMS));
+    const int *fac = nterms > 0 ? INTEGER(VECTOR_ELT(setup, XTX_SETUP_FACTORS)) : NULL;
     SEXP variable = PROTECT(allocVector(VECSXP, nVar));
     for (int i = 0; i < nVar; i++) {
 	SEXP v = VECTOR_ELT(vars, i);
@@ -425,9 +425,9 @@ SEXP dm_vars(SEXP setup, SEXP vars)
 /* Unrolling the inner loops lets GCC at -O2 match the speed of R's own
    routine (as compiled by R's build); it does not change any operation. */
 #if defined(__GNUC__) && !defined(__clang__)
-# define DM_UNROLL _Pragma("GCC unroll 4")
+# define XTX_UNROLL _Pragma("GCC unroll 4")
 #else
-# define DM_UNROLL
+# define XTX_UNROLL
 #endif
 
 /* ---- Fill kernels: R's firstfactor/addfactor/firstvar/addvar, with a
@@ -440,7 +440,7 @@ static void firstfactor(double *x, R_xlen_t ldx, int nr, int ncx,
     for (int j = 0; j < ncc; j++) {
 	double *xj = &x[j * ldx];
 	const double *cj = &c[j * (R_xlen_t)nrc];
-	DM_UNROLL
+	XTX_UNROLL
 	for (int i = 0; i < nr; i++)
 	    if (v[i] == NA_INTEGER) xj[i] = NA_REAL;
 	    else xj[i] = cj[v[i] - 1 + adj];
@@ -455,7 +455,7 @@ static void addfactor(double *x, R_xlen_t ldx, int nr, int ncx,
 	    double *xj = &x[j * ldx];
 	    double *yj = &x[(k * (R_xlen_t)ncx + j) * ldx];
 	    const double *ck = &c[k * (R_xlen_t)nrc];
-	    DM_UNROLL
+	    XTX_UNROLL
 	    for (int i = 0; i < nr; i++)
 		if (v[i] == NA_INTEGER) yj[i] = NA_REAL;
 		else yj[i] = ck[v[i] - 1 + adj] * xj[i];
@@ -469,7 +469,7 @@ static void firstvar(double *x, R_xlen_t ldx, int nr, int ncx,
     for (int j = 0; j < ncc; j++) {
 	double *xj = &x[j * ldx];
 	const double *cj = &c[j * ldc];
-	DM_UNROLL
+	XTX_UNROLL
 	for (int i = 0; i < nr; i++)
 	    xj[i] = cj[i];
     }
@@ -483,7 +483,7 @@ static void addvar(double *x, R_xlen_t ldx, int nr, int ncx,
 	    double *xj = &x[j * ldx];
 	    double *yj = &x[(k * (R_xlen_t)ncx + j) * ldx];
 	    const double *ck = &c[k * ldc];
-	    DM_UNROLL
+	    XTX_UNROLL
 	    for (int i = 0; i < nr; i++)
 		yj[i] = ck[i] * xj[i];
 	}
@@ -552,29 +552,29 @@ static void fill_rows(double *rx, R_xlen_t n, int r0, int nr, int intrcept,
 
 #define FILL_CHUNK 4096
 
-/* .Call(C_dm_fill, setup, vars, nthreads)
+/* .Call(C_xtx_fill, setup, vars, nthreads)
  * `vars` is the list given to R's C routine (it carries the row names). */
-SEXP dm_fill(SEXP setup, SEXP vars, SEXP nthreads_)
+SEXP xtx_fill(SEXP setup, SEXP vars, SEXP nthreads_)
 {
-    SEXP factors = VECTOR_ELT(setup, DM_SETUP_FACTORS),
-	contr1 = VECTOR_ELT(setup, DM_SETUP_CONTR1),
-	contr2 = VECTOR_ELT(setup, DM_SETUP_CONTR2);
-    const int *nlevs = INTEGER(VECTOR_ELT(setup, DM_SETUP_NLEVS)),
-	*columns = INTEGER(VECTOR_ELT(setup, DM_SETUP_COLUMNS)),
-	*count = INTEGER(VECTOR_ELT(setup, DM_SETUP_COUNT));
-    int rhs_response = asInteger(VECTOR_ELT(setup, DM_SETUP_RHS_RESPONSE)),
-	intrcept = asInteger(VECTOR_ELT(setup, DM_SETUP_INTERCEPT)),
-	nVar = asInteger(VECTOR_ELT(setup, DM_SETUP_NVAR)),
-	nterms = asInteger(VECTOR_ELT(setup, DM_SETUP_NTERMS)),
+    SEXP factors = VECTOR_ELT(setup, XTX_SETUP_FACTORS),
+	contr1 = VECTOR_ELT(setup, XTX_SETUP_CONTR1),
+	contr2 = VECTOR_ELT(setup, XTX_SETUP_CONTR2);
+    const int *nlevs = INTEGER(VECTOR_ELT(setup, XTX_SETUP_NLEVS)),
+	*columns = INTEGER(VECTOR_ELT(setup, XTX_SETUP_COLUMNS)),
+	*count = INTEGER(VECTOR_ELT(setup, XTX_SETUP_COUNT));
+    int rhs_response = asInteger(VECTOR_ELT(setup, XTX_SETUP_RHS_RESPONSE)),
+	intrcept = asInteger(VECTOR_ELT(setup, XTX_SETUP_INTERCEPT)),
+	nVar = asInteger(VECTOR_ELT(setup, XTX_SETUP_NVAR)),
+	nterms = asInteger(VECTOR_ELT(setup, XTX_SETUP_NTERMS)),
 	nthreads = asInteger(nthreads_);
-    SEXP xnames = VECTOR_ELT(setup, DM_SETUP_XNAMES),
-	assign = VECTOR_ELT(setup, DM_SETUP_ASSIGN);
+    SEXP xnames = VECTOR_ELT(setup, XTX_SETUP_XNAMES),
+	assign = VECTOR_ELT(setup, XTX_SETUP_ASSIGN);
     int nc = LENGTH(xnames);
     const int *fac = nterms > 0 ? INTEGER(factors) : NULL;
 
     int n = nrows(VECTOR_ELT(vars, 0));
     SEXP rnames = PROTECT(getAttrib(vars, R_RowNamesSymbol));
-    SEXP variable = PROTECT(dm_vars(setup, vars));
+    SEXP variable = PROTECT(xtx_vars(setup, vars));
 
     /* Which variables does the fill read? */
     fillvar *fv = (fillvar *) R_alloc(nVar > 0 ? nVar : 1, sizeof(fillvar));
@@ -606,14 +606,14 @@ SEXP dm_fill(SEXP setup, SEXP vars, SEXP nthreads_)
     double *rx = REAL(x);
     /* One thread: a single chunk, as R does. Several threads: a few chunks
        per thread, each at least FILL_CHUNK rows. */
-    nthreads = dm_worker_count(nthreads, n);
+    nthreads = xtx_worker_count(nthreads, n);
     int chunk = n > 0 ? n : 1;
     if (nthreads > 1) {
-	int target = (int) dm_block_count(dm_block_count(n, nthreads), 4);
+	int target = (int) xtx_block_count(xtx_block_count(n, nthreads), 4);
 	chunk = target > FILL_CHUNK ? target : FILL_CHUNK;
     }
-    int nchunks = (int) dm_block_count(n, chunk);
-    nthreads = dm_worker_count(nthreads, nchunks);
+    int nchunks = (int) xtx_block_count(n, chunk);
+    nthreads = xtx_worker_count(nthreads, nchunks);
 
     if (nthreads == 1) {
 	/* outside any parallel region, so the compiler sees R's plain loop */

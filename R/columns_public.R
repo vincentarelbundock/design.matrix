@@ -3,10 +3,10 @@
 ## (Summary group, mean, the Math cases round/signif/trunc/gamma/lgamma
 ## that primitives.R does not cover) and four exported helpers,
 ## col_ifelse(), col_pmin(), col_pmax() and col_sums(), thin wrappers of
-## dmc_ifelse(), dmc_pmin(), dmc_pmax() and the sums of dm_colsum().
+## xtx_c_ifelse(), xtx_c_pmin(), xtx_c_pmax() and the sums of xtx_colsum().
 ##
 ## In memory a column is a plain numeric vector, so base R applies and the
-## helpers call base R (or the dmc_ function, which in memory computes as
+## helpers call base R (or the xtx_c_ function, which in memory computes as
 ## base R does). Remotely every result has R's semantics, with one rule for
 ## missing values (p701, 2tr6): SQL NULL is NA, IEEE NaN is NaN.
 ##   - sum, prod, mean: NA if a value is NA, else NaN if one is NaN (where
@@ -21,9 +21,9 @@
 ## to a double, where base R gives an integer.
 ##
 ## Every summary is one query, whatever the number of arguments: the
-## columns are bound together (dmc_cbind(), whose frame takes the pending
+## columns are bound together (xtx_c_cbind(), whose frame takes the pending
 ## products and lookups of all of them) and the aggregates of each SQL
-## expression are read in one SELECT, as dm_colsum() reads its sums.
+## expression are read in one SELECT, as xtx_colsum() reads its sums.
 
 ## ---- aggregates of columns: one query ----
 
@@ -34,9 +34,9 @@
 ## NA, NA over no value), fmin, fmax (over the finite values), n (values
 ## that are neither), rows (all rows), ntrue, nfalse (values that are
 ## neither, nonzero / zero).
-dm_column_aggregates <- function(cols, what) {
-    x <- do.call(dmc_cbind, cols)
-    fr <- dm_frame_bind(unclass(x)$frame)
+xtx_column_aggregates <- function(cols, what) {
+    x <- do.call(xtx_c_cbind, cols)
+    fr <- xtx_frame_bind(unclass(x)$frame)
     sql <- unclass(x)$sql
     k <- length(sql)
     nan <- "CAST('NaN' AS DOUBLE)"
@@ -57,7 +57,7 @@ dm_column_aggregates <- function(cols, what) {
         nfalse = sprintf("SUM(CASE WHEN %s = 0 THEN 1 ELSE 0 END)", v))
     what <- unique(c("na", "nan", what))
     items <- unlist(lapply(what, function(a) sprintf("%s AS %s_%d", agg[[a]], a, seq_len(k))))
-    res <- dm_query(fr, sprintf("SELECT %s FROM (%s) AS s WHERE %s", paste(items, collapse = ", "),
+    res <- xtx_query(fr, sprintf("SELECT %s FROM (%s) AS s WHERE %s", paste(items, collapse = ", "),
                                 fr$src$select, fr$filter))
     out <- lapply(what, function(a) vapply(seq_len(k), function(j) as.double(res[[sprintf("%s_%d", a, j)]]), 0))
     names(out) <- what
@@ -66,7 +66,7 @@ dm_column_aggregates <- function(cols, what) {
 
 ## The same aggregates of a value in memory (a number or vector passed
 ## with remote columns, as in sum(col, 1)): one row.
-dm_value_aggregates <- function(x, what) {
+xtx_value_aggregates <- function(x, what) {
     if (!is.numeric(x) && !is.logical(x))
         stop("Remote columns combine only with numbers, logical values and other remote columns.", call. = FALSE)
     x <- as.double(x)
@@ -85,11 +85,11 @@ dm_value_aggregates <- function(x, what) {
 
 ## The aggregates of the arguments of a summary: remote columns in one
 ## query, other values in R; one row per expression or value.
-dm_summary_aggregates <- function(args, what) {
-    remote <- vapply(args, dm_is_column, NA)
+xtx_summary_aggregates <- function(args, what) {
+    remote <- vapply(args, xtx_is_column, NA)
     parts <- list()
-    if (any(remote)) parts[[1L]] <- dm_column_aggregates(args[remote], what)
-    for (a in args[!remote]) parts[[length(parts) + 1L]] <- dm_value_aggregates(a, what)
+    if (any(remote)) parts[[1L]] <- xtx_column_aggregates(args[remote], what)
+    for (a in args[!remote]) parts[[length(parts) + 1L]] <- xtx_value_aggregates(a, what)
     do.call(rbind, parts)
 }
 
@@ -207,7 +207,7 @@ NULL
 
 #' @rdname column_arithmetic
 #' @export
-Summary.design_column <- function(..., na.rm = FALSE) {
+Summary.xtx_column <- function(..., na.rm = FALSE) {
     gen <- .Generic
     args <- list(...)
     finite <- FALSE
@@ -222,7 +222,7 @@ Summary.design_column <- function(..., na.rm = FALSE) {
     what <- switch(gen, sum = "sum", prod = "prod", min = "min", max = "max",
                    range = if (finite) c("fmin", "fmax") else c("min", "max"),
                    any = , all = c("ntrue", "nfalse"))
-    s <- dm_summary_aggregates(args, what)
+    s <- xtx_summary_aggregates(args, what)
     na <- sum(s$na) > 0
     nan <- sum(s$nan) > 0
     miss <- !na.rm && (na || nan)
@@ -252,10 +252,10 @@ Summary.design_column <- function(..., na.rm = FALSE) {
 
 #' @rdname column_arithmetic
 #' @export
-mean.design_column <- function(x, trim = 0, na.rm = FALSE, ...) {
+mean.xtx_column <- function(x, trim = 0, na.rm = FALSE, ...) {
     if (!identical(trim, 0) && !identical(trim, 0L))
         stop("mean() of a remote column: only `trim = 0` is supported.", call. = FALSE)
-    s <- dm_column_aggregates(list(x), c("sum", "n", "rows"))
+    s <- xtx_column_aggregates(list(x), c("sum", "n", "rows"))
     if (!isTRUE(na.rm)) {
         if (sum(s$na) > 0) return(NA_real_)
         if (sum(s$nan) > 0) return(NaN)
@@ -269,7 +269,7 @@ mean.design_column <- function(x, trim = 0, na.rm = FALSE, ...) {
 
 ## R_pow_di(10, n) of R's nmath, as it computes it (repeated squaring), so
 ## that the constants of round() and signif() are those of R.
-dm_pow_di <- function(x, n) {
+xtx_pow_di <- function(x, n) {
     xn <- 1
     if (n == 0) return(xn)
     neg <- n < 0
@@ -284,11 +284,11 @@ dm_pow_di <- function(x, n) {
 
 ## The DuckDB macros of round(x, digits) and signif(x, digits), created
 ## once per connection: R's fround() and fprec() (src/nmath), step by step
-## in double arithmetic. dm_pow10(m) is R_pow_di(10, m) from a table of the
+## in double arithmetic. xtx_pow10(m) is R_pow_di(10, m) from a table of the
 ## values R computes (pow() can differ in the last bit for m > 22).
-dm_sql_round_macros <- function(fr) {
-    if (isTRUE(fr$src$holder$dm_round_macros)) return(invisible())
-    tab <- paste(dm_sql_double(vapply(0:400, function(m) dm_pow_di(10, m), 0)), collapse = ", ")
+xtx_sql_round_macros <- function(fr) {
+    if (isTRUE(fr$src$holder$xtx_round_macros)) return(invisible())
+    tab <- paste(xtx_sql_double(vapply(0:400, function(m) xtx_pow_di(10, m), 0)), collapse = ", ")
     pow10 <- sprintf("CASE WHEN m >= 0 THEN ([%1$s])[CAST(m AS BIGINT) + 1] ELSE 1 / ([%1$s])[1 - CAST(m AS BIGINT)] END", tab)
     ## (M_LOG10_2; a string cast, correctly rounded, where a decimal literal
     ## might not be)
@@ -311,21 +311,21 @@ dm_sql_round_macros <- function(fr) {
     e2 <- sprintf("(dig + CASE WHEN %s > 0 THEN 22 ELSE -22 END)", e10)
     sig <- sprintf(paste("CASE WHEN x IS NULL OR isnan(x) OR isinf(x) OR x = 0 THEN x",
                          "ELSE sign(x) * (CASE WHEN abs(%1$s) < 306 THEN (CASE",
-                         "WHEN %2$s > 308 THEN (round_even((abs(x) * dm_pow10(308)) * dm_pow10(%2$s - 308), 0) / dm_pow10(308)) / dm_pow10(%2$s - 308)",
-                         "WHEN %2$s > 0 THEN round_even(abs(x) * dm_pow10(%2$s), 0) / dm_pow10(%2$s)",
-                         "ELSE round_even(abs(x) / dm_pow10(-%2$s), 0) * dm_pow10(-%2$s) END)",
-                         "ELSE floor((abs(x) * dm_pow10(%3$s)) * dm_pow10(%2$s - %3$s)",
-                         "+ CASE WHEN lmax - %1$s >= thr THEN CAST(0.5 AS DOUBLE) ELSE CAST(0 AS DOUBLE) END) / dm_pow10(%3$s) / dm_pow10(%2$s - %3$s) END) END"),
+                         "WHEN %2$s > 308 THEN (round_even((abs(x) * xtx_pow10(308)) * xtx_pow10(%2$s - 308), 0) / xtx_pow10(308)) / xtx_pow10(%2$s - 308)",
+                         "WHEN %2$s > 0 THEN round_even(abs(x) * xtx_pow10(%2$s), 0) / xtx_pow10(%2$s)",
+                         "ELSE round_even(abs(x) / xtx_pow10(-%2$s), 0) * xtx_pow10(-%2$s) END)",
+                         "ELSE floor((abs(x) * xtx_pow10(%3$s)) * xtx_pow10(%2$s - %3$s)",
+                         "+ CASE WHEN lmax - %1$s >= thr THEN CAST(0.5 AS DOUBLE) ELSE CAST(0 AS DOUBLE) END) / xtx_pow10(%3$s) / xtx_pow10(%2$s - %3$s) END) END"),
                    la, e10, e2)
-    dm_execute(fr, sprintf("CREATE OR REPLACE TEMP MACRO dm_pow10(m) AS (%s)", pow10))
-    dm_execute(fr, sprintf("CREATE OR REPLACE TEMP MACRO dm_round_digits(x, dig, pw, p1) AS (%s)", rnd))
-    dm_execute(fr, sprintf("CREATE OR REPLACE TEMP MACRO dm_signif(x, dig, thr, lmax) AS (%s)", sig))
-    fr$src$holder$dm_round_macros <- TRUE
+    xtx_execute(fr, sprintf("CREATE OR REPLACE TEMP MACRO xtx_pow10(m) AS (%s)", pow10))
+    xtx_execute(fr, sprintf("CREATE OR REPLACE TEMP MACRO xtx_round_digits(x, dig, pw, p1) AS (%s)", rnd))
+    xtx_execute(fr, sprintf("CREATE OR REPLACE TEMP MACRO xtx_signif(x, dig, thr, lmax) AS (%s)", sig))
+    fr$src$holder$xtx_round_macros <- TRUE
     invisible()
 }
 
 ## round(x, digits) of a column's SQL `a` (constant digits), as R's fround().
-dm_sql_round <- function(fr, a, digits) {
+xtx_sql_round <- function(fr, a, digits) {
     x <- sprintf("CAST(%s AS DOUBLE)", a)
     if (digits > 323) return(x)
     if (digits < -308) return(sprintf("(CASE WHEN %1$s IS NULL OR isnan(%1$s) OR isinf(%1$s) OR %1$s = 0 THEN %1$s ELSE CAST(0 AS DOUBLE) END)", x))
@@ -333,18 +333,18 @@ dm_sql_round <- function(fr, a, digits) {
     if (digits == 0) return(sprintf("round_even(%s, 0)", x))
     dig <- as.integer(floor(digits + 0.5))
     if (dig <= 308) {
-        pw <- dm_pow_di(10, dig)
+        pw <- xtx_pow_di(10, dig)
         p1 <- 1
     } else {
-        pw <- dm_pow_di(10, 308)
-        p1 <- dm_pow_di(10, dig - 308)
+        pw <- xtx_pow_di(10, 308)
+        p1 <- xtx_pow_di(10, dig - 308)
     }
-    dm_sql_round_macros(fr)
-    sprintf("dm_round_digits(%s, %d, %s, %s)", x, dig, dm_sql_double(pw), dm_sql_double(p1))
+    xtx_sql_round_macros(fr)
+    sprintf("xtx_round_digits(%s, %d, %s, %s)", x, dig, xtx_sql_double(pw), xtx_sql_double(p1))
 }
 
 ## signif(x, digits) of a column's SQL `a` (constant digits), as R's fprec().
-dm_sql_signif <- function(fr, a, digits) {
+xtx_sql_signif <- function(fr, a, digits) {
     x <- sprintf("CAST(%s AS DOUBLE)", a)
     if (!is.finite(digits)) {
         if (digits > 0) return(x)
@@ -354,28 +354,28 @@ dm_sql_signif <- function(fr, a, digits) {
     dig <- as.integer(sign(digits) * floor(abs(digits) + 0.5))
     if (dig > 22) return(x)
     if (dig < 1L) dig <- 1L
-    dm_sql_round_macros(fr)
-    sprintf("dm_signif(%s, %d, %s, %s)", x, dig, dm_sql_double(dm_pow_di(10, -dig)),
-            dm_sql_double(log10(.Machine$double.xmax)))
+    xtx_sql_round_macros(fr)
+    sprintf("xtx_signif(%s, %d, %s, %s)", x, dig, xtx_sql_double(xtx_pow_di(10, -dig)),
+            xtx_sql_double(log10(.Machine$double.xmax)))
 }
 
-## The SQL of the Math functions that Math.design_column (primitives.R)
+## The SQL of the Math functions that Math.xtx_column (primitives.R)
 ## leaves to this file, or an error. `...`: the digits of round()/signif().
-dm_math_sql <- function(x, generic, ...) {
+xtx_math_sql <- function(x, generic, ...) {
     a <- unclass(x)$sql
     fr <- unclass(x)$frame
     digits <- function(default) {
         args <- list(...)
         d <- if (length(args)) args[[1L]] else default
-        if (dm_is_column(d) || !is.numeric(d) || length(d) != 1L || is.na(d))
+        if (xtx_is_column(d) || !is.numeric(d) || length(d) != 1L || is.na(d))
             stop(sprintf("%s() of a remote column: `digits` must be one number.", generic), call. = FALSE)
         as.double(d)
     }
     d <- sprintf("CAST(%s AS DOUBLE)", a)
     switch(generic,
         trunc = sprintf("trunc(%s)", d),
-        round = dm_sql_round(fr, a, digits(0)),
-        signif = dm_sql_signif(fr, a, digits(6)),
+        round = xtx_sql_round(fr, a, digits(0)),
+        signif = xtx_sql_signif(fr, a, digits(6)),
         ## (DuckDB refuses gamma(0) and lgamma(0); R gives NaN and Inf)
         gamma = sprintf("(CASE WHEN %1$s = 0 THEN CAST('NaN' AS DOUBLE) ELSE gamma(CASE WHEN %1$s = 0 THEN CAST(1 AS DOUBLE) ELSE %1$s END) END)", d),
         lgamma = sprintf("(CASE WHEN %1$s = 0 THEN CAST('Infinity' AS DOUBLE) ELSE lgamma(CASE WHEN %1$s = 0 THEN CAST(1 AS DOUBLE) ELSE %1$s END) END)", d),
@@ -389,37 +389,37 @@ dm_math_sql <- function(x, generic, ...) {
 #' @rdname column_arithmetic
 #' @export
 col_ifelse <- function(test, yes, no) {
-    if (is.null(dm_column_frame(test, yes, no))) {
+    if (is.null(xtx_column_frame(test, yes, no))) {
         if (!is.logical(test)) {
             if (!is.numeric(test)) stop("`test` must be logical.", call. = FALSE)
             test <- as.logical(test)
         }
         if (!(is.numeric(yes) || is.logical(yes)) || !(is.numeric(no) || is.logical(no)))
             stop("`yes` and `no` must be numeric.", call. = FALSE)
-        ## (a vector without attributes: dmc_ifelse() in memory)
+        ## (a vector without attributes: xtx_c_ifelse() in memory)
         dim(test) <- NULL
-        return(dmc_ifelse(test, as.double(yes), as.double(no)))
+        return(xtx_c_ifelse(test, as.double(yes), as.double(no)))
     }
-    dm_col_check(test, "test")
-    dm_col_check(yes, "yes")
-    dm_col_check(no, "no")
-    dmc_ifelse(test, yes, no)
+    xtx_col_check(test, "test")
+    xtx_col_check(yes, "yes")
+    xtx_col_check(no, "no")
+    xtx_c_ifelse(test, yes, no)
 }
 
 #' @rdname column_arithmetic
 #' @export
 col_pmin <- function(a, b) {
-    dm_col_check(a, "a")
-    dm_col_check(b, "b")
-    dmc_pmin(a, b)
+    xtx_col_check(a, "a")
+    xtx_col_check(b, "b")
+    xtx_c_pmin(a, b)
 }
 
 #' @rdname column_arithmetic
 #' @export
 col_pmax <- function(a, b) {
-    dm_col_check(a, "a")
-    dm_col_check(b, "b")
-    dmc_pmax(a, b)
+    xtx_col_check(a, "a")
+    xtx_col_check(b, "b")
+    xtx_c_pmax(a, b)
 }
 
 #' @rdname column_arithmetic
@@ -431,14 +431,14 @@ col_sums <- function(..., na.rm = FALSE) {
     nm <- names(args) %||% rep("", length(args))
     bare <- nm == "" & vapply(ex, is.symbol, NA)
     nm[bare] <- vapply(ex[bare], as.character, "")
-    for (i in seq_along(args)) dm_col_check(args[[i]], if (nm[i] != "") nm[i] else sprintf("..%d", i))
-    remote <- vapply(args, dm_is_column, NA)
+    for (i in seq_along(args)) xtx_col_check(args[[i]], if (nm[i] != "") nm[i] else sprintf("..%d", i))
+    remote <- vapply(args, xtx_is_column, NA)
     out <- numeric(length(args))
     if (any(remote)) {
         ## (one query: the aggregates of every SQL expression of every
         ## remote argument; a column with k columns gives k rows)
-        s <- dm_column_aggregates(args[remote], "sum")
-        idx <- rep(which(remote), vapply(args[remote], dm_ncols, 1L))
+        s <- xtx_column_aggregates(args[remote], "sum")
+        idx <- rep(which(remote), vapply(args[remote], xtx_ncols, 1L))
         out[remote] <- vapply(which(remote), function(i) {
             r <- s[idx == i, , drop = FALSE]
             if (!na.rm && sum(r$na) > 0) return(NA_real_)
@@ -453,9 +453,9 @@ col_sums <- function(..., na.rm = FALSE) {
 
 ## An argument of the helpers: a remote column, or a numeric or logical
 ## vector (in memory), or a number (with remote columns).
-dm_col_check <- function(x, what) {
-    if (dm_is_column(x)) return(invisible())
-    if (inherits(x, c("design_matrix", "dm_remote")))
+xtx_col_check <- function(x, what) {
+    if (xtx_is_column(x)) return(invisible())
+    if (inherits(x, c("xtx_matrix", "xtx_remote")))
         stop(sprintf("`%s` is a design, not a column: use design_column(), or a product with the design.", what),
              call. = FALSE)
     if (!is.numeric(x) && !is.logical(x))

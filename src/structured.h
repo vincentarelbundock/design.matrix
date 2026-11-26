@@ -1,11 +1,11 @@
 /*
- *  design.matrix: the term structure of a plain design (structured.c),
+ *  xtx: the term structure of a plain design (structured.c),
  *  shared with the fixed-effect kernels (fe.c).
  *
  *  Copyright (C) 2026 Vincent Arel-Bundock.  GPL (>= 2).
  */
-#ifndef DM_STRUCTURED_H
-#define DM_STRUCTURED_H
+#ifndef XTX_STRUCTURED_H
+#define XTX_STRUCTURED_H
 #include <Rinternals.h>
 
 #define SMAXC 32

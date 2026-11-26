@@ -2,7 +2,7 @@
 % Please edit documentation in R/threads.R
 \name{design_threads}
 \alias{design_threads}
-\title{Number of threads used by design.matrix}
+\title{Number of threads used by xtx}
 \usage{
 design_threads(n = NULL)
 }
@@ -29,7 +29,7 @@ numbers of threads they can differ in the last digits. Small problems
 run on one thread.
 
 The default follows fixest: half of the available threads (rounded up),
-and one thread during \verb{R CMD check}. The option \code{design.matrix.threads},
+and one thread during \verb{R CMD check}. The option \code{xtx.threads},
 which takes the same values as \code{n}, replaces that default. The available
 threads are those OpenMP reports, capped by the environment variable
 \code{OMP_THREAD_LIMIT}; without OpenMP, one.

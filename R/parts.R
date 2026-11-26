@@ -32,8 +32,8 @@
 #' @section Methods for other classes:
 #' `design_parts()` is an S3 generic: a package (or a user) adds support for
 #' its own model class by writing a method `design_parts.<class>()` and
-#' registering it (with `S3method(design.matrix::design_parts, <class>)` in
-#' the NAMESPACE of a package that only suggests \pkg{design.matrix}, or
+#' registering it (with `S3method(xtx::design_parts, <class>)` in
+#' the NAMESPACE of a package that only suggests \pkg{xtx}, or
 #' `S3method(design_parts, <class>)` when it imports it). [design_plan()],
 #' and therefore `design_matrix(fit, newdata = ...)`, then work for that
 #' class. A method returns a list with elements:
@@ -81,7 +81,7 @@
 #'     list(terms = terms(model$formula), xlevels = model$levels,
 #'          contrasts = list(`factor(gear)` = "contr.treatment"))
 #' }
-#' # (in a package: S3method(design.matrix::design_parts, toyfit))
+#' # (in a package: S3method(xtx::design_parts, toyfit))
 #' .S3method("design_parts", "toyfit", design_parts.toyfit)
 #' p <- design_plan(toy)
 #' as.matrix(design_matrix(p, head(mtcars)))
@@ -91,7 +91,7 @@ design_parts <- function(model, ...) {
 }
 
 ## The pieces a model stores, read with `[[` (no partial matching).
-dm_parts <- function(terms, xlevels, contrasts, drop_intercept = NULL) {
+xtx_parts <- function(terms, xlevels, contrasts, drop_intercept = NULL) {
     if (!inherits(terms, "terms")) {
         stop("The model does not store a terms object.", call. = FALSE)
     }
@@ -104,7 +104,7 @@ dm_parts <- function(terms, xlevels, contrasts, drop_intercept = NULL) {
 ## keep the parameters of transformations such as poly(); their predict()
 ## methods build the model frame from the full terms instead. Copy the
 ## predvars of the full terms to the variables of the component.
-dm_inherit_predvars <- function(tt, full) {
+xtx_inherit_predvars <- function(tt, full) {
     if (!inherits(tt, "terms") || !is.null(attr(tt, "predvars")) ||
         !inherits(full, "terms") || is.null(attr(full, "predvars"))) return(tt)
     vars <- as.list(attr(tt, "variables"))[-1L]
@@ -119,8 +119,8 @@ dm_inherit_predvars <- function(tt, full) {
     tt
 }
 
-dm_parts_stored <- function(model) {
-    dm_parts(model[["terms"]], model[["xlevels"]], model[["contrasts"]])
+xtx_parts_stored <- function(model) {
+    xtx_parts(model[["terms"]], model[["xlevels"]], model[["contrasts"]])
 }
 
 #' @rdname design_parts
@@ -141,7 +141,7 @@ design_parts.default <- function(model, ...) {
     if (is.null(contrasts)) {
         contrasts <- attr(stats::model.matrix(model), "contrasts")
     }
-    dm_parts(tt, xlevels, contrasts)
+    xtx_parts(tt, xlevels, contrasts)
 }
 
 ## Models that store `terms`, `xlevels` and `contrasts`, which their
@@ -149,47 +149,47 @@ design_parts.default <- function(model, ...) {
 
 #' @rdname design_parts
 #' @export
-design_parts.lm <- function(model, ...) dm_parts_stored(model)
+design_parts.lm <- function(model, ...) xtx_parts_stored(model)
 
 #' @rdname design_parts
 #' @export
-design_parts.glm <- function(model, ...) dm_parts_stored(model)
+design_parts.glm <- function(model, ...) xtx_parts_stored(model)
 
 #' @rdname design_parts
 #' @export
-design_parts.polr <- function(model, ...) dm_parts_stored(model)
+design_parts.polr <- function(model, ...) xtx_parts_stored(model)
 
 #' @rdname design_parts
 #' @export
-design_parts.multinom <- function(model, ...) dm_parts_stored(model)
+design_parts.multinom <- function(model, ...) xtx_parts_stored(model)
 
 #' @rdname design_parts
 #' @export
-design_parts.svyolr <- function(model, ...) dm_parts_stored(model)
+design_parts.svyolr <- function(model, ...) xtx_parts_stored(model)
 
 #' @rdname design_parts
 #' @export
-design_parts.clm <- function(model, ...) dm_parts_stored(model)
+design_parts.clm <- function(model, ...) xtx_parts_stored(model)
 
 #' @rdname design_parts
 #' @export
-design_parts.clmm <- function(model, ...) dm_parts_stored(model)
+design_parts.clmm <- function(model, ...) xtx_parts_stored(model)
 
 #' @rdname design_parts
 #' @export
-design_parts.survreg <- function(model, ...) dm_parts_stored(model)
+design_parts.survreg <- function(model, ...) xtx_parts_stored(model)
 
 #' @rdname design_parts
 #' @export
-design_parts.lm_robust <- function(model, ...) dm_parts_stored(model)
+design_parts.lm_robust <- function(model, ...) xtx_parts_stored(model)
 
 #' @rdname design_parts
 #' @export
 design_parts.iv_robust <- function(model, ...) {
     ## terms() folds the instruments into the formula; the regressors have
     ## their own terms, which predict.iv_robust() uses
-    tt <- dm_inherit_predvars(model[["terms_regressors"]], model[["terms"]])
-    dm_parts(tt, model[["xlevels"]], model[["contrasts"]])
+    tt <- xtx_inherit_predvars(model[["terms_regressors"]], model[["terms"]])
+    xtx_parts(tt, model[["xlevels"]], model[["contrasts"]])
 }
 
 #' @rdname design_parts
@@ -200,8 +200,8 @@ design_parts.ivreg <- function(model, ...) {
     ## keeps them only in the terms of the stored model frame
     full <- attr(model[["model"]], "terms")
     if (is.null(attr(full, "predvars"))) full <- model[["terms"]][["full"]]
-    tt <- dm_inherit_predvars(model[["terms"]][["regressors"]], full)
-    dm_parts(tt, model[["levels"]], model[["contrasts"]][["regressors"]])
+    tt <- xtx_inherit_predvars(model[["terms"]][["regressors"]], full)
+    xtx_parts(tt, model[["levels"]], model[["contrasts"]][["regressors"]])
 }
 
 #' @rdname design_parts
@@ -232,7 +232,7 @@ design_parts.coxph <- function(model, ...) {
         drop <- c(drop, st$terms)
     }
     if (length(drop)) tt <- tt[-drop]
-    dm_parts(tt, model[["xlevels"]], model[["contrasts"]], drop_intercept = TRUE)
+    xtx_parts(tt, model[["xlevels"]], model[["contrasts"]], drop_intercept = TRUE)
 }
 
 #' @rdname design_parts
@@ -242,7 +242,7 @@ design_parts.lme <- function(model, ...) {
     ## names of the stored contrast matrices (nlme stores no contrasts for
     ## character variables, so new data cannot drop their levels)
     contrasts <- model[["contrasts"]]
-    dm_parts(model[["terms"]], lapply(contrasts, rownames), contrasts)
+    xtx_parts(model[["terms"]], lapply(contrasts, rownames), contrasts)
 }
 
 #' @rdname design_parts
@@ -256,7 +256,7 @@ design_parts.merMod <- function(model, ...) {
     ## levels come from the model frame, the contrasts from the fixed-effects
     ## model matrix
     tt <- stats::terms(model, fixed.only = TRUE)
-    dm_parts(tt, stats::.getXlevels(tt, stats::model.frame(model)),
+    xtx_parts(tt, stats::.getXlevels(tt, stats::model.frame(model)),
              attr(stats::model.matrix(model), "contrasts"))
 }
 
@@ -281,14 +281,14 @@ design_parts.glmmTMB <- function(model, component = c("cond", "zi", "disp"), ...
         contrasts[[v]] <- if (!is.null(attr(x, "contrasts"))) attr(x, "contrasts")
                           else getOption("contrasts")[[if (is.ordered(x)) 2L else 1L]]
     }
-    dm_parts(tt, stats::.getXlevels(tt, mf), contrasts)
+    xtx_parts(tt, stats::.getXlevels(tt, mf), contrasts)
 }
 
 #' @rdname design_parts
 #' @export
 design_parts.betareg <- function(model, component = c("mean", "precision"), ...) {
     component <- match.arg(component)
-    dm_parts(model[["terms"]][[component]], model[["levels"]][[component]],
+    xtx_parts(model[["terms"]][[component]], model[["levels"]][[component]],
              model[["contrasts"]][[component]])
 }
 
@@ -298,8 +298,8 @@ design_parts.zeroinfl <- function(model, component = c("count", "zero"), ...) {
     ## as predict.zeroinfl() and predict.hurdle(): one set of levels, for
     ## all the variables of the model
     component <- match.arg(component)
-    tt <- dm_inherit_predvars(model[["terms"]][[component]], model[["terms"]][["full"]])
-    dm_parts(tt, model[["levels"]], model[["contrasts"]][[component]])
+    tt <- xtx_inherit_predvars(model[["terms"]][[component]], model[["terms"]][["full"]])
+    xtx_parts(tt, model[["levels"]], model[["contrasts"]][[component]])
 }
 
 #' @rdname design_parts

@@ -28,14 +28,14 @@
 NULL
 
 ## the conversion behind as(<design_matrix>, "CsparseMatrix")
-dm_sparse <- function(x) {
-    checkmate::assert_class(x, "design_matrix")
+xtx_sparse <- function(x) {
+    checkmate::assert_class(x, "xtx_matrix")
     J <- as_jac(x)
     if (!jac_kernel_ok(J)) {
         X <- methods::as(as.matrix(J), "dMatrix")
         return(methods::as(methods::as(X, "generalMatrix"), "CsparseMatrix"))
     }
-    parts <- do.call(.Call, c(list(C_dm_jac_sparse), jac_args(J)))
+    parts <- do.call(.Call, c(list(C_xtx_jac_sparse), jac_args(J)))
     d <- dim(x)
     dn <- dimnames(x)
     if (is.null(dn[[1L]]) && is.null(dn[[2L]])) dn <- list(NULL, NULL)
@@ -46,5 +46,5 @@ dm_sparse <- function(x) {
 ## as(<design_matrix>, "CsparseMatrix") and as(..., "dgCMatrix")
 #' @exportMethod coerce
 NULL
-setAs("design_matrix", "CsparseMatrix", function(from) dm_sparse(from))
-setAs("design_matrix", "dgCMatrix", function(from) dm_sparse(from))
+setAs("xtx_matrix", "CsparseMatrix", function(from) xtx_sparse(from))
+setAs("xtx_matrix", "dgCMatrix", function(from) xtx_sparse(from))

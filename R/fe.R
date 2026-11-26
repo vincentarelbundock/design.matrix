@@ -11,12 +11,12 @@
 ## of K). Every input is a sum over rows: X'WX and X'Wy are products with
 ## the design, S and s grouped sums, K counts and crosstabs; the rows are
 ## never demeaned and the dense design is never formed. The same estimator
-## (dm_fe_core()) runs on data in memory (C kernels: one pass for all
-## grouped sums and the small crosstabs, dm_fe_struct_gsum() in src/fe.c,
+## (xtx_fe_core()) runs on data in memory (C kernels: one pass for all
+## grouped sums and the small crosstabs, xtx_fe_struct_gsum() in src/fe.c,
 ## and one for the crosstabs of the largest FE with the others,
-## dm_fe_crosstabs(); on several threads with design_threads()) and on
+## xtx_fe_crosstabs(); on several threads with design_threads()) and on
 ## remote data (the remote methods of the same primitives): one code path,
-## see dm_fe_core().
+## see xtx_fe_core().
 ##
 ## The solve with K eliminates the largest FE (diagonal block D_1)
 ## analytically and works on the Schur complement over the other FEs,
@@ -32,7 +32,7 @@
 ## levels are removed), so the reduced system is a symmetric M-matrix. With
 ## three or more FE, R can be singular even so (FE collinear beyond the
 ## pairwise graphs, such as firms assigned round robin over years); the
-## solver then drops a further level (dm_fe_solve()).
+## solver then drops a further level (xtx_fe_solve()).
 ##
 ## R is solved densely when small (at most 1000 levels: beyond, the dense
 ## factorization costs more than conjugate gradients), by a pivoted
@@ -40,7 +40,7 @@
 ## to zero (and gives the rank of the FE), otherwise by
 ## conjugate gradients, on R formed or applied without forming it:
 ##
-## * Formed (dm_fe_schur() in src/fe.c, the lower triangle by Gustavson's
+## * Formed (xtx_fe_schur() in src/fe.c, the lower triangle by Gustavson's
 ##   product): when R is sparse (low mobility between the levels of the
 ##   other FE, as on worker x firm panels where workers rarely change
 ##   firms), preconditioned by the incomplete Cholesky factor IC(0) of R
@@ -53,17 +53,17 @@
 ##   diagonal of R (computed without forming R); there it converges in
 ##   about 15 iterations. Forming gives up as soon as R has more nonzeros
 ##   than N_1 or the cost of IC(0) (the sum of the squared column counts
-##   of R) exceeds form_max (option design.matrix.fe_form_max, default 25,
+##   of R) exceeds form_max (option xtx.fe_form_max, default 25,
 ##   calibrated on worker x firm panels: the two paths take the same time
 ##   near 20 to 40) times nnz(N_1); a probe of 64 columns estimates both
 ##   first, so that giving up is cheap.
 ##
 ## The stopping rule is a normwise backward error below 1e-12 (see
-## dm_fe_pcg() in src/fe.c), with the norm of the right-hand side floored
+## xtx_fe_pcg() in src/fe.c), with the norm of the right-hand side floored
 ## at that of the first solve of the system (a refinement step's right-hand
 ## side is at rounding level), and a warm start (Z0) is accepted, for
 ## sequences of nearby systems (the steps of a GLM). Sparse Cholesky
-## (CHOLMOD) is used only on request (option design.matrix.fe_solver =
+## (CHOLMOD) is used only on request (option xtx.fe_solver =
 ## "chol"): on worker x firm graphs its fill is close to dense.
 ##
 ## A = K^- B gives the FE coefficients without another solve: a = A_y - A_x b.
@@ -71,7 +71,7 @@
 ## the normal equations X'M e = 0 correct the rounding of the one-pass
 ## aggregates. Numeric variables far from zero are centered first when that
 ## is an exact linear transform of the design (as for remote fits, see
-## dm_center() in qr.R), which keeps X'MX, hence the covariance
+## xtx_center() in qr.R), which keeps X'MX, hence the covariance
 ## matrix, accurate.
 ##
 ## With FE, the score of cluster c is
@@ -89,7 +89,7 @@
 ## Formula and arguments
 
 ## Does the formula have a fixed-effect part (y ~ x | fe)?
-dm_fe_has_bar <- function(formula) {
+xtx_fe_has_bar <- function(formula) {
     if (!inherits(formula, "formula")) return(FALSE)
     rhs <- formula[[length(formula)]]
     is.call(rhs) && identical(rhs[[1L]], as.name("|"))
@@ -97,9 +97,9 @@ dm_fe_has_bar <- function(formula) {
 
 ## Split `y ~ x | a + b^c` into the main formula and the FE terms (each a
 ## character vector of variable names, several for an interaction a^b).
-dm_fe_parse <- function(formula) {
+xtx_fe_parse <- function(formula) {
     rhs <- formula[[length(formula)]]
-    if (!dm_fe_has_bar(formula))
+    if (!xtx_fe_has_bar(formula))
         stop("The formula must have a fixed-effect part: y ~ x | fe.", call. = FALSE)
     ## (which variables `.` stands for is not defined with FE, in memory or
     ## remotely)
@@ -127,7 +127,7 @@ dm_fe_parse <- function(formula) {
 }
 
 ## The cluster variable of `vcov`: NULL for "iid", else a column name.
-dm_fe_vcov_arg <- function(vcov) {
+xtx_fe_vcov_arg <- function(vcov) {
     msg <- "`vcov` must be \"iid\" or a one-sided formula naming a cluster variable, such as ~firm."
     if (is.character(vcov) && length(vcov) == 1L) {
         if (identical(vcov, "iid")) return(NULL)
@@ -143,7 +143,7 @@ dm_fe_vcov_arg <- function(vcov) {
 ## fixef.rm: for linear models "singleton" (or "perfect_fit", the same
 ## there) or "none"; for GLMs also "infinite_coef" and "perfect_fit"
 ## (default: singletons and levels with an infinite FE, as fixest).
-dm_fe_rm_arg <- function(fixef.rm, glm = FALSE) {
+xtx_fe_rm_arg <- function(fixef.rm, glm = FALSE) {
     ok <- if (glm) c("perfect_fit", "singleton", "infinite_coef", "none") else c("singleton", "perfect_fit", "none")
     if (!checkmate::test_choice(fixef.rm, ok))
         stop(sprintf("`fixef.rm` must be %s.", paste(sprintf("\"%s\"", ok), collapse = ", ")), call. = FALSE)
@@ -153,47 +153,47 @@ dm_fe_rm_arg <- function(fixef.rm, glm = FALSE) {
 
 ## The formula with variables added as terms (FE and cluster variables, for
 ## the model frame and the rows used).
-dm_fe_augment <- function(main, vars) {
+xtx_fe_augment <- function(main, vars) {
     rhs <- main[[length(main)]]
     for (v in vars) rhs <- call("+", rhs, as.name(v))
     main[[length(main)]] <- rhs
     main
 }
 
-## Options of the solver: design.matrix.fe_solver ("auto", "dense", "chol"
-## or "pcg"), design.matrix.fe_precond ("auto", default: IC(0) when the
+## Options of the solver: xtx.fe_solver ("auto", "dense", "chol"
+## or "pcg"), xtx.fe_precond ("auto", default: IC(0) when the
 ## reduced system is formed, Jacobi when it is applied matrix-free;
-## "jacobi"; or "ichol", which forms it), design.matrix.fe_form_max (when
-## to form the reduced system, see dm_fe_system()) and
-## design.matrix.fe_refine (steps of iterative refinement: "auto", default,
+## "jacobi"; or "ichol", which forms it), xtx.fe_form_max (when
+## to form the reduced system, see xtx_fe_system()) and
+## xtx.fe_refine (steps of iterative refinement: "auto", default,
 ## one step whose final pass over the residuals is skipped when the step's
-## correction is negligible, see dm_fe_core(); or a count, steps always
+## correction is negligible, see xtx_fe_core(); or a count, steps always
 ## followed by that pass).
-dm_fe_opts <- function() {
-    solver <- getOption("design.matrix.fe_solver", "auto")
+xtx_fe_opts <- function() {
+    solver <- getOption("xtx.fe_solver", "auto")
     if (!checkmate::test_choice(solver, c("auto", "dense", "chol", "pcg")))
-        stop("Option `design.matrix.fe_solver` must be \"auto\", \"dense\", \"chol\" or \"pcg\".", call. = FALSE)
-    precond <- getOption("design.matrix.fe_precond", "auto")
+        stop("Option `xtx.fe_solver` must be \"auto\", \"dense\", \"chol\" or \"pcg\".", call. = FALSE)
+    precond <- getOption("xtx.fe_precond", "auto")
     if (!checkmate::test_choice(precond, c("auto", "ichol", "jacobi")))
-        stop("Option `design.matrix.fe_precond` must be \"auto\", \"ichol\" or \"jacobi\".", call. = FALSE)
-    form_max <- getOption("design.matrix.fe_form_max", 25)
+        stop("Option `xtx.fe_precond` must be \"auto\", \"ichol\" or \"jacobi\".", call. = FALSE)
+    form_max <- getOption("xtx.fe_form_max", 25)
     if (!checkmate::test_number(form_max, lower = 0))
-        stop("Option `design.matrix.fe_form_max` must be a non-negative number.", call. = FALSE)
-    refine <- getOption("design.matrix.fe_refine", "auto")
+        stop("Option `xtx.fe_form_max` must be a non-negative number.", call. = FALSE)
+    refine <- getOption("xtx.fe_refine", "auto")
     auto <- identical(refine, "auto")
     if (!auto && !checkmate::test_count(refine))
-        stop("Option `design.matrix.fe_refine` must be \"auto\" or a count.", call. = FALSE)
+        stop("Option `xtx.fe_refine` must be \"auto\" or a count.", call. = FALSE)
     list(solver = solver, precond = precond, pcg_tol = 1e-12, pcg_maxit = 10000L,
          refine = if (auto) 1L else as.integer(refine), refine_auto = auto, form_max = form_max,
          dense_max = 1000L)
 }
 
 ## ---------------------------------------------------------------------------
-## Labels of fixed effects (their codes: dmc_dense_codes(), with
-## dm_fe_code_term() in memory, in primitives_lookup.R)
+## Labels of fixed effects (their codes: xtx_c_dense_codes(), with
+## xtx_fe_code_term() in memory, in primitives_lookup.R)
 
 ## Labels of FE levels, as fixest names them (a_b for interactions).
-dm_fe_labels <- function(lv) {
+xtx_fe_labels <- function(lv) {
     if (ncol(lv) == 1L) return(as.character(lv[[1L]]))
     do.call(paste, c(lapply(lv, as.character), sep = "_"))
 }
@@ -202,9 +202,9 @@ dm_fe_labels <- function(lv) {
 ## Small helpers on sums
 
 ## Component of each level of b in the bipartite graph of t(N_ab).
-dm_fe_components <- function(Nt) {
+xtx_fe_components <- function(Nt) {
     i <- rep.int(seq_len(ncol(Nt)) - 1L, diff(Nt@p))
-    .Call(C_dm_fe_components, i, Nt@i, ncol(Nt), nrow(Nt))
+    .Call(C_xtx_fe_components, i, Nt@i, ncol(Nt), nrow(Nt))
 }
 
 ## ---------------------------------------------------------------------------
@@ -213,7 +213,7 @@ dm_fe_components <- function(Nt) {
 ## Conjugate gradients for R Z = B, preconditioned by IC(0) of the block
 ## diagonal of R (blocks: the FEs; the whole of R with two FE), or by its
 ## diagonal when IC(0) breaks down or with precond = "jacobi". R: a sparse
-## symmetric matrix (formed), or a "dm_fe_op" (R = A - N diag(d) N',
+## symmetric matrix (formed), or a "xtx_fe_op" (R = A - N diag(d) N',
 ## applied without being formed, the rows of N mapped to those of R by
 ## `map`: Jacobi only). Z0: a starting value (a warm
 ## start; dropped for columns where it is worse than zero) or NULL. bmin: a
@@ -222,17 +222,17 @@ dm_fe_components <- function(Nt) {
 ## products and sums of the recursion (identical results for a given
 ## number; one thread is the single-threaded code; small systems run on one
 ## thread; a negative count -T forces T threads, for the tests).
-dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.env(), Z0 = NULL,
+xtx_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.env(), Z0 = NULL,
                       bmin = 0, nthreads = design_threads()) {
     if (is.null(cache$A)) {
-        if (inherits(R, "dm_fe_op")) {
+        if (inherits(R, "xtx_fe_op")) {
             cache$A <- R$A
             cache$N <- R$N
             cache$map <- R$map
             cache$d <- R$d
             precond <- "jacobi"
         } else {
-            cache$A <- dm_fe_lower(R)
+            cache$A <- xtx_fe_lower(R)
         }
         cache$precond <- if (precond == "ichol") "ichol" else "jacobi"
         if (precond == "ichol") {
@@ -246,7 +246,7 @@ dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.e
             }
             ## plain IC(0): the modified factor (MIC, omega > 0) took 2.5 to 5
             ## times as many iterations on worker x firm graphs
-            Lx <- .Call(C_dm_fe_ichol, P$p, P$i, P$x, ncol(A), 0)
+            Lx <- .Call(C_xtx_fe_ichol, P$p, P$i, P$x, ncol(A), 0)
             if (!is.null(Lx)) {
                 cache$L <- list(p = P$p, i = P$i, x = Lx)
             } else {
@@ -263,7 +263,7 @@ dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.e
         storage.mode(Z0) <- "double"
         if (!identical(dim(Z0), dim(B))) Z0 <- NULL
     }
-    r <- .Call(C_dm_fe_pcg, A@p, A@i, A@x, if (!is.null(N)) N@p, if (!is.null(N)) N@i,
+    r <- .Call(C_xtx_fe_pcg, A@p, A@i, A@x, if (!is.null(N)) N@p, if (!is.null(N)) N@i,
                if (!is.null(N)) N@x, cache$map, cache$d, L$p, L$i, L$x, B, Z0,
                as.double(bmin), as.double(tol), as.integer(maxit), as.integer(nthreads))
     ## (nullv: on a breakdown, a direction close to a null vector of R)
@@ -272,7 +272,7 @@ dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.e
 }
 
 ## The lower triangle of a symmetric sparse matrix, as a dgCMatrix.
-dm_fe_lower <- function(R) {
+xtx_fe_lower <- function(R) {
     if (methods::is(R, "symmetricMatrix") && R@uplo == "U") R <- Matrix::t(R)
     R <- methods::as(methods::as(R, "generalMatrix"), "CsparseMatrix")
     if (!methods::is(R, "dsparseMatrix")) R <- methods::as(R, "dMatrix")
@@ -281,7 +281,7 @@ dm_fe_lower <- function(R) {
 
 ## Solve the reduced system R Z = B (R symmetric positive definite after the
 ## reference levels are removed, or semidefinite with a consistent
-## right-hand side). R: a sparse matrix, or a "dm_fe_op" (not formed: by
+## right-hand side). R: a sparse matrix, or a "xtx_fe_op" (not formed: by
 ## conjugate gradients with the Jacobi preconditioner). Z0: a starting
 ## value for conjugate gradients (a warm start: the solution of a nearby
 ## system), or NULL. bmin: a floor for the norm of the right-hand sides in
@@ -290,13 +290,13 @@ dm_fe_lower <- function(R) {
 ## step's right-hand side is at rounding level: its solution is needed to
 ## the accuracy of the first solve, not to tol relative to itself).
 ## Returns Z and solver details.
-dm_fe_solve <- function(R, B, opts, block, cache = new.env(), dense_max = opts$dense_max %||% 1000L,
+xtx_fe_solve <- function(R, B, opts, block, cache = new.env(), dense_max = opts$dense_max %||% 1000L,
                         Z0 = NULL, bmin = NULL) {
-    m <- if (inherits(R, "dm_fe_op")) R$m else nrow(R)
+    m <- if (inherits(R, "xtx_fe_op")) R$m else nrow(R)
     if (m == 0L) return(list(z = B, solver = "none"))
     solver <- opts$solver
     if (solver == "auto") solver <- if (m <= dense_max) "dense" else "pcg"
-    if (inherits(R, "dm_fe_op")) solver <- "pcg"
+    if (inherits(R, "xtx_fe_op")) solver <- "pcg"
     if (solver == "dense") {
         ## pivoted Cholesky: R can be singular with three or more FE (FE
         ## collinear beyond the references removed); the levels of pivots
@@ -325,7 +325,7 @@ dm_fe_solve <- function(R, B, opts, block, cache = new.env(), dense_max = opts$d
         solver <- "pcg"
     }
     precond <- opts$precond
-    if (precond == "auto") precond <- if (inherits(R, "dm_fe_op")) "jacobi" else "ichol"
+    if (precond == "auto") precond <- if (inherits(R, "xtx_fe_op")) "jacobi" else "ichol"
     ## R singular (FE collinear beyond the references removed: with three
     ## or more FE, the components of the pairwise graphs do not find every
     ## redundant level): conjugate gradients break down once rounding
@@ -339,7 +339,7 @@ dm_fe_solve <- function(R, B, opts, block, cache = new.env(), dense_max = opts$d
     repeat {
         if (is.null(cache$pc)) cache$pc <- new.env(parent = emptyenv())
         use <- if (length(drop)) seq_len(m)[-drop] else seq_len(m)
-        sol <- dm_fe_pcg(dm_fe_sub(R, use), B[use, , drop = FALSE], opts$pcg_tol, opts$pcg_maxit,
+        sol <- xtx_fe_pcg(xtx_fe_sub(R, use), B[use, , drop = FALSE], opts$pcg_tol, opts$pcg_maxit,
                          block[use], precond, cache$pc,
                          Z0 = if (!is.null(Z0) && nrow(Z0) == m) Z0[use, , drop = FALSE], bmin = bmin)
         if (sol$converged || is.null(sol$nullv) || length(drop) >= 20L) break
@@ -357,11 +357,11 @@ dm_fe_solve <- function(R, B, opts, block, cache = new.env(), dense_max = opts$d
 }
 
 ## The rows and columns `use` of the reduced system (a sparse matrix or a
-## "dm_fe_op").
-dm_fe_sub <- function(R, use) {
-    m <- if (inherits(R, "dm_fe_op")) R$m else nrow(R)
+## "xtx_fe_op").
+xtx_fe_sub <- function(R, use) {
+    m <- if (inherits(R, "xtx_fe_op")) R$m else nrow(R)
     if (length(use) == m) return(R)
-    if (!inherits(R, "dm_fe_op")) return(R[use, use, drop = FALSE])
+    if (!inherits(R, "xtx_fe_op")) return(R[use, use, drop = FALSE])
     R$A <- R$A[use, use, drop = FALSE]
     mp <- match(R$map + 1L, use) - 1L
     mp[is.na(mp)] <- -1L
@@ -370,10 +370,10 @@ dm_fe_sub <- function(R, use) {
     R
 }
 
-## The crosstabs that dm_fe_system() takes, as pairs c(a, b) (crosstab(a,
+## The crosstabs that xtx_fe_system() takes, as pairs c(a, b) (crosstab(a,
 ## b) = t(N_ab)): the largest FE with each other, then the pairs of the
 ## others.
-dm_fe_pairs <- function(G) {
+xtx_fe_pairs <- function(G) {
     o <- order(G, decreasing = TRUE)
     rest <- o[-1L]
     pairs <- lapply(rest, function(k) c(o[1L], k))
@@ -387,14 +387,14 @@ dm_fe_pairs <- function(G) {
 ## G: levels per FE; nk: weighted counts per level; crosstab(a, b): t(N_ab).
 ##
 ## R = A - N_1' D_1^-1 N_1 with A = blockdiag(n_k) + offdiag(N_kl) is formed
-## (dm_fe_schur(), lower triangle) unless forming it would cost more than
+## (xtx_fe_schur(), lower triangle) unless forming it would cost more than
 ## applying it: forming gives up as soon as R has more nonzeros than N_1
 ## (min(form_max, 1) times), or the cost of its IC(0) factor (the sum of
 ## its squared column counts) exceeds form_max times nnz(N_1). R is then
-## applied matrix-free (a "dm_fe_op"), two passes over N_1 per product.
+## applied matrix-free (a "xtx_fe_op"), two passes over N_1 per product.
 ## R is always formed for the dense solver (m <= dense_max), for "chol"
 ## and for precond = "ichol".
-dm_fe_system <- function(G, nk, crosstab, opts) {
+xtx_fe_system <- function(G, nk, crosstab, opts) {
     nfe <- length(G)
     o <- order(G, decreasing = TRUE)
     sys <- list(nfe = nfe, f1 = o[1L], D1 = nk[[o[1L]]], rest = o[-1L], opts = opts)
@@ -408,7 +408,7 @@ dm_fe_system <- function(G, nk, crosstab, opts) {
     ncomp <- integer(length(rest))
     ref <- integer(0)
     for (r in seq_along(rest)) {
-        comp <- dm_fe_components(Nt[[r]])
+        comp <- xtx_fe_components(Nt[[r]])
         ncomp[r] <- max(comp)
         ref <- c(ref, off[r] + which(!duplicated(comp)))
     }
@@ -435,12 +435,12 @@ dm_fe_system <- function(G, nk, crosstab, opts) {
     form <- opts$solver %in% c("dense", "chol") || opts$precond == "ichol" ||
         (opts$solver == "auto" && mk <= (opts$dense_max %||% 1000L))
     fm <- if (form) Inf else opts$form_max %||% 25
-    S <- .Call(C_dm_fe_schur, A@p, A@i, A@x, N@p, N@i, N@x, map, 1 / sys$D1,
+    S <- .Call(C_xtx_fe_schur, A@p, A@i, A@x, N@p, N@i, N@x, map, 1 / sys$D1,
                as.double(if (is.finite(fm)) min(fm, 1) * nnzN else Inf), as.double(fm * nnzN))
     if (!is.null(S)) {
         sys$R <- methods::new("dsCMatrix", Dim = c(mk, mk), uplo = "L", p = S[[1L]], i = S[[2L]], x = S[[3L]])
     } else {
-        sys$R <- structure(list(A = A, N = N, map = map, d = 1 / sys$D1, m = mk), class = "dm_fe_op")
+        sys$R <- structure(list(A = A, N = N, map = map, d = 1 / sys$D1, m = mk), class = "xtx_fe_op")
     }
     sys$keep <- keep
     sys$cache <- new.env(parent = emptyenv()) # the preconditioner, built once
@@ -455,7 +455,7 @@ dm_fe_system <- function(G, nk, crosstab, opts) {
 ## matrices (grouped sums by FE). `Z0`: a starting value of the solution of
 ## the reduced system (`Z`, returned, of an earlier call: a warm start), or
 ## NULL.
-dm_fe_apply <- function(sys, B, Z0 = NULL) {
+xtx_fe_apply <- function(sys, B, Z0 = NULL) {
     f1 <- sys$f1
     A1p <- B[[f1]] / sys$D1
     Q <- crossprod(B[[f1]], A1p)
@@ -466,7 +466,7 @@ dm_fe_apply <- function(sys, B, Z0 = NULL) {
     }
     rest <- sys$rest
     Brr <- do.call(rbind, B[rest]) - as.matrix(sys$Ntr %*% A1p)
-    sol <- dm_fe_solve(sys$R, Brr[sys$keep, , drop = FALSE], sys$opts, sys$block, sys$cache, Z0 = Z0)
+    sol <- xtx_fe_solve(sys$R, Brr[sys$keep, , drop = FALSE], sys$opts, sys$block, sys$cache, Z0 = Z0)
     Z <- matrix(0, sys$m, ncol(Brr))
     Z[sys$keep, ] <- sol$z
     Zk <- sol$z
@@ -485,11 +485,11 @@ dm_fe_apply <- function(sys, B, Z0 = NULL) {
 ## a column is aliased when its residual variance after the FE and the
 ## earlier kept columns is below tol times `scale`, its variance before
 ## the FE are absorbed), by the pivoted Cholesky kernel of qr()
-## (dm_pivchol(), ties drop the column). `band` and `recheck`: suspect
-## columns, see dm_pivchol(). Returns the kept columns and the upper factor
+## (xtx_pivchol(), ties drop the column). `band` and `recheck`: suspect
+## columns, see xtx_pivchol(). Returns the kept columns and the upper factor
 ## of M[keep, keep].
-dm_fe_pivchol <- function(M, scale, tol, band = NULL, recheck = NULL) {
-    ch <- dm_pivchol(M, scale, tol, "drop", band = band, recheck = recheck)
+xtx_fe_pivchol <- function(M, scale, tol, band = NULL, recheck = NULL) {
+    ch <- xtx_pivchol(M, scale, tol, "drop", band = band, recheck = recheck)
     k <- ch$rank
     list(keep = ch$pivot[seq_len(k)], R = ch$R[seq_len(k), seq_len(k), drop = FALSE])
 }
@@ -497,14 +497,14 @@ dm_fe_pivchol <- function(M, scale, tol, band = NULL, recheck = NULL) {
 ## ---------------------------------------------------------------------------
 ## The absorption operator
 ##
-## The FE of a fit, absorbed from sums over rows. dm_absorb() builds it from
-## the one fused pass of dmp_fe_sums() (F_k'W[X z] and F_k'W1 for every FE
+## The FE of a fit, absorbed from sums over rows. xtx_absorb() builds it from
+## the one fused pass of xtx_p_fe_sums() (F_k'W[X z] and F_k'W1 for every FE
 ## and the crosstabs N_kl: the pass must see x and z, so the operator is
 ## built for them), and reduces and sets up the FE system K = F'WF for
-## solves once (dm_fe_system()). It is a list of functions:
+## solves once (xtx_fe_system()). It is a list of functions:
 ##
 ##   solve(B, warm)    K^- B (split by FE) and Q = B'K^-B, for B a list of
-##                     G_k x q matrices (dm_fe_apply(); warm: a starting
+##                     G_k x q matrices (xtx_fe_apply(); warm: a starting
 ##                     value of the reduced solve, the `Z` of an earlier
 ##                     call, or NULL)
 ##   project(M, warm)  the FWL moments M - Q of [X z] (M = [X z]'W[X z] on
@@ -520,27 +520,27 @@ dm_fe_pivchol <- function(M, scale, tol, band = NULL, recheck = NULL) {
 ##                     (sums of squares around the weighted mean), from
 ##                     their sums of squares dxx
 ##   scores(we, cl)    the cluster scores sum_{i in c} we_i (MX)_i, corrected
-##                     for FE not nested in the clusters (cl: a dmc_codes()
+##                     for FE not nested in the clusters (cl: a xtx_c_codes()
 ##                     grouping; see the header): list(U, nested)
 ##
 ## and G, the levels per FE.
-dm_absorb <- function(x, z, w, codes, xcols, opts) {
+xtx_absorb <- function(x, z, w, codes, xcols, opts) {
     G <- vapply(codes, function(g) g$G, 1L)
     px <- length(xcols)
     xi <- seq_len(px)
-    pairs <- dm_fe_pairs(G)
+    pairs <- xtx_fe_pairs(G)
     ## (with the crosstabs of the FE system: one or two passes in memory)
-    fs <- dmp_fe_sums(x, w, codes, extra = z, pairs = pairs)
+    fs <- xtx_p_fe_sums(x, w, codes, extra = z, pairs = pairs)
     nk <- lapply(fs$gs, `[[`, "n")
     if (any(vapply(nk, function(v) any(!(v > 0)), NA)))
         stop("internal error: a fixed-effect level without weight", call. = FALSE)
     B <- lapply(fs$gs, function(g) cbind(g$S[, xcols, drop = FALSE], g$extra[, 1L]))
     ## t(N_ab), G_b x G_a
     pkey <- vapply(pairs, paste, "", collapse = ",")
-    sys <- dm_fe_system(G, nk, function(a, b) fs$ct[[match(paste(a, b, sep = ","), pkey)]], opts)
+    sys <- xtx_fe_system(G, nk, function(a, b) fs$ct[[match(paste(a, b, sep = ","), pkey)]], opts)
     fs <- NULL
     Gam <- NULL
-    solve <- function(B, warm = NULL) dm_fe_apply(sys, B, Z0 = warm)
+    solve <- function(B, warm = NULL) xtx_fe_apply(sys, B, Z0 = warm)
     project <- function(M, warm = NULL) {
         ab <- solve(B, warm)
         Gam <<- ab$A
@@ -557,12 +557,12 @@ dm_absorb <- function(x, z, w, codes, xcols, opts) {
     }
     variance <- function(dxx) dxx - colSums(B[[1L]])[xi]^2 / sum(nk[[1L]])
     scores <- function(we, cl) {
-        U <- dmp_colsums_groups(dmp_scale(x, we), list(cl))[[1L]]$S[, xcols, drop = FALSE]
+        U <- xtx_p_colsums_groups(xtx_p_scale(x, we), list(cl))[[1L]]$S[, xcols, drop = FALSE]
         ## an FE is nested in the clusters when each of its levels is in
         ## one cluster; otherwise its scores need a correction
-        nested <- vapply(seq_along(codes), function(k) dmp_nested(cl, codes[[k]]), NA)
+        nested <- vapply(seq_along(codes), function(k) xtx_p_nested(cl, codes[[k]]), NA)
         for (k in which(!nested)) {
-            E <- dmp_crosstab(codes[[k]], cl, we) # G_k x Gc
+            E <- xtx_p_crosstab(codes[[k]], cl, we) # G_k x Gc
             U <- U - as.matrix(Matrix::crossprod(E, Gam[[k]][, xi, drop = FALSE]))
         }
         list(U = U, nested = nested)
@@ -576,34 +576,34 @@ dm_absorb <- function(x, z, w, codes, xcols, opts) {
 ##
 ## One implementation for designs in memory and remote designs: every sum
 ## is a primitive of the fitting core (primitives.R, primitives_lookup.R,
-## primitives_fused.R): X'WX and X'Wz (dmp_crossprod), the moments of z
-## (dmc_moments), F_k'WX, F_k'W1 and F_k'Wz for all FE and the crosstabs
-## N_kl (dmp_fe_sums, two passes in memory), the residuals, F_k'We and
-## the rss (dmp_mult and dmc_fe_resid, one pass in memory).
+## primitives_fused.R): X'WX and X'Wz (xtx_p_crossprod), the moments of z
+## (xtx_c_moments), F_k'WX, F_k'W1 and F_k'Wz for all FE and the crosstabs
+## N_kl (xtx_p_fe_sums, two passes in memory), the residuals, F_k'We and
+## the rss (xtx_p_mult and xtx_c_fe_resid, one pass in memory).
 ##
-## Arguments of dm_fe_core(): the design x, and `cols`, the columns of the
+## Arguments of xtx_fe_core(): the design x, and `cols`, the columns of the
 ## problem for that design: z (response), w (weights or NULL), codes (per
-## FE, a dmc_codes() grouping) and, for clustered standard errors, cl (a
-## dmc_codes() grouping of the clusters). `warm`: NULL, or an environment
+## FE, a xtx_c_codes() grouping) and, for clustered standard errors, cl (a
+## xtx_c_codes() grouping of the clusters). `warm`: NULL, or an environment
 ## that keeps the solution of the reduced system from one call to the next
 ## (the weighted least squares steps of a GLM, whose solutions change
 ## little: a warm start for the solver of the reduced system) and the
 ## numbers of iterations. With resid_final = FALSE, the residuals after the
 ## last refinement are not computed (no rss, `we`; for the steps of a GLM,
-## which need them only for the last step: see dm_fe_glm_estimate()).
+## which need them only for the last step: see xtx_fe_glm_estimate()).
 ## The fit keeps its absorption operator (`absorb`), for the cluster scores
-## (dm_fe_cluster()).
+## (xtx_fe_cluster()).
 ##
 ## Steps: project (the moments, the FE absorbed) -> pivoted Cholesky ->
 ## solve -> refine (from the residuals) -> degrees of freedom.
 
-dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_final = TRUE) {
+xtx_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_final = TRUE) {
     xcols <- setdiff(seq_len(ncol(x)), which(colnames(x) == "(Intercept)"))
     px <- length(xcols)
     xi <- seq_len(px)
-    n <- dm_nrows(x)
-    mo <- dm_fe_moments(x, cols$z, cols$w, xcols, n)
-    A <- dm_absorb(x, cols$z, cols$w, cols$codes, xcols, opts)
+    n <- xtx_nrows(x)
+    mo <- xtx_fe_moments(x, cols$z, cols$w, xcols, n)
+    A <- xtx_absorb(x, cols$z, cols$w, cols$codes, xcols, opts)
     pj <- A$project(mo$M, warm = if (!is.null(warm)) warm$Z)
     if (!is.null(warm)) {
         warm$Z <- pj$Z
@@ -612,34 +612,34 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_f
     M <- pj$M
     dxx <- diag(mo$M)[xi]
     scale <- A$variance(dxx)
-    su <- dm_fe_suspects(x, cols, A, xcols, M, scale, dxx, tol)
-    pc <- dm_fe_pivchol(M[xi, xi, drop = FALSE], scale, tol, band = su$band, recheck = su$recheck)
+    su <- xtx_fe_suspects(x, cols, A, xcols, M, scale, dxx, tol)
+    pc <- xtx_fe_pivchol(M[xi, xi, drop = FALSE], scale, tol, band = su$band, recheck = su$recheck)
     kp <- pc$keep
     b0 <- numeric(px)
     if (length(kp)) b0[kp] <- backsolve(pc$R, backsolve(pc$R, M[kp, px + 1L], transpose = TRUE))
-    rf <- dm_fe_refine(x, cols, A, xcols, pc, b0, A$effects(b0), opts, resid_final)
+    rf <- xtx_fe_refine(x, cols, A, xcols, pc, b0, A$effects(b0), opts, resid_final)
     b <- rep(NA_real_, px)
     b[kp] <- rf$b[kp]
     bread <- matrix(NA_real_, px, px)
     if (length(kp)) bread[kp, kp] <- chol2inv(pc$R)
-    dof <- dm_fe_dof(A$G, pj$info)
+    dof <- xtx_fe_dof(A$G, pj$info)
     out <- list(b = b, kp = kp, xcols = xcols, bread = bread, rss = rf$r$rss, fe = rf$fe,
                 rank = length(kp), G = A$G, fe_dof = dof$fe_dof, fe_dof_exact = dof$fe_dof_exact,
                 df.residual = n - length(kp) - dof$fe_dof, nobs = n, tss = mo$tss,
                 tss_within = max(M[px + 1L, px + 1L], 0), info = c(pj$info, list(resid_pass = rf$info)),
                 we = rf$r$we, absorb = A)
-    if (cluster) out <- dm_fe_cluster(out, cols$cl, out$we)
+    if (cluster) out <- xtx_fe_cluster(out, cols$cl, out$we)
     out
 }
 
-## The suspect band of the pivoted Cholesky of a fit with FE (dm_pivchol()):
+## The suspect band of the pivoted Cholesky of a fit with FE (xtx_pivchol()):
 ## the residual variance d of a column after the FE and the earlier kept
 ## columns comes from the aggregates, X'WX - S'K^-S, accurate only to about
 ## c eps diag(X'WX). A column with |d - tol * scale| <= c eps diag(X'WX)
 ## cannot be judged from them: its d is computed again from the data, the
 ## sum of w e^2 of its residual e = x_j - X_K c - F f (c from the factor of
 ## the columns K kept before it, f = Gamma_j - Gamma_K c), one pass over
-## the rows per suspect (dmc_fe_resid()). That residual is not refined, but
+## the rows per suspect (xtx_c_fe_resid()). That residual is not refined, but
 ## the error of c and f from the aggregates changes its sum of squares only
 ## to second order, far below the band.
 ##
@@ -652,8 +652,8 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_f
 ## suspect only when its residual variance is within about 2% of the
 ## threshold: rare, so the extra passes cost nothing in general. Without
 ## a positive scale a column is never taken, nor a suspect.
-## Returns list(band (lo, hi), recheck) for dm_fe_pivchol().
-dm_fe_suspects <- function(x, cols, A, xcols, M, scale, dxx, tol) {
+## Returns list(band (lo, hi), recheck) for xtx_fe_pivchol().
+xtx_fe_suspects <- function(x, cols, A, xcols, M, scale, dxx, tol) {
     width <- 1e4 * .Machine$double.eps * abs(dxx)
     ok <- is.finite(scale) & scale > 0 & is.finite(width)
     thr <- tol * scale
@@ -661,7 +661,7 @@ dm_fe_suspects <- function(x, cols, A, xcols, M, scale, dxx, tol) {
     px <- length(xcols)
     recheck <- function(ch, sus) {
         ## (a zero column, made only when there are suspects)
-        z0 <- dmc_const(cols$z, 0)
+        z0 <- xtx_c_const(cols$z, 0)
         acc <- ch$pivot[seq_len(ch$rank)]
         d <- vapply(sus, function(j) {
             K <- acc[acc < j]
@@ -673,7 +673,7 @@ dm_fe_suspects <- function(x, cols, A, xcols, M, scale, dxx, tol) {
             beta[xcols] <- bk
             beta[xcols[j]] <- -1
             ## e = 0 - (X_K c - x_j) - F f
-            r <- dmc_fe_resid(z0, dmp_mult(x, beta), cols$w, A$effects(bk, j), cols$codes)
+            r <- xtx_c_fe_resid(z0, xtx_p_mult(x, beta), cols$w, A$effects(bk, j), cols$codes)
             r[[3L]]
         }, 0)
         list(dres = d, taken = is.finite(d) & d > 0 & d > thr[sus])
@@ -684,7 +684,7 @@ dm_fe_suspects <- function(x, cols, A, xcols, M, scale, dxx, tol) {
 ## The moments of a fit with FE: M = [X z]'W[X z] on the columns xcols of
 ## x and the response z (weights w, NULL for none; n rows), and the total
 ## sum of squares of z around its weighted mean.
-dm_fe_moments <- function(x, z, w, xcols, n) {
+xtx_fe_moments <- function(x, z, w, xcols, n) {
     mo <- lm_moments(x, z, w, n)
     xtx <- unname(mo$xtx)
     xty <- unname(mo$xty)[, 1L]
@@ -697,34 +697,34 @@ dm_fe_moments <- function(x, z, w, xcols, n) {
 ## The residuals e = z - X b - sum_k fe_k[code_k] of a fit with FE (b: the
 ## coefficients of the columns xcols of x) and their sums: X'We, F_k'We,
 ## rss = sum(w e^2) and we = w e (one pass in memory).
-dm_fe_residuals <- function(x, cols, xcols, b, fe) {
+xtx_fe_residuals <- function(x, cols, xcols, b, fe) {
     beta <- numeric(ncol(x))
     beta[xcols] <- b
     ## (remotely the product and the lookups of the FE bind on the frame of
-    ## z and w, at the sums of dmc_fe_resid())
-    r <- dmc_fe_resid(cols$z, dmp_mult(x, beta), cols$w, fe, cols$codes)
-    xte <- dmp_crossprod(x, r[[1L]], compress = FALSE)
+    ## z and w, at the sums of xtx_c_fe_resid())
+    r <- xtx_c_fe_resid(cols$z, xtx_p_mult(x, beta), cols$w, fe, cols$codes)
+    xte <- xtx_p_crossprod(x, r[[1L]], compress = FALSE)
     list(xte = unname(xte)[, 1L], Be = lapply(r[[2L]], function(m) m[, 1L]),
          rss = r[[3L]], we = drop(r[[1L]]))
 }
 
-## Iterative refinement of a fit with FE (dm_refine()): the normal
+## Iterative refinement of a fit with FE (xtx_refine()): the normal
 ## equations X'M e = 0 from residuals computed row by row correct the
 ## rounding of the one-pass aggregates. b, fe: the solution from the
 ## aggregates (b zero for aliased columns), pc its pivoted factor, A the
 ## absorption operator. Stopping rule: opts$refine steps; with fe_refine =
 ## "auto", the pass over the rows after the last step is skipped when the
-## step's correction is negligible (dm_fe_negligible()), and the residuals
+## step's correction is negligible (xtx_fe_negligible()), and the residuals
 ## of the last pass stand for those after the step. Returns list(b, fe, r
 ## (the residuals; with resid_final = FALSE, after at least one step, rss
 ## NA and no `we`), info).
-dm_fe_refine <- function(x, cols, A, xcols, pc, b, fe, opts, resid_final) {
+xtx_fe_refine <- function(x, cols, A, xcols, pc, b, fe, opts, resid_final) {
     kp <- pc$keep
-    resid <- function(s) dm_fe_residuals(x, cols, xcols, s$b, s$fe)
+    resid <- function(s) xtx_fe_residuals(x, cols, xcols, s$b, s$fe)
     correct <- function(s, r) {
         ## (its right-hand side is at rounding level: the solver floors its
         ## norm at that of the first solve with the system, see
-        ## dm_fe_solve())
+        ## xtx_fe_solve())
         Ae <- A$solve(lapply(r$Be, function(v) matrix(v, ncol = 1L)))$A
         b <- s$b
         delta <- numeric(0)
@@ -736,9 +736,9 @@ dm_fe_refine <- function(x, cols, A, xcols, pc, b, fe, opts, resid_final) {
         list(sol = list(b = b, fe = A$update(s$fe, Ae, kp, delta)), Ae = Ae, delta = delta)
     }
     stop <- function(step, r, it) {
-        it == opts$refine && isTRUE(opts$refine_auto) && dm_fe_negligible(r, step$Ae, step$delta, pc$R)
+        it == opts$refine && isTRUE(opts$refine_auto) && xtx_fe_negligible(r, step$Ae, step$delta, pc$R)
     }
-    rf <- dm_refine(list(b = b, fe = fe), resid, correct, opts$refine, stop)
+    rf <- xtx_refine(list(b = b, fe = fe), resid, correct, opts$refine, stop)
     r <- if (rf$stopped) rf$r
          else if (resid_final || opts$refine == 0L) resid(rf$sol)
          else list(rss = NA_real_, we = NULL)
@@ -751,7 +751,7 @@ dm_fe_refine <- function(x, cols, A, xcols, pc, b, fe, opts, resid_final) {
 ## exact when the reduced system was factored (a pivoted dense Cholesky,
 ## which gives its rank, or a sparse Cholesky that succeeded); otherwise NA.
 ## info: the solver details of the absorption.
-dm_fe_dof <- function(G, info) {
+xtx_fe_dof <- function(G, info) {
     nfe <- length(G)
     exact <- if (nfe == 1L) {
         G
@@ -776,17 +776,17 @@ dm_fe_dof <- function(G, info) {
 ## conditioned or near collinear systems, uncentered variables, which the
 ## step corrects) the residuals are recomputed. The coefficients and FE
 ## values are those of the step either way.
-dm_fe_negligible <- function(r, Ae, delta, Rc) {
+xtx_fe_negligible <- function(r, Ae, delta, Rc) {
     if (!is.finite(r$rss) || !(r$rss > 0)) return(FALSE)
     q <- sum(vapply(seq_along(Ae), function(k) sum(r$Be[[k]] * Ae[[k]][, 1L]), 0))
     if (length(delta)) q <- q + sum(drop(Rc %*% delta)^2)
     is.finite(q) && abs(q) <= 1e-20 * r$rss
 }
 
-## Clustered covariance of a fit of dm_fe_core() (`est`, which keeps its
-## absorption operator), clusters `cl` (a dmc_codes() grouping), weighted
+## Clustered covariance of a fit of xtx_fe_core() (`est`, which keeps its
+## absorption operator), clusters `cl` (a xtx_c_codes() grouping), weighted
 ## residuals `we`: adds vcov_cluster and G_cluster to `est`.
-dm_fe_cluster <- function(est, cl, we) {
+xtx_fe_cluster <- function(est, cl, we) {
     px <- length(est$xcols)
     kp <- est$kp
     rank <- est$rank
@@ -811,20 +811,20 @@ dm_fe_cluster <- function(est, cl, we) {
 ## X beta plus the FE values of the rows' levels, as a column (codes: per
 ## FE, integer codes, or, with `levels`, key columns matched to levels).
 ## With beta a p x k matrix and each fe[[k]] a G_k x k matrix, k columns.
-dm_fe_fitted <- function(x, beta, fe, codes, levels = NULL) {
-    dmc_fe_add(dmp_mult(x, beta), fe, codes, levels)
+xtx_fe_fitted <- function(x, beta, fe, codes, levels = NULL) {
+    xtx_c_fe_add(xtx_p_mult(x, beta), fe, codes, levels)
 }
 
 ## Map a fit on the centered design X~ = X T back to X: b = T b~ (but the
 ## intercept column, absorbed by the FE, which take the constant t0'b~),
 ## bread T bread~ T'. NULL when the aliased columns do not allow it (a kept
 ## column of X~ uses an aliased column of X).
-dm_fe_uncenter <- function(est, Tm, icol) {
+xtx_fe_uncenter <- function(est, Tm, icol) {
     xc <- est$xcols
     Tx <- Tm[xc, xc, drop = FALSE]
     kp <- est$kp
     al <- setdiff(seq_along(xc), kp)
-    if (!dm_uncenter_ok(Tx, kp, al)) return(NULL)
+    if (!xtx_uncenter_ok(Tx, kp, al)) return(NULL)
     bt <- est$b
     bt[is.na(bt)] <- 0
     b <- drop(Tx %*% bt)
@@ -832,9 +832,9 @@ dm_fe_uncenter <- function(est, Tm, icol) {
     est$b <- b
     if (length(kp)) {
         Tk <- Tx[kp, kp, drop = FALSE]
-        est$bread[kp, kp] <- dm_uncenter_cov(Tk, est$bread[kp, kp, drop = FALSE])
+        est$bread[kp, kp] <- xtx_uncenter_cov(Tk, est$bread[kp, kp, drop = FALSE])
         if (!is.null(est$vcov_cluster))
-            est$vcov_cluster[kp, kp] <- dm_uncenter_cov(Tk, est$vcov_cluster[kp, kp, drop = FALSE])
+            est$vcov_cluster[kp, kp] <- xtx_uncenter_cov(Tk, est$vcov_cluster[kp, kp, drop = FALSE])
     }
     ## X~ b~ = X b + (t0'b~) 1: the constant goes to the first FE
     if (length(icol)) est$fe[[1L]] <- est$fe[[1L]] + sum(Tm[icol, xc] * bt)
@@ -848,7 +848,7 @@ dm_fe_uncenter <- function(est, Tm, icol) {
 ## Only the first step differs between data in memory and remote data, as
 ## it does without FE: building the design of the rows with complete model
 ## variables, with the response and weights as columns (a model frame in
-## memory; a remote design and dmp_resolve() remotely). The rows used, the
+## memory; a remote design and xtx_p_resolve() remotely). The rows used, the
 ## FE codes, the removal of singletons, the estimator, the methods and the
 ## predictions are one code path on the primitives.
 
@@ -891,8 +891,8 @@ dm_fe_uncenter <- function(est, Tm, icol) {
 #'   the exact rank of the FE (fixest's `K.exact = TRUE`), exact for one or
 #'   two FE and for three or more when the reduced system was factored
 #'   (otherwise `NA`).
-#' * Methods: those of a `design_lm` fit (class `c("design_lm_fe",
-#'   "design_lm")`); `summary()` reports R-squared and within R-squared.
+#' * Methods: those of a `design_lm` fit (class `c("xtx_lm_fe",
+#'   "xtx_lm")`); `summary()` reports R-squared and within R-squared.
 #'   `fixef()` (the generic of fixest or nlme, when loaded) returns the FE
 #'   values, also in `fit$fixef`: one named vector per FE, normalized with
 #'   one level per connected set of levels at zero in every FE but the
@@ -912,15 +912,15 @@ dm_fe_uncenter <- function(est, Tm, icol) {
 #'   For remote data, the response and `weights` are column names,
 #'   `DBI::SQL()` or R expressions, as without FE (expressions with no SQL
 #'   translation are evaluated in R, in batches).
-#' * Options: `design.matrix.fe_solver` (`"auto"`, `"dense"`, `"pcg"`, or
-#'   `"chol"` for a sparse Cholesky factor), `design.matrix.fe_precond`
+#' * Options: `xtx.fe_solver` (`"auto"`, `"dense"`, `"pcg"`, or
+#'   `"chol"` for a sparse Cholesky factor), `xtx.fe_precond`
 #'   (`"auto"`, default: incomplete Cholesky when the reduced system is
 #'   formed, Jacobi otherwise; `"jacobi"`; or `"ichol"`, which always forms
-#'   it), `design.matrix.fe_form_max` (when to form the reduced system:
-#'   default 25, `0` never, `Inf` always), `design.matrix.fe_refine` (refinement steps:
+#'   it), `xtx.fe_form_max` (when to form the reduced system:
+#'   default 25, `0` never, `Inf` always), `xtx.fe_refine` (refinement steps:
 #'   `"auto"`, default, one step, after which the residuals are computed
 #'   again unless the step's correction is negligible; or a count of steps,
-#'   each followed by the residuals) and `design.matrix.fe_center` (default `TRUE`).
+#'   each followed by the residuals) and `xtx.fe_center` (default `TRUE`).
 #' @param vcov With fixed effects: `"iid"` or a one-sided formula naming a
 #'   cluster variable (`~firm`). Without fixed effects only `"iid"`.
 #' @param fixef.rm With fixed effects: `"singleton"` (drop singletons
@@ -941,32 +941,32 @@ NULL
 
 ## Entry point from design_lm(): `call` is its matched call, `env` its
 ## parent frame.
-dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, model,
+xtx_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, model,
                      vcov, fixef.rm, dots) {
     ## (arguments checked by design_lm(): checks.R)
     ## aliasing: fixest's criterion (residual variance below tol times the
     ## variance before the FE), with fixest's default collin.tol = 1e-10
     if (tol_missing) tol <- 1e-10
-    pf <- dm_fe_parse(formula)
-    clv <- dm_fe_vcov_arg(vcov)
-    fixef.rm <- dm_fe_rm_arg(fixef.rm)
+    pf <- xtx_fe_parse(formula)
+    clv <- xtx_fe_vcov_arg(vcov)
+    fixef.rm <- xtx_fe_rm_arg(fixef.rm)
     data <- if (is.null(call$data)) NULL else eval(call$data, env)
     ## the design of the rows with complete model variables, with the
     ## response and weights as columns (remote_fit.R)
     base <- design_problem(call, env, pf$main, data, contrasts, dots, fe = pf, clv = clv)
     if (is.matrix(base$y)) stop("Multivariate responses are not supported.", call. = FALSE)
-    if (!is.numeric(base$y) && !dm_is_column(base$y)) stop("The response must be numeric.", call. = FALSE)
+    if (!is.numeric(base$y) && !xtx_is_column(base$y)) stop("The response must be numeric.", call. = FALSE)
     ## an offset: the fit is that of y - offset
     if (!is.null(base$off)) {
         base$y <- base$y - base$off
         base$more <- list(off = base$off)
     }
-    prob <- dm_fe_prepare(base, pf, clv, fixef.rm)
-    est <- dm_fe_estimate(prob$x, prob$cols, tol, !is.null(clv))
-    fit <- dm_fe_finish(est, colnames(prob$x), pf, prob$levels, clv, prob$nsingle, base$nall)
+    prob <- xtx_fe_prepare(base, pf, clv, fixef.rm)
+    est <- xtx_fe_estimate(prob$x, prob$cols, tol, !is.null(clv))
+    fit <- xtx_fe_finish(est, colnames(prob$x), pf, prob$levels, clv, prob$nsingle, base$nall)
     w <- prob$cols$w
     fit$weighted <- !is.null(w)
-    fit$sumlogw <- if (is.null(w)) 0 else dm_colsum(log(w))
+    fit$sumlogw <- if (is.null(w)) 0 else xtx_colsum(log(w))
     fit$x <- prob$x
     fit$cols <- prob$cols
     fit$cols$off <- prob$more$off
@@ -975,11 +975,11 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     fit$terms <- base$terms
     fit$contrasts <- base$contrasts
     fit$xlevels <- base$xlevels
-    fit$spec <- dmfit_spec(base$x)
+    fit$spec <- xtx_fit_spec(base$x)
     ## (remotely, na.exclude pads the results with every row not used:
     ## na_action.R)
-    fit$na.action <- dm_na_result(base, prob$rows, prob$x_rows)
-    fit$method <- switch(dm_engine(prob$x), sql = "SQL aggregates", NULL)
+    fit$na.action <- xtx_na_result(base, prob$rows, prob$x_rows)
+    fit$method <- switch(xtx_engine(prob$x), sql = "SQL aggregates", NULL)
     ## (the data of a remote fit stay in the database: always kept)
     if (!is.null(fit$method)) {
         ## nothing to drop
@@ -994,16 +994,16 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
 
 ## The keys of the FE (and of the clusters, when they are not an FE): the
 ## values of their variables over the rows of x (from `data` in memory).
-dm_fe_keys <- function(x, pf, clv, data = NULL) {
-    list(fe = lapply(pf$fe, function(v) dmc_key(x, v, data)),
-         cl = if (!is.null(clv) && is.na(match(clv, names(pf$fe)))) dmc_key(x, clv, data))
+xtx_fe_keys <- function(x, pf, clv, data = NULL) {
+    list(fe = lapply(pf$fe, function(v) xtx_c_key(x, v, data)),
+         cl = if (!is.null(clv) && is.na(match(clv, names(pf$fe)))) xtx_c_key(x, clv, data))
 }
 
 ## The rows used and the FE codes, on the primitives (one code path): rows
 ## with a missing or non-finite response or weight, a zero weight or a
 ## missing FE or cluster value are dropped; then, iteratively until none is
 ## left, rows in a level of some FE that the FE fit perfectly (grouped
-## counts and sums, a lookup of each row's level counts, dmp_subset()):
+## counts and sums, a lookup of each row's level counts, xtx_p_subset()):
 ## with fixef.rm = "singleton" or "perfect_fit", levels with one row
 ## (singletons); with "infinite_coef" or "perfect_fit" and `bounds`, levels
 ## whose response is all 0 (bounds$zero) or all 1 (bounds$one), whose FE
@@ -1011,7 +1011,7 @@ dm_fe_keys <- function(x, pf, clv, data = NULL) {
 ## the design of the rows kept; `base$more` holds other columns to keep
 ## (offset, GLM columns). Returns list(x, cols = list(z, w, codes, cl),
 ## more, levels, nsingle, nperfect, rows).
-dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "missing or negative weights not allowed") {
+xtx_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "missing or negative weights not allowed") {
     x <- base$x
     z <- base$y
     w <- base$w
@@ -1019,46 +1019,46 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
     more <- base$more
     keys <- base$keys$fe
     clkey <- base$keys$cl
-    if (!is.null(w) && dm_colsum(dmc_is_finite(w) & w < 0) > 0) stop(wmsg, call. = FALSE)
+    if (!is.null(w) && xtx_colsum(xtx_c_is_finite(w) & w < 0) > 0) stop(wmsg, call. = FALSE)
     restrict <- function(keep) {
         ## (keep is never missing: the logical columns are NA-safe)
-        nd <- dm_colsum(!keep)
+        nd <- xtx_colsum(!keep)
         if (nd == 0) return(0)
-        x2 <- dmp_subset(x, keep)
-        z <<- dmc_subset(z, keep, x2)
-        w <<- dmc_subset(w, keep, x2)
-        rows <<- dmc_subset(rows, keep, x2)
-        more <<- lapply(more, dmc_subset, keep, x2)
-        keys <<- lapply(keys, dmc_subset, keep, x2)
-        clkey <<- dmc_subset(clkey, keep, x2)
+        x2 <- xtx_p_subset(x, keep)
+        z <<- xtx_c_subset(z, keep, x2)
+        w <<- xtx_c_subset(w, keep, x2)
+        rows <<- xtx_c_subset(rows, keep, x2)
+        more <<- lapply(more, xtx_c_subset, keep, x2)
+        keys <<- lapply(keys, xtx_c_subset, keep, x2)
+        clkey <<- xtx_c_subset(clkey, keep, x2)
         x <<- x2
-        if (dm_nrows(x) == 0) stop("0 (non-NA) cases", call. = FALSE)
+        if (xtx_nrows(x) == 0) stop("0 (non-NA) cases", call. = FALSE)
         nd
     }
-    if (dm_nrows(x) == 0) stop("0 (non-NA) cases", call. = FALSE)
-    keep <- dmc_is_finite(z)
-    if (!is.null(w)) keep <- keep & dmc_is_finite(w) & w != 0
-    for (k in c(keys, list(clkey))) if (!is.null(k)) keep <- keep & dmc_complete(k)
+    if (xtx_nrows(x) == 0) stop("0 (non-NA) cases", call. = FALSE)
+    keep <- xtx_c_is_finite(z)
+    if (!is.null(w)) keep <- keep & xtx_c_is_finite(w) & w != 0
+    for (k in c(keys, list(clkey))) if (!is.null(k)) keep <- keep & xtx_c_complete(k)
     restrict(keep)
     rm_single <- fixef.rm %in% c("singleton", "perfect_fit")
     rm0 <- isTRUE(bounds$zero) && fixef.rm %in% c("infinite_coef", "perfect_fit")
     rm1 <- isTRUE(bounds$one) && fixef.rm %in% c("infinite_coef", "perfect_fit")
     nsingle <- nperfect <- 0
     repeat {
-        cds <- unname(lapply(keys, dmc_dense_codes, raw = TRUE))
+        cds <- unname(lapply(keys, xtx_c_dense_codes, raw = TRUE))
         if (!rm_single && !rm0 && !rm1) break
         ## per level: rows, rows with a response not 0, not 1 (without
         ## bounds, the rows per level: no columns to form; in memory they
-        ## come with the codes, dm_fe_code())
+        ## come with the codes, xtx_fe_code())
         if (!rm0 && !rm1) {
             cnt <- lapply(cds, function(cd) {
-                m <- dmp_groupcount(cd$codes, cd$n)
+                m <- xtx_p_groupcount(cd$codes, cd$n)
                 matrix(m, length(m), 3L)
             })
         } else {
-            one <- dmc_const(z, 1)
-            cols <- dmc_cbind(one, if (rm0) dmc_count(z != 0) else one, if (rm1) dmc_count(z != 1) else one)
-            cnt <- lapply(cds, function(cd) dmp_groupsum(cols, cd$codes))
+            one <- xtx_c_const(z, 1)
+            cols <- xtx_c_cbind(one, if (rm0) xtx_c_count(z != 0) else one, if (rm1) xtx_c_count(z != 1) else one)
+            cnt <- lapply(cds, function(cd) xtx_p_groupsum(cols, cd$codes))
         }
         ## per level, once: perfectly fit (counted as such when it is also
         ## a singleton), or a singleton
@@ -1071,14 +1071,14 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
         single <- perfect <- NULL
         for (k in seq_along(keys)) {
             ## (the flags of the rows' levels)
-            lk <- dmc_lookup_flags(masks[[k]], cds[[k]]$codes)
+            lk <- xtx_c_lookup_flags(masks[[k]], cds[[k]]$codes)
             p1 <- lk[[1L]]
             s1 <- lk[[2L]]
             perfect <- if (is.null(perfect)) p1 else perfect | p1
             single <- if (is.null(single)) s1 else single | s1
         }
         drop <- perfect | single
-        s <- dmc_sums(dmc_count(perfect), dmc_count(drop))
+        s <- xtx_c_sums(xtx_c_count(perfect), xtx_c_count(drop))
         nd <- restrict(!drop)
         if (nd == 0) break
         nperfect <- nperfect + s[1L]
@@ -1088,16 +1088,16 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
     if (!is.null(clv)) {
         m <- match(clv, names(pf$fe))
         if (is.na(m)) {
-            cl <- dmc_dense_codes(clkey, raw = TRUE)$codes
+            cl <- xtx_c_dense_codes(clkey, raw = TRUE)$codes
         } else {
             cl <- cds[[m]]$codes
         }
         if (cl$G < 2L) stop("Clustered standard errors need at least two clusters.", call. = FALSE)
     }
     ## Keep the filtered source for grouped summaries and on-demand row outputs.
-    x <- dmp_rebase(x, list(z, w, more, lapply(cds, `[[`, "codes"), cl))
-    on <- function(col) dmc_on(col, x)
-    oncodes <- function(g) dm_cols_map(g, on)
+    x <- xtx_p_rebase(x, list(z, w, more, lapply(cds, `[[`, "codes"), cl))
+    on <- function(col) xtx_c_on(col, x)
+    oncodes <- function(g) xtx_cols_map(g, on)
     list(x = x, x_rows = x,
          cols = list(z = on(z), w = on(w), codes = lapply(cds, function(cd) oncodes(cd$codes)), cl = oncodes(cl)),
          more = lapply(more, on), levels = lapply(cds, `[[`, "levels"), nsingle = as.integer(nsingle),
@@ -1105,24 +1105,24 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
 }
 
 ## The fit: on the design with numeric variables centered when that is
-## exact (dmp_center()), else on the design.
-dm_fe_estimate <- function(x, cols, tol, cluster) {
-    opts <- dm_fe_opts()
-    ctr <- if (isTRUE(getOption("design.matrix.fe_center", TRUE))) dmp_center(x) else NULL
+## exact (xtx_p_center()), else on the design.
+xtx_fe_estimate <- function(x, cols, tol, cluster) {
+    opts <- xtx_fe_opts()
+    ctr <- if (isTRUE(getOption("xtx.fe_center", TRUE))) xtx_p_center(x) else NULL
     if (!is.null(ctr)) {
         xc <- ctr$x
-        on <- function(g) dm_cols_map(g, function(col) dmc_on(col, xc))
-        cc <- list(z = dmc_on(cols$z, xc), w = dmc_on(cols$w, xc), codes = lapply(cols$codes, on),
+        on <- function(g) xtx_cols_map(g, function(col) xtx_c_on(col, xc))
+        cc <- list(z = xtx_c_on(cols$z, xc), w = xtx_c_on(cols$w, xc), codes = lapply(cols$codes, on),
                    cl = on(cols$cl))
-        est <- dm_fe_core(xc, cc, tol, opts, cluster)
-        est <- dm_fe_uncenter(est, ctr$T, which(colnames(xc) == "(Intercept)"))
+        est <- xtx_fe_core(xc, cc, tol, opts, cluster)
+        est <- xtx_fe_uncenter(est, ctr$T, which(colnames(xc) == "(Intercept)"))
         if (!is.null(est)) return(est)
     }
-    dm_fe_core(x, cols, tol, opts, cluster)
+    xtx_fe_core(x, cols, tol, opts, cluster)
 }
 
 ## The fields of a fit with FE shared by design_lm() and design_glm(), from
-## a fit of dm_fe_core() (`est`), the column names of the design (cn), the
+## a fit of xtx_fe_core() (`est`), the column names of the design (cn), the
 ## parsed formula (pf) and the FE levels (lv): the coefficients named by
 ## the columns but the intercept, their unscaled covariance, the FE values
 ## named by level, the FE sizes and degrees of freedom (`fields`); the
@@ -1131,7 +1131,7 @@ dm_fe_estimate <- function(x, cols, tol, cluster) {
 ## finishes its own inference fields: a clustered LM stores the clustered
 ## covariance as fit$vcov, a GLM as fit$vcov_cluster. `named`: dimnames
 ## for a covariance of the coefficients.
-dm_fe_fields <- function(est, cn, pf, lv, clv) {
+xtx_fe_fields <- function(est, cn, pf, lv, clv) {
     nm <- cn[est$xcols]
     named <- function(V) {
         dimnames(V) <- list(nm, nm)
@@ -1142,7 +1142,7 @@ dm_fe_fields <- function(est, cn, pf, lv, clv) {
     fe <- est$fe
     names(fe) <- names(pf$fe)
     names(lv) <- names(pf$fe)
-    for (k in seq_along(fe)) names(fe[[k]]) <- dm_fe_labels(lv[[k]])
+    for (k in seq_along(fe)) names(fe[[k]]) <- xtx_fe_labels(lv[[k]])
     G <- est$G
     names(G) <- names(pf$fe)
     fields <- list(coefficients = b, cov.unscaled = named(est$bread), rank = est$rank, fixef = fe,
@@ -1155,8 +1155,8 @@ dm_fe_fields <- function(est, cn, pf, lv, clv) {
 }
 
 ## The design_lm object of an FE fit.
-dm_fe_finish <- function(est, cn, pf, lv, clv, nsingle, nall) {
-    sh <- dm_fe_fields(est, cn, pf, lv, clv)
+xtx_fe_finish <- function(est, cn, pf, lv, clv, nsingle, nall) {
+    sh <- xtx_fe_fields(est, cn, pf, lv, clv)
     sigma2 <- est$rss / est$df.residual
     fit <- c(sh$fields, list(vcov = sh$named(est$bread * sigma2), sigma = sqrt(sigma2), rss = est$rss,
                              df.residual = est$df.residual, nobs = est$nobs, nsingletons = nsingle,
@@ -1165,7 +1165,7 @@ dm_fe_finish <- function(est, cn, pf, lv, clv, nsingle, nall) {
     fit[names(sh$inference)] <- sh$inference
     ## clustered: the covariance of the fit is the clustered one
     if (!is.null(clv)) fit$vcov <- sh$vcov_cluster
-    class(fit) <- c("design_lm_fe", "design_lm")
+    class(fit) <- c("xtx_lm_fe", "xtx_lm")
     fit
 }
 
@@ -1173,28 +1173,28 @@ dm_fe_finish <- function(est, cn, pf, lv, clv, nsingle, nall) {
 ## Methods
 
 #' @export
-vcov.design_lm_fe <- function(object, ...) object$vcov
+vcov.xtx_lm_fe <- function(object, ...) object$vcov
 
 #' @export
-logLik.design_lm_fe <- function(object, ...) {
+logLik.xtx_lm_fe <- function(object, ...) {
     N <- object$nobs
     val <- 0.5 * (object$sumlogw - N * (log(2 * pi) + 1 - log(N) + log(object$rss)))
     structure(val, nall = N, nobs = N, df = object$rank + object$fe_dof + 1L, class = "logLik")
 }
 
 #' @export
-print.design_lm_fe <- function(x, digits = max(3L, getOption("digits") - 3L), ...) {
+print.xtx_lm_fe <- function(x, digits = max(3L, getOption("digits") - 3L), ...) {
     if (!is.null(x$call)) cat("\nCall:\n", paste(deparse(x$call), sep = "\n", collapse = "\n"), "\n", sep = "")
     cat("\nFixed effects: ", paste(sprintf("%s (%s)", names(x$fe_sizes),
-                                            dm_fmt_count(x$fe_sizes)), collapse = ", "), "\n", sep = "")
-    dmfit_print_rows(x, prefix = "")
-    dmfit_print_coef(x, digits)
+                                            xtx_fmt_count(x$fe_sizes)), collapse = ", "), "\n", sep = "")
+    xtx_fit_print_rows(x, prefix = "")
+    xtx_fit_print_coef(x, digits)
     cat("\n")
     invisible(x)
 }
 
 #' @export
-summary.design_lm_fe <- function(object, ...) {
+summary.xtx_lm_fe <- function(object, ...) {
     est <- object$coefficients
     aliased <- is.na(est)
     keep <- !aliased
@@ -1215,22 +1215,22 @@ summary.design_lm_fe <- function(object, ...) {
                 rows = object$rows)
     n <- object$nobs
     ans$adj.r.squared <- 1 - (1 - ans$r.squared) * (n - 1) / object$df.residual
-    class(ans) <- c("summary.design_lm_fe", "summary.design_lm")
+    class(ans) <- c("summary.xtx_lm_fe", "summary.xtx_lm")
     ans
 }
 
 #' @export
-print.summary.design_lm_fe <- function(x, digits = max(3L, getOption("digits") - 3L),
+print.summary.xtx_lm_fe <- function(x, digits = max(3L, getOption("digits") - 3L),
                                        signif.stars = getOption("show.signif.stars"), ...) {
     if (!is.null(x$call)) cat("\nCall:\n", paste(deparse(x$call), sep = "\n", collapse = "\n"), "\n", sep = "")
-    cat("\nObservations: ", dm_fmt_count(x$nobs),
-        if (x$nsingletons) sprintf(" (%s singletons removed)", dm_fmt_count(x$nsingletons)), "\n", sep = "")
-    cat("Fixed effects: ", paste(sprintf("%s (%s)", names(x$fe_sizes), dm_fmt_count(x$fe_sizes)),
+    cat("\nObservations: ", xtx_fmt_count(x$nobs),
+        if (x$nsingletons) sprintf(" (%s singletons removed)", xtx_fmt_count(x$nsingletons)), "\n", sep = "")
+    cat("Fixed effects: ", paste(sprintf("%s (%s)", names(x$fe_sizes), xtx_fmt_count(x$fe_sizes)),
                                  collapse = ", "), "\n", sep = "")
     cat("Standard errors: ", if (identical(x$vcov_type, "cluster"))
-        sprintf("clustered by %s (%s clusters)", x$cluster, dm_fmt_count(x$G_cluster)) else "iid",
+        sprintf("clustered by %s (%s clusters)", x$cluster, xtx_fmt_count(x$G_cluster)) else "iid",
         "\n", sep = "")
-    dmfit_print_coefmat(x, digits, signif.stars, ...)
+    xtx_fit_print_coefmat(x, digits, signif.stars, ...)
     cat("\nResidual standard error:", format(signif(x$sigma, digits)),
         "on", x$df[2L], "degrees of freedom\n")
     cat("Multiple R-squared: ", formatC(x$r.squared, digits = digits),
@@ -1239,20 +1239,20 @@ print.summary.design_lm_fe <- function(x, digits = max(3L, getOption("digits") -
 }
 
 ## The fitted values and residuals of the rows used, as columns.
-dm_fe_columns <- function(object) {
+xtx_fe_columns <- function(object) {
     x <- object$x
     if (is.null(x))
         stop("This needs the fit's data: refit with `model = TRUE`, or use `predict(fit, newdata)`.",
              call. = FALSE)
     cols <- object$cols
-    f <- dm_fe_fitted(x, dm_fe_beta(object, x), object$fixef, cols$codes)
+    f <- xtx_fe_fitted(x, xtx_fe_beta(object, x), object$fixef, cols$codes)
     ## (z is the response minus the offset)
     list(fitted = if (is.null(cols$off)) f else f + cols$off, resid = cols$z - f)
 }
 
 ## Coefficients for the columns of design x (0 for the intercept, absorbed,
 ## and for aliased columns).
-dm_fe_beta <- function(object, x) {
+xtx_fe_beta <- function(object, x) {
     b <- object$coefficients
     b[is.na(b)] <- 0
     beta <- numeric(ncol(x))
@@ -1261,23 +1261,23 @@ dm_fe_beta <- function(object, x) {
 }
 
 #' @export
-residuals.design_lm_fe <- function(object, ...) {
+residuals.xtx_lm_fe <- function(object, ...) {
     ## remote: the remote design with the columns .fitted and .resid
-    r <- dm_fe_columns(object)
-    dmp_output(object$x, list(.fitted = r$fitted, .resid = r$resid), design = TRUE,
+    r <- xtx_fe_columns(object)
+    xtx_p_output(object$x, list(.fitted = r$fitted, .resid = r$resid), design = TRUE,
                memory = function(d) stats::naresid(object$na.action, d$.resid))
 }
 
 #' @export
-fitted.design_lm_fe <- function(object, ...) {
+fitted.xtx_lm_fe <- function(object, ...) {
     ## remote: a table with .fitted and .resid
-    r <- dm_fe_columns(object)
-    dmp_output(object$x, list(.fitted = r$fitted, .resid = r$resid),
+    r <- xtx_fe_columns(object)
+    xtx_p_output(object$x, list(.fitted = r$fitted, .resid = r$resid),
                memory = function(d) stats::napredict(object$na.action, d$.fitted))
 }
 
 #' @export
-predict.design_lm_fe <- function(object, newdata, se.fit = FALSE,
+predict.xtx_lm_fe <- function(object, newdata, se.fit = FALSE,
                                  interval = c("none", "confidence", "prediction"),
                                  level = 0.95, na.action = stats::na.pass, ...) {
     interval <- match.arg(interval)
@@ -1287,19 +1287,19 @@ predict.design_lm_fe <- function(object, newdata, se.fit = FALSE,
     if (!identical(na.action, stats::na.pass))
         stop("With fixed effects, predict() keeps every row of `newdata` (na.action = na.pass).", call. = FALSE)
     ## the design of the new rows (as predict() without FE), their offsets
-    nd <- dmfit_newdata(object, newdata, stats::na.pass, list(...))
+    nd <- xtx_fit_newdata(object, newdata, stats::na.pass, list(...))
     Dn <- nd$D
-    keys <- dm_fe_new_keys(object, Dn, newdata)
-    f <- dm_fe_fitted(Dn, dm_fe_beta(object, Dn), object$fixef, keys, object$fe_levels)
+    keys <- xtx_fe_new_keys(object, Dn, newdata)
+    f <- xtx_fe_fitted(Dn, xtx_fe_beta(object, Dn), object$fixef, keys, object$fe_levels)
     if (!is.null(nd$off)) f <- f + nd$off
     ## a table remotely, a named vector in memory
-    dmp_output(Dn, list(.fitted = f), memory = function(d) stats::setNames(d$.fitted, dimnames(Dn)[[1L]]))
+    xtx_p_output(Dn, list(.fitted = f), memory = function(d) stats::setNames(d$.fitted, dimnames(Dn)[[1L]]))
 }
 
 ## The keys of the FE of a fit over the rows of a new design Dn.
-dm_fe_new_keys <- function(object, Dn, newdata) {
+xtx_fe_new_keys <- function(object, Dn, newdata) {
     lapply(object$fe_vars, function(vars) {
-        k <- tryCatch(dmc_key(Dn, vars, data = if (is.data.frame(newdata)) newdata),
+        k <- tryCatch(xtx_c_key(Dn, vars, data = if (is.data.frame(newdata)) newdata),
                       error = function(e) NULL)
         if (is.null(k))
             stop(sprintf("`newdata` has no fixed-effect variable among `%s`.", paste(vars, collapse = "`, `")),
@@ -1313,7 +1313,7 @@ dm_fe_new_keys <- function(object, Dn, newdata) {
 ## connected set of levels). The method is registered for fixest's and
 ## nlme's fixef() generics when those packages are loaded, without a
 ## dependency on them; the values are also `fit$fixef`.
-#' @rawNamespace S3method(fixest::fixef, design_lm_fe)
-#' @rawNamespace S3method(nlme::fixef, design_lm_fe)
-fixef.design_lm_fe <- function(object, ...) object$fixef
+#' @rawNamespace S3method(fixest::fixef, xtx_lm_fe)
+#' @rawNamespace S3method(nlme::fixef, xtx_lm_fe)
+fixef.xtx_lm_fe <- function(object, ...) object$fixef
 

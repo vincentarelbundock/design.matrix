@@ -1,7 +1,7 @@
 ## the S3 class, registered for S4 methods (colSums() and friends, as())
 #' @importFrom methods setOldClass
 NULL
-setOldClass("design_matrix")
+setOldClass("xtx_matrix")
 
 #' Arithmetic on design matrices
 #'
@@ -44,38 +44,38 @@ NULL
 
 #' @rdname design_arithmetic
 #' @export
-Ops.design_matrix <- function(e1, e2) {
+Ops.xtx_matrix <- function(e1, e2) {
     op <- .Generic
     if (nargs() == 1L) {
         if (op == "+") return(e1)
-        if (op == "-") return(dm_scale(e1, -1))
+        if (op == "-") return(xtx_scale(e1, -1))
     } else if (op %in% c("*", "/")) {
-        d1 <- inherits(e1, "design_matrix")
-        d2 <- inherits(e2, "design_matrix")
+        d1 <- inherits(e1, "xtx_matrix")
+        d2 <- inherits(e2, "xtx_matrix")
         if (d1 && d2)
             stop(sprintf("`%s` between two design matrices is not supported.", op), call. = FALSE)
         if (op == "/" && d2)
             stop("Only `design / number` is supported, with the design first.", call. = FALSE)
         s <- if (d1) e2 else e1
         if (op == "/") s <- 1 / s
-        return(dm_scale(if (d1) e1 else e2, s))
+        return(xtx_scale(if (d1) e1 else e2, s))
     } else if (op %in% c("+", "-")) {
-        if (!inherits(e1, "design_matrix") || !inherits(e2, "design_matrix"))
+        if (!inherits(e1, "xtx_matrix") || !inherits(e2, "xtx_matrix"))
             stop(sprintf("`%s` needs two design matrices.", op), call. = FALSE)
-        t2 <- dm_terms(e2)
-        if (op == "-") t2 <- lapply(t2, function(t) { t$scale <- dm_times(t$scale, -1); t })
-        return(dm_from_terms(c(dm_terms(e1), t2)))
+        t2 <- xtx_terms(e2)
+        if (op == "-") t2 <- lapply(t2, function(t) { t$scale <- xtx_times(t$scale, -1); t })
+        return(xtx_from_terms(c(xtx_terms(e1), t2)))
     }
     stop(sprintf("`%s` is not supported for design matrices.", op), call. = FALSE)
 }
 
 ## Is `x` a combination of scaled designs (rather than one plain design)?
-dm_is_comb <- function(x) !is.null(x[["design"]])
+xtx_is_comb <- function(x) !is.null(x[["design"]])
 
 ## A design matrix as a list of terms, each a plain design and its row scale
 ## (NULL for 1).
-dm_terms <- function(x) {
-    if (!dm_is_comb(x)) return(list(list(design = x, scale = NULL)))
+xtx_terms <- function(x) {
+    if (!xtx_is_comb(x)) return(list(list(design = x, scale = NULL)))
     out <- list(list(design = x$design, scale = x$scale))
     if (!is.null(x$design2)) out[[2L]] <- list(design = x$design2, scale = x$scale2)
     out
@@ -83,52 +83,52 @@ dm_terms <- function(x) {
 
 ## The error for a scale (or the weights of a fit, design_problem()) that
 ## is not one value per row of a design of n rows.
-dm_scale_length_msg <- function(n) {
+xtx_scale_length_msg <- function(n) {
     sprintf("A design matrix can only be scaled by a number or a numeric vector of length %d (one value per row).", n)
 }
 
 ## scale * s, where a NULL scale is 1 and s is a number or a vector of length n
-dm_times <- function(scale, s) {
+xtx_times <- function(scale, s) {
     s <- as.double(s)
     if (is.null(scale)) s else scale * s
 }
 
-dm_scale <- function(x, s) {
+xtx_scale <- function(x, s) {
     n <- nrow(x)
     if (!is.numeric(s) || !(length(s) %in% c(1L, n)) || !is.null(dim(s)))
-        stop(dm_scale_length_msg(n), call. = FALSE)
-    terms <- lapply(dm_terms(x), function(t) { t$scale <- dm_times(t$scale, s); t })
-    dm_from_terms(terms)
+        stop(xtx_scale_length_msg(n), call. = FALSE)
+    terms <- lapply(xtx_terms(x), function(t) { t$scale <- xtx_times(t$scale, s); t })
+    xtx_from_terms(terms)
 }
 
-dm_from_terms <- function(terms) {
+xtx_from_terms <- function(terms) {
     if (length(terms) > 2L)
         stop("A design matrix can combine at most two designs.", call. = FALSE)
     t1 <- terms[[1L]]
     if (length(terms) == 1L && is.null(t1$scale)) return(t1$design)
     t2 <- if (length(terms) == 2L) terms[[2L]] else list(design = NULL, scale = NULL)
-    dm_combine(t1$design, t1$scale, t2$design, t2$scale)
+    xtx_combine(t1$design, t1$scale, t2$design, t2$scale)
 }
 
 ## Row i is scale[i] * x1_i + scale2[i] * x2_i, for plain designs x1 and x2
 ## (x2 optional) with the same rows and columns.
-dm_combine <- function(design, scale = NULL, design2 = NULL, scale2 = NULL) {
+xtx_combine <- function(design, scale = NULL, design2 = NULL, scale2 = NULL) {
     if (!is.null(design2) &&
         (nrow(design2) != nrow(design) || !identical(colnames(design2), colnames(design))))
         stop("The design matrices must have the same rows and columns.", call. = FALSE)
     structure(list(design = design, scale = scale,
                    design2 = design2, scale2 = scale2,
                    cache = new.env(parent = emptyenv())),
-              class = "design_matrix")
+              class = "xtx_matrix")
 }
 
 ## the dense matrix of a combination
-dm_comb_dense <- function(x) {
+xtx_comb_dense <- function(x) {
     if (jac_kernel_ok(x)) {
-        J <- do.call(.Call, c(list(C_dm_jac_dense), jac_args(x), list(design_threads())))
+        J <- do.call(.Call, c(list(C_xtx_jac_dense), jac_args(x), list(design_threads())))
         ## with a NaN anywhere, use R's arithmetic, whose NaN payloads
         ## (NA or NaN) the kernel cannot guarantee to reproduce
-        if (is.null(attr(J, "dm_nan"))) {
+        if (is.null(attr(J, "xtx_nan"))) {
             dimnames(J) <- dimnames(x$design)
             return(J)
         }
@@ -153,8 +153,8 @@ kernel_ok <- function(d) {
 }
 
 as_jac <- function(x) {
-    if (dm_is_comb(x)) return(x)
-    J <- dm_combine(x)
+    if (xtx_is_comb(x)) return(x)
+    J <- xtx_combine(x)
     J$cache <- x$cache # a design's groups are those of its plain combination
     J
 }
@@ -214,7 +214,7 @@ jac_kernel_ok <- function(J) {
 #' are then identical bit for bit to computing every row; `crossprod()` and
 #' grouped column summaries first sum the weights within each pattern, which changes
 #' only the rounding. The groups are found once per object and cached.
-#' The option `design.matrix.dedup` controls this:
+#' The option `xtx.dedup` controls this:
 #' `"auto"` (default) groups when the work per row is large enough to pay for
 #' hashing it and at most half the rows are distinct, `TRUE` always groups and
 #' `FALSE` never does.
@@ -246,7 +246,7 @@ jac_kernel_ok <- function(J) {
 NULL
 
 ## X %*% B for a design matrix: an n x K matrix.
-dm_mult <- function(x, beta) {
+xtx_mult <- function(x, beta) {
     p <- ncol(x)
     if (is.matrix(beta)) {
         checkmate::assert_matrix(beta, mode = "numeric", nrows = p, any.missing = FALSE)
@@ -259,20 +259,20 @@ dm_mult <- function(x, beta) {
     if (!is.matrix(B)) B <- matrix(B, ncol = 1L)
     storage.mode(B) <- "double"
     out <- NULL
-    if (!is.null(st <- dm_struct_single(J)) && dm_in_range(B, 1e-100, 1e100)) {
-        out <- dm_struct_mult(st$design, B)
+    if (!is.null(st <- xtx_struct_single(J)) && xtx_in_range(B, 1e-100, 1e100)) {
+        out <- xtx_struct_mult(st$design, B)
         if (!is.null(st$scale)) out <- st$scale * out
         ## the scale is applied after the product: if that order overflows,
         ## use the row kernel on the scaled design
-        if (!dm_all_finite(out)) out <- NULL
+        if (!xtx_all_finite(out)) out <- NULL
     }
     if (!is.null(out)) {
         ## done
     } else if (!jac_kernel_ok(J)) {
         out <- as.matrix(J) %*% B
     } else {
-        g <- dm_groups(J, cost = dm_row_cost(J) * ncol(B))
-        out <- do.call(.Call, c(list(C_dm_jac_mult), jac_args(J),
+        g <- xtx_dedup_groups(J, cost = xtx_row_cost(J) * ncol(B))
+        out <- do.call(.Call, c(list(C_xtx_jac_mult), jac_args(J),
                                 list(B, if (is.null(g)) NULL else g$first, design_threads())))
         if (!is.null(g)) out <- out[g$map, , drop = FALSE]
     }
@@ -280,7 +280,7 @@ dm_mult <- function(x, beta) {
 }
 
 ## t(X) %*% W: a p x K matrix.
-dm_crossprod <- function(x, w) {
+xtx_crossprod <- function(x, w) {
     n <- nrow(x)
     if (is.matrix(w)) {
         checkmate::assert_matrix(w, mode = "numeric", nrows = n)
@@ -290,22 +290,22 @@ dm_crossprod <- function(x, w) {
     J <- as_jac(x)
     W <- w
     if (!is.double(W)) storage.mode(W) <- "double"
-    st <- dm_struct_single(J)
+    st <- xtx_struct_single(J)
     out <- NULL
-    if (!is.null(st) && dm_in_range(W, 1e-100, 1e100)) {
+    if (!is.null(st) && xtx_in_range(W, 1e-100, 1e100)) {
         ## the scale moves to the weights (safe within the bounds); a
         ## vector becomes a one-column matrix after the product with the
         ## scale (one copy, not two)
         sW <- if (is.null(st$scale)) W else st$scale * W
         if (!is.matrix(sW)) dim(sW) <- c(n, 1L)
-        out <- dm_struct_xty(st$design, sW)
-        if (!dm_all_finite(out)) out <- NULL
+        out <- xtx_struct_xty(st$design, sW)
+        if (!xtx_all_finite(out)) out <- NULL
     }
     if (is.null(out) && !is.matrix(W)) dim(W) <- c(n, 1L)
     out <- if (!is.null(out)) {
         out
     } else if (jac_kernel_ok(J)) {
-        dm_crossprod_kernel(J, W)
+        xtx_crossprod_kernel(J, W)
     } else {
         crossprod(as.matrix(J), W)
     }
@@ -314,26 +314,26 @@ dm_crossprod <- function(x, w) {
 }
 
 ## With group codes, accumulate each column of W separately for each group.
-dm_crossprod_kernel <- function(J, W, codes = NULL, G = 1L) {
-    g <- dm_groups(J, codes, cost = dm_row_cost(J) * ncol(W))
+xtx_crossprod_kernel <- function(J, W, codes = NULL, G = 1L) {
+    g <- xtx_dedup_groups(J, codes, cost = xtx_row_cost(J) * ncol(W))
     first <- NULL
     if (!is.null(g)) {
         W <- rowsum(W, g$map, reorder = TRUE)
         first <- g$first
         if (!is.null(codes)) codes <- codes[first]
     }
-    do.call(.Call, c(list(C_dm_jac_crossprod), jac_args(J),
+    do.call(.Call, c(list(C_xtx_jac_crossprod), jac_args(J),
                      list(W, codes, G, first, design_threads())))
 }
 
 #' @rdname design_algebra
 #' @export
-rowsum.design_matrix <- function(x, group, reorder = TRUE, na.rm = FALSE, ...) {
-    dm_defaults_only(na.rm = na.rm)
-    dm_group_summary(x, group, reorder)
+rowsum.xtx_matrix <- function(x, group, reorder = TRUE, na.rm = FALSE, ...) {
+    xtx_defaults_only(na.rm = na.rm)
+    xtx_group_summary(x, group, reorder)
 }
 
-dm_group_summary <- function(x, group, reorder = TRUE, mean = FALSE) {
+xtx_group_summary <- function(x, group, reorder = TRUE, mean = FALSE) {
     n <- nrow(x)
     checkmate::assert_atomic_vector(group, len = n)
     checkmate::assert_flag(reorder)
@@ -356,27 +356,27 @@ dm_group_summary <- function(x, group, reorder = TRUE, mean = FALSE) {
             J <- as_jac(J$design)
         }
         W <- matrix(w, nrow = n, ncol = 1L)
-        out <- t(dm_crossprod_kernel(J, W, codes, length(ugroup)))
+        out <- t(xtx_crossprod_kernel(J, W, codes, length(ugroup)))
     }
     if (mean) out <- out / tabulate(codes, nbins = length(ugroup))
     dimnames(out) <- list(as.character(ugroup), colnames(x))
     out
 }
 
-dm_defaults_only <- function(na.rm = FALSE, dims = 1) {
+xtx_defaults_only <- function(na.rm = FALSE, dims = 1) {
     if (!isFALSE(na.rm)) stop("`na.rm = TRUE` is not supported for design matrices.", call. = FALSE)
     if (!identical(dims, 1) && !identical(dims, 1L))
         stop("Only `dims = 1` is supported for design matrices.", call. = FALSE)
 }
 
-dm_col_sums <- function(x) {
-    out <- dm_crossprod(x, rep(1, nrow(x)))[, 1L]
+xtx_col_sums <- function(x) {
+    out <- xtx_crossprod(x, rep(1, nrow(x)))[, 1L]
     names(out) <- colnames(x)
     out
 }
 
-dm_row_sums <- function(x) {
-    out <- dm_mult(x, rep(1, ncol(x)))[, 1L]
+xtx_row_sums <- function(x) {
+    out <- xtx_mult(x, rep(1, ncol(x)))[, 1L]
     names(out) <- rownames(x)
     out
 }
@@ -384,56 +384,56 @@ dm_row_sums <- function(x) {
 #' @rdname design_algebra
 #' @importFrom methods setMethod
 #' @export
-setMethod("colSums", "design_matrix", function(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE) {
-    dm_defaults_only(na.rm, dims)
-    if (!is.null(group)) return(dm_group_summary(x, group, reorder))
-    dm_col_sums(x)
+setMethod("colSums", "xtx_matrix", function(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE) {
+    xtx_defaults_only(na.rm, dims)
+    if (!is.null(group)) return(xtx_group_summary(x, group, reorder))
+    xtx_col_sums(x)
 })
 
 #' @rdname design_algebra
 #' @export
-setMethod("colMeans", "design_matrix", function(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE) {
-    dm_defaults_only(na.rm, dims)
-    if (!is.null(group)) return(dm_group_summary(x, group, reorder, mean = TRUE))
-    dm_col_sums(x) / nrow(x)
+setMethod("colMeans", "xtx_matrix", function(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE) {
+    xtx_defaults_only(na.rm, dims)
+    if (!is.null(group)) return(xtx_group_summary(x, group, reorder, mean = TRUE))
+    xtx_col_sums(x) / nrow(x)
 })
 
 #' @rdname design_algebra
 #' @export
-setMethod("rowSums", "design_matrix", function(x, na.rm = FALSE, dims = 1, ...) {
-    dm_defaults_only(na.rm, dims)
-    dm_row_sums(x)
+setMethod("rowSums", "xtx_matrix", function(x, na.rm = FALSE, dims = 1, ...) {
+    xtx_defaults_only(na.rm, dims)
+    xtx_row_sums(x)
 })
 
 #' @rdname design_algebra
 #' @export
-setMethod("rowMeans", "design_matrix", function(x, na.rm = FALSE, dims = 1, ...) {
-    dm_defaults_only(na.rm, dims)
-    dm_row_sums(x) / ncol(x)
+setMethod("rowMeans", "xtx_matrix", function(x, na.rm = FALSE, dims = 1, ...) {
+    xtx_defaults_only(na.rm, dims)
+    xtx_row_sums(x) / ncol(x)
 })
 
 #' @rdname design_algebra
 #' @export
 quadratic_diagonal <- function(x, V) {
-    checkmate::assert_multi_class(x, c("design_matrix", "dm_remote"))
+    checkmate::assert_multi_class(x, c("xtx_matrix", "xtx_remote"))
     p <- ncol(x)
     checkmate::assert_matrix(V, mode = "numeric", nrows = p, ncols = p, any.missing = FALSE)
     checkmate::assert_true(all(is.finite(V)))
     ## a vector in memory, a remote column (design_column) remotely
-    if (inherits(x, "dm_remote")) return(dm_column_label(dmp_quad(x, V), ".quad"))
-    dmp_output(x, list(.quad = dmp_quad(x, V)), memory = function(d) d$.quad)
+    if (inherits(x, "xtx_remote")) return(xtx_column_label(xtx_p_quad(x, V), ".quad"))
+    xtx_p_output(x, list(.quad = xtx_p_quad(x, V)), memory = function(d) d$.quad)
 }
 
 ## Groups of identical rows (same bits in every input of the row), or NULL.
 ##
-## Option `design.matrix.dedup`: FALSE (never), TRUE (always) or "auto".
+## Option `xtx.dedup`: FALSE (never), TRUE (always) or "auto".
 ## Groups are computed once per object and cached (the object's inputs never
 ## change). In "auto" mode they are computed only when the kernel is costly
 ## per row compared with hashing a row (`cost`, an estimate of the work per
 ## row), and kept only when at most half the rows are distinct; the search
 ## stops as soon as that is exceeded, and the failure is cached too.
-dm_groups <- function(J, group = NULL, cost = Inf, force = FALSE) {
-    mode <- getOption("design.matrix.dedup", "auto")
+xtx_dedup_groups <- function(J, group = NULL, cost = Inf, force = FALSE) {
+    mode <- getOption("xtx.dedup", "auto")
     if (isFALSE(mode) && !force) return(NULL)
     always <- force || isTRUE(mode)
     cache <- J$cache
@@ -441,11 +441,11 @@ dm_groups <- function(J, group = NULL, cost = Inf, force = FALSE) {
     if (isFALSE(g) && force) g <- NULL # an "auto" search gave up; search fully
     if (is.null(g)) {
         n <- nrow(J)
-        g <- dm_groups_from_designs(J)
+        g <- xtx_groups_from_designs(J)
         if (!is.null(g) && !always && length(g$first) > 0.5 * n) g <- FALSE
         if (is.null(g)) {
             if (!always && cost < 16) return(NULL)
-            g <- do.call(.Call, c(list(C_dm_row_groups), jac_args(J),
+            g <- do.call(.Call, c(list(C_xtx_row_groups), jac_args(J),
                                   list(NULL, if (always) 1 else 0.5)))
             if (is.null(g)) g <- FALSE else names(g) <- c("map", "first")
         }
@@ -468,8 +468,8 @@ dm_groups <- function(J, group = NULL, cost = Inf, force = FALSE) {
 ## same group of every design, whose scales also have the same bits, give
 ## the same Jacobian row. NULL when the designs have no cached groups or a
 ## scale differs within a group (the caller then hashes the Jacobian).
-dm_groups_from_designs <- function(J) {
-    if (!dm_is_comb(J) || identical(J$cache, J$design$cache)) return(NULL)
+xtx_groups_from_designs <- function(J) {
+    if (!xtx_is_comb(J) || identical(J$cache, J$design$cache)) return(NULL)
     g1 <- J$design$cache$groups
     if (!is.list(g1)) return(NULL)
     map <- g1$map
@@ -494,7 +494,7 @@ dm_groups_from_designs <- function(J) {
 #' same row in the model matrix and in every row-wise computation. Use it to
 #' compute once per distinct row and expand, or to weight distinct rows by
 #' their counts when averaging. The kernels in [design_algebra] use the same
-#' groups (see the option `design.matrix.dedup`); they are found once per
+#' groups (see the option `xtx.dedup`); they are found once per
 #' object and cached.
 #'
 #' @param x A `design_matrix` built from a formula or plan.
@@ -508,20 +508,20 @@ dm_groups_from_designs <- function(J) {
 #' @keywords internal
 #' @noRd
 design_row_groups <- function(x) {
-    checkmate::assert_class(x, "design_matrix")
+    checkmate::assert_class(x, "xtx_matrix")
     J <- as_jac(x)
     if (!jac_kernel_ok(J))
         stop("`x` must be built from a formula or a plan.", call. = FALSE)
-    g <- dm_groups(J, force = TRUE)
+    g <- xtx_dedup_groups(J, force = TRUE)
     list(map = g$map, first = g$first, counts = tabulate(g$map, length(g$first)))
 }
 
 ## Average number of entries per row over the first rows (a cost estimate),
 ## cached.
-dm_row_cost <- function(J) {
+xtx_row_cost <- function(J) {
     cache <- J$cache
     if (!is.null(cache) && !is.null(cache$entries)) return(cache$entries)
-    m <- do.call(.Call, c(list(C_dm_jac_entries_mean), jac_args(J), list(256L)))
+    m <- do.call(.Call, c(list(C_xtx_jac_entries_mean), jac_args(J), list(256L)))
     if (!is.null(cache)) cache$entries <- m
     m
 }
@@ -532,28 +532,28 @@ dm_row_cost <- function(J) {
 #'   with one value per row or a matrix with `nrow(x)` rows (the weights),
 #'   another `design_matrix` with the same rows, or `NULL` for `t(X) %*% X`.
 #' @export
-`%*%.design_matrix` <- function(x, y) {
-    if (!inherits(x, "design_matrix"))
+`%*%.xtx_matrix` <- function(x, y) {
+    if (!inherits(x, "xtx_matrix"))
         stop("Only `design %*% beta` is supported, with the design first.", call. = FALSE)
-    dm_mult(x, y)
+    xtx_mult(x, y)
 }
 
 #' @rdname design_algebra
 #' @param ... Not used.
-#' @method crossprod design_matrix
+#' @method crossprod xtx_matrix
 #' @export
-crossprod.design_matrix <- function(x, y = NULL, ...) {
-    if (!inherits(x, "design_matrix"))
+crossprod.xtx_matrix <- function(x, y = NULL, ...) {
+    if (!inherits(x, "xtx_matrix"))
         stop("Only `crossprod(design, w)` and `crossprod(design, design)` are supported, with a design first.", call. = FALSE)
-    if (is.null(y) || inherits(y, "design_matrix")) return(dm_gram(x, y))
-    dm_crossprod(x, y)
+    if (is.null(y) || inherits(y, "xtx_matrix")) return(xtx_gram(x, y))
+    xtx_crossprod(x, y)
 }
 
 ## t(X) %*% Y for two design matrices (Y = X when `y` is NULL): a base
 ## matrix. When both are scaled rows of the same plain design, the scales
 ## become weights of a symmetric product, so that identical rows of the
 ## design can be grouped.
-dm_gram <- function(x, y = NULL) {
+xtx_gram <- function(x, y = NULL) {
     n <- nrow(x)
     if (!is.null(y) && nrow(y) != n)
         stop("The design matrices must have the same number of rows.", call. = FALSE)
@@ -561,27 +561,27 @@ dm_gram <- function(x, y = NULL) {
     x0 <- x
     y0 <- y
     w <- NULL
-    tx <- dm_terms(x)
+    tx <- xtx_terms(x)
     if (is.null(y)) {
-        if (length(tx) == 1L && !is.null(tx[[1L]]$scale) && dm_safe_scale(tx[[1L]]$scale)) {
+        if (length(tx) == 1L && !is.null(tx[[1L]]$scale) && xtx_safe_scale(tx[[1L]]$scale)) {
             w <- tx[[1L]]$scale^2
             x <- tx[[1L]]$design
         }
     } else {
-        ty <- dm_terms(y)
+        ty <- xtx_terms(y)
         if (length(tx) == 1L && length(ty) == 1L &&
-            dm_same_design(tx[[1L]]$design, ty[[1L]]$design) &&
-            dm_safe_scale(tx[[1L]]$scale) && dm_safe_scale(ty[[1L]]$scale)) {
-            w <- dm_times(tx[[1L]]$scale, if (is.null(ty[[1L]]$scale)) 1 else ty[[1L]]$scale)
+            xtx_same_design(tx[[1L]]$design, ty[[1L]]$design) &&
+            xtx_safe_scale(tx[[1L]]$scale) && xtx_safe_scale(ty[[1L]]$scale)) {
+            w <- xtx_times(tx[[1L]]$scale, if (is.null(ty[[1L]]$scale)) 1 else ty[[1L]]$scale)
             x <- tx[[1L]]$design
             y <- NULL
         }
     }
-    if (is.null(y) && (is.null(w) || dm_all_finite(w)) && dm_struct_ok(x)) {
-        out <- dm_struct_gram(x, if (is.null(w)) NULL
+    if (is.null(y) && (is.null(w) || xtx_all_finite(w)) && xtx_struct_ok(x)) {
+        out <- xtx_struct_gram(x, if (is.null(w)) NULL
                                  else if (is.double(w) && length(w) == n && is.null(attributes(w))) w
                                  else rep_len(as.double(w), n))
-        if (dm_all_finite(out)) {
+        if (xtx_all_finite(out)) {
             dimnames(out) <- nm
             return(out)
         }
@@ -606,7 +606,7 @@ dm_gram <- function(x, y = NULL) {
     if (!is.null(w) && length(w) == 1L) w <- rep(w, n)
     first <- NULL
     if (is.null(B)) {
-        g <- dm_groups(A, cost = dm_row_cost(A)^2)
+        g <- xtx_dedup_groups(A, cost = xtx_row_cost(A)^2)
         if (!is.null(g)) {
             w <- drop(rowsum(if (is.null(w)) rep(1, n) else w, g$map, reorder = TRUE))
             first <- g$first
@@ -614,7 +614,7 @@ dm_gram <- function(x, y = NULL) {
     }
     if (!is.null(w)) w <- as.double(w)
     Bargs <- if (is.null(B)) rep(list(NULL), 6L) else jac_args(B)
-    out <- do.call(.Call, c(list(C_dm_jac_gram), jac_args(A), Bargs, list(w, first, design_threads())))
+    out <- do.call(.Call, c(list(C_xtx_jac_gram), jac_args(A), Bargs, list(w, first, design_threads())))
     dimnames(out) <- nm
     out
 }
@@ -622,39 +622,39 @@ dm_gram <- function(x, y = NULL) {
 ## A plain design with row scales that the structured kernels can handle
 ## (moving the scale outside the product is safe), as list(design, scale),
 ## or NULL.
-dm_struct_single <- function(J) {
-    if (!is.null(J$design2) || !dm_struct_ok(J$design)) return(NULL)
-    if (!dm_safe_scale(J$scale)) return(NULL)
+xtx_struct_single <- function(J) {
+    if (!is.null(J$design2) || !xtx_struct_ok(J$design)) return(NULL)
+    if (!xtx_safe_scale(J$scale)) return(NULL)
     list(design = J$design, scale = J$scale)
 }
 
 ## Can row scales be combined or moved to the other factor of a product
 ## (s^2 * x * x for (s * x) * (s * x), say) without overflow or underflow
 ## that the product in its original order would not have? NULL is 1.
-dm_safe_scale <- function(s) {
+xtx_safe_scale <- function(s) {
     if (is.null(s)) return(TRUE)
-    dm_in_range(s, 1e-50, 1e50)
+    xtx_in_range(s, 1e-50, 1e50)
 }
 
 ## Are all values finite, with non-zero absolute values within [lo, hi]?
 ## The structured kernels regroup products; with inputs within the bounds
-## that dm_struct_ok() enforces (1e-50 to 1e50 per factor), row scales
-## within dm_safe_scale() and the other operand of a product within
+## that xtx_struct_ok() enforces (1e-50 to 1e50 per factor), row scales
+## within xtx_safe_scale() and the other operand of a product within
 ## [1e-100, 1e100], no intermediate leaves 1e+-300, so regrouping cannot
 ## overflow or underflow.
-dm_in_range <- function(x, lo, hi) {
+xtx_in_range <- function(x, lo, hi) {
     if (!is.double(x)) storage.mode(x) <- "double"
-    .Call(C_dm_in_range, x, lo, hi)
+    .Call(C_xtx_in_range, x, lo, hi)
 }
 
 ## Are all values of a numeric vector or matrix finite? (No allocation.)
-dm_all_finite <- function(x) {
+xtx_all_finite <- function(x) {
     if (!is.double(x)) storage.mode(x) <- "double"
-    .Call(C_dm_all_finite, x)
+    .Call(C_xtx_all_finite, x)
 }
 
 ## Are two plain designs the same object (or equal)?
-dm_same_design <- function(a, b) {
+xtx_same_design <- function(a, b) {
     if (!is.null(a$cache) && identical(a$cache, b$cache)) return(TRUE)
     identical(a, b)
 }

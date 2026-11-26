@@ -2,34 +2,34 @@
 % Please edit documentation in R/qr.R
 \name{design_qr}
 \alias{design_qr}
-\alias{qr.design_matrix}
-\alias{qr.coef,design_qr,ANY-method}
-\alias{qr.fitted,design_qr,ANY-method}
-\alias{qr.resid,design_qr,ANY-method}
-\alias{qr.qty,design_qr,ANY-method}
-\alias{qr.qy,design_qr,ANY-method}
-\alias{qr.Q,design_qr-method}
-\alias{qr.R,design_qr-method}
-\alias{solve.design_qr}
+\alias{qr.xtx_matrix}
+\alias{qr.coef,xtx_qr,ANY-method}
+\alias{qr.fitted,xtx_qr,ANY-method}
+\alias{qr.resid,xtx_qr,ANY-method}
+\alias{qr.qty,xtx_qr,ANY-method}
+\alias{qr.qy,xtx_qr,ANY-method}
+\alias{qr.Q,xtx_qr-method}
+\alias{qr.R,xtx_qr-method}
+\alias{solve.xtx_qr}
 \title{QR decomposition of a design matrix without forming the dense matrix}
 \usage{
-\method{qr}{design_matrix}(x, tol = 1e-07, ...)
+\method{qr}{xtx_matrix}(x, tol = 1e-07, ...)
 
-\S4method{qr.coef}{design_qr,ANY}(qr, y)
+\S4method{qr.coef}{xtx_qr,ANY}(qr, y)
 
-\S4method{qr.fitted}{design_qr,ANY}(qr, y, k = qr$rank)
+\S4method{qr.fitted}{xtx_qr,ANY}(qr, y, k = qr$rank)
 
-\S4method{qr.resid}{design_qr,ANY}(qr, y)
+\S4method{qr.resid}{xtx_qr,ANY}(qr, y)
 
-\S4method{qr.qty}{design_qr,ANY}(qr, y)
+\S4method{qr.qty}{xtx_qr,ANY}(qr, y)
 
-\S4method{qr.qy}{design_qr,ANY}(qr, y)
+\S4method{qr.qy}{xtx_qr,ANY}(qr, y)
 
-\S4method{qr.Q}{design_qr}(qr, complete = FALSE, Dvec)
+\S4method{qr.Q}{xtx_qr}(qr, complete = FALSE, Dvec)
 
-\S4method{qr.R}{design_qr}(qr, complete = FALSE)
+\S4method{qr.R}{xtx_qr}(qr, complete = FALSE)
 
-\method{solve}{design_qr}(a, b, ...)
+\method{solve}{xtx_qr}(a, b, ...)
 }
 \arguments{
 \item{x}{A \code{design_matrix}.}
@@ -38,7 +38,7 @@
 
 \item{...}{Not used.}
 
-\item{qr}{A \code{"design_qr"} object, from \code{qr()} on a \code{design_matrix}.}
+\item{qr}{A \code{"xtx_qr"} object, from \code{qr()} on a \code{design_matrix}.}
 
 \item{y}{A numeric vector or matrix: the response for \code{qr.coef()},
 \code{qr.fitted()}, \code{qr.resid()} and \code{qr.qty()} (\code{nrow(x)} rows), or the
@@ -48,18 +48,18 @@ values to multiply by \code{Q} for \code{qr.qy()} (\code{rank} rows).}
 
 \item{complete, Dvec}{Not supported; only the defaults are accepted.}
 
-\item{a, b}{For \code{solve()}: a \code{"design_qr"} object and the right-hand side,
+\item{a, b}{For \code{solve()}: a \code{"xtx_qr"} object and the right-hand side,
 as in \code{\link[=solve.qr]{solve.qr()}}.}
 }
 \value{
-An object of class \code{"design_qr"}: a list with \code{design} (\code{x}),
+An object of class \code{"xtx_qr"}: a list with \code{design} (\code{x}),
 \code{R} (the \code{p} by \code{p} upper triangular factor, columns in pivoted
 order), \code{rank}, \code{pivot} and \code{tol}.
 }
 \description{
 \code{qr(x)} decomposes a \code{design_matrix} as \verb{X P = Q R} without forming the
 dense matrix \code{X} or the \code{n} by \code{p} matrix \code{Q}. It returns an object of
-class \code{"design_qr"}, which the usual base R functions accept: \code{qr.coef()},
+class \code{"xtx_qr"}, which the usual base R functions accept: \code{qr.coef()},
 \code{qr.fitted()}, \code{qr.resid()}, \code{qr.qty()}, \code{qr.qy()}, \code{qr.Q()}, \code{qr.R()} and
 \code{solve()}. This gives least squares coefficients, fitted values and
 residuals at the cost of a few passes over the rows.
@@ -113,8 +113,8 @@ methods give its results.
 \strong{Calling the methods.} \code{qr.coef()}, \code{qr.fitted()}, \code{qr.resid()},
 \code{qr.qty()}, \code{qr.qy()}, \code{qr.Q()} and \code{qr.R()} are S4 generics created by
 this package (as the Matrix package does for its decompositions): they
-dispatch when design.matrix is attached, or when called as
-\code{design.matrix::qr.coef()}. Calls to \code{base::qr.coef()} (for example from
+dispatch when xtx is attached, or when called as
+\code{xtx::qr.coef()}. Calls to \code{base::qr.coef()} (for example from
 code in another package that imports base's function) do not dispatch,
 and stop because the object is not a base QR decomposition. \code{qr()} and
 \code{solve()} are S3 generics and always dispatch.

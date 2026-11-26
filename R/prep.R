@@ -19,7 +19,7 @@
 
 the <- new.env(parent = emptyenv())
 
-dm_make_prep <- function(f = get("model.matrix.default", envir = asNamespace("stats"))) {
+xtx_make_prep <- function(f = get("model.matrix.default", envir = asNamespace("stats"))) {
     b <- body(f)
     if (!is.call(b) || !identical(b[[1L]], as.name("{"))) return(NULL)
     stmts <- as.list(b)
@@ -33,7 +33,7 @@ dm_make_prep <- function(f = get("model.matrix.default", envir = asNamespace("st
     if (!identical(lapply(tail_actual, strip_srcref), tail_expected)) return(NULL)
     new <- stmts[seq_len(idx - 1L)]
     new[[idx]] <- quote(return(list(t = t, data = data, isF = isF, rho = environment())))
-    new <- lapply(new, dm_swap_model_frame)
+    new <- lapply(new, xtx_swap_model_frame)
     body(f) <- as.call(new)
     ## Every name resolves as in stats, except design_frame().
     env <- new.env(parent = environment(f))
@@ -45,13 +45,13 @@ dm_make_prep <- function(f = get("model.matrix.default", envir = asNamespace("st
 ## Replace the call `model.frame(object, data, xlev = xlev)` of
 ## model.matrix.default() by design_frame() with the same arguments (see
 ## frame.R: the same model frame, without redundant copies).
-dm_swap_model_frame <- function(e) {
+xtx_swap_model_frame <- function(e) {
     if (is.call(e) && identical(strip_srcref(e), quote(model.frame(object, data, xlev = xlev))))
         return(quote(design_frame(object, data, xlev = xlev)))
     if (is.call(e)) {
         for (i in seq_along(e)[-1L]) {
             ei <- e[[i]]
-            if (!missing(ei) && !is.null(ei)) e[[i]] <- dm_swap_model_frame(ei)
+            if (!missing(ei) && !is.null(ei)) e[[i]] <- xtx_swap_model_frame(ei)
         }
     }
     e
@@ -63,13 +63,13 @@ strip_srcref <- function(e) {
 }
 
 .onLoad <- function(libname, pkgname) {
-    the$prep <- tryCatch(dm_make_prep(), error = function(e) NULL)
-    the$frame <- tryCatch(dm_init_frame(), error = function(e) NULL)
+    the$prep <- tryCatch(xtx_make_prep(), error = function(e) NULL)
+    the$frame <- tryCatch(xtx_init_frame(), error = function(e) NULL)
 }
 
 ## Returns list(t, data, isF, rho, contrasts), or NULL when the preparation
 ## code of this version of R is not recognised.
-dm_prepare <- function(object, data, contrasts.arg, xlev, data_missing) {
+xtx_prepare <- function(object, data, contrasts.arg, xlev, data_missing) {
     prep <- the$prep
     if (is.null(prep)) return(NULL)
     out <- if (data_missing) {

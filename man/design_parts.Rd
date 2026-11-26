@@ -117,8 +117,8 @@ models.
 
 \code{design_parts()} is an S3 generic: a package (or a user) adds support for
 its own model class by writing a method \verb{design_parts.<class>()} and
-registering it (with \verb{S3method(design.matrix::design_parts, <class>)} in
-the NAMESPACE of a package that only suggests \pkg{design.matrix}, or
+registering it (with \verb{S3method(xtx::design_parts, <class>)} in
+the NAMESPACE of a package that only suggests \pkg{xtx}, or
 \verb{S3method(design_parts, <class>)} when it imports it). \code{\link[=design_plan]{design_plan()}},
 and therefore \code{design_matrix(fit, newdata = ...)}, then work for that
 class. A method returns a list with elements:
@@ -160,7 +160,7 @@ design_parts.toyfit <- function(model, ...) {
     list(terms = terms(model$formula), xlevels = model$levels,
          contrasts = list(`factor(gear)` = "contr.treatment"))
 }
-# (in a package: S3method(design.matrix::design_parts, toyfit))
+# (in a package: S3method(xtx::design_parts, toyfit))
 .S3method("design_parts", "toyfit", design_parts.toyfit)
 p <- design_plan(toy)
 as.matrix(design_matrix(p, head(mtcars)))

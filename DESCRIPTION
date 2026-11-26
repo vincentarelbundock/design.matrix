@@ -1,4 +1,4 @@
-Package: design.matrix
+Package: xtx
 Type: Package
 Title: Exact and Fast Model Matrices
 Version: 0.0.1
@@ -16,8 +16,8 @@ Description: Builds model matrices that are identical, bit for bit, to those
     decompositions computed from factor codes and numeric variables without
     forming the dense matrix.
 License: GPL (>= 2)
-URL: https://github.com/vincentarelbundock/design.matrix
-BugReports: https://github.com/vincentarelbundock/design.matrix/issues
+URL: https://github.com/vincentarelbundock/xtx
+BugReports: https://github.com/vincentarelbundock/xtx/issues
 Depends: R (>= 4.4.0)
 Imports: checkmate, compiler, Matrix, methods, stats, utils
 Suggests: tinytest, splines, MASS, lme4, nlme, glmmTMB, betareg, ordinal, DBI, duckdb,

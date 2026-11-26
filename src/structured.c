@@ -1,5 +1,5 @@
 /*
- *  design.matrix: column-structured algebra on a plain design.
+ *  xtx: column-structured algebra on a plain design.
  *
  *  Row i of term t of the dense matrix is the Kronecker product of its
  *  components' rows.  Split the components into factors and numerics:
@@ -16,7 +16,7 @@
  *  that each block's levels and products stay in cache.
  *
  *  Only for designs whose inputs are all finite, with no missing factor
- *  codes, and whose products cannot overflow (checked by dm_struct_ok):
+ *  codes, and whose products cannot overflow (checked by xtx_struct_ok):
  *  then the results agree with the dense computation up to rounding.
  *
  *  Copyright (C) 2026 Vincent Arel-Bundock.  GPL (>= 2).
@@ -30,7 +30,7 @@
 #include <R.h>
 #include <Rinternals.h>
 #include <R_ext/BLAS.h>
-#include "dm.h"
+#include "xtx.h"
 #include "structured.h"
 #ifdef _OPENMP
 #include <omp.h>
@@ -45,20 +45,20 @@
    Leaves one object PROTECTed (the coerced variables). */
 void build_sctx(sctx *S, SEXP setup, SEXP vars)
 {
-    SEXP factors = VECTOR_ELT(setup, DM_SETUP_FACTORS),
-	contr1 = VECTOR_ELT(setup, DM_SETUP_CONTR1),
-	contr2 = VECTOR_ELT(setup, DM_SETUP_CONTR2);
-    const int *nlevs = INTEGER(VECTOR_ELT(setup, DM_SETUP_NLEVS)),
-	*columns = INTEGER(VECTOR_ELT(setup, DM_SETUP_COLUMNS)),
-	*count = INTEGER(VECTOR_ELT(setup, DM_SETUP_COUNT));
-    int rhs_response = asInteger(VECTOR_ELT(setup, DM_SETUP_RHS_RESPONSE)),
-	intercept = asInteger(VECTOR_ELT(setup, DM_SETUP_INTERCEPT)),
-	nVar = asInteger(VECTOR_ELT(setup, DM_SETUP_NVAR)),
-	nterms = asInteger(VECTOR_ELT(setup, DM_SETUP_NTERMS));
+    SEXP factors = VECTOR_ELT(setup, XTX_SETUP_FACTORS),
+	contr1 = VECTOR_ELT(setup, XTX_SETUP_CONTR1),
+	contr2 = VECTOR_ELT(setup, XTX_SETUP_CONTR2);
+    const int *nlevs = INTEGER(VECTOR_ELT(setup, XTX_SETUP_NLEVS)),
+	*columns = INTEGER(VECTOR_ELT(setup, XTX_SETUP_COLUMNS)),
+	*count = INTEGER(VECTOR_ELT(setup, XTX_SETUP_COUNT));
+    int rhs_response = asInteger(VECTOR_ELT(setup, XTX_SETUP_RHS_RESPONSE)),
+	intercept = asInteger(VECTOR_ELT(setup, XTX_SETUP_INTERCEPT)),
+	nVar = asInteger(VECTOR_ELT(setup, XTX_SETUP_NVAR)),
+	nterms = asInteger(VECTOR_ELT(setup, XTX_SETUP_NTERMS));
     const int *fac = nterms > 0 ? INTEGER(factors) : NULL;
-    SEXP variable = PROTECT(dm_vars(setup, vars));
+    SEXP variable = PROTECT(xtx_vars(setup, vars));
     S->n = nrows(VECTOR_ELT(vars, 0));
-    S->p = LENGTH(VECTOR_ELT(setup, DM_SETUP_XNAMES));
+    S->p = LENGTH(VECTOR_ELT(setup, XTX_SETUP_XNAMES));
     S->t = (sterm *) R_alloc(nterms + 1, sizeof(sterm));
     S->nt = 0;
     int off = 0;
@@ -112,7 +112,7 @@ void build_sctx(sctx *S, SEXP setup, SEXP vars)
 	}
 	T->L = L; T->ns = ns; T->kc = kc;
 	if (Ld > INT_MAX / 2 || kcd > INT_MAX / 2 || nsd > INT_MAX / 2) {
-	    /* too large for the structured kernels (dm_struct_ok declines) */
+	    /* too large for the structured kernels (xtx_struct_ok declines) */
 	    T->L = T->kc = T->ns = -1;
 	}
     }
@@ -246,7 +246,7 @@ static void range_of(const double *v, R_xlen_t len, double *lo, double *hi, int 
     *hi = mx > 0.0 ? mx : 1.0;
 }
 
-SEXP dm_struct_ok(SEXP setup, SEXP vars, SEXP cap_)
+SEXP xtx_struct_ok(SEXP setup, SEXP vars, SEXP cap_)
 {
     sctx S;
     build_sctx(&S, setup, vars);
@@ -290,7 +290,7 @@ SEXP dm_struct_ok(SEXP setup, SEXP vars, SEXP cap_)
    combined level) and fcm the list of their contrast matrices: the term's
    combined contrast matrix C_t is the Kronecker product of the fcm, the
    first factor varying fastest. */
-SEXP dm_struct_info(SEXP setup, SEXP vars)
+SEXP xtx_struct_info(SEXP setup, SEXP vars)
 {
     sctx S;
     build_sctx(&S, setup, vars);
@@ -380,7 +380,7 @@ static void kron_mode(const double *X, R_xlen_t R, int l, const double *A, int k
 
 /* kron_mode() from R: X an array with l = nrow(A) rows first, A, B (or
    NULL) contrast matrices; an R x (ka kb) matrix. */
-SEXP dm_kron_mode(SEXP X_, SEXP A_, SEXP B_)
+SEXP xtx_kron_mode(SEXP X_, SEXP A_, SEXP B_)
 {
     int l = nrows(A_), ka = ncols(A_), kb = isNull(B_) ? 1 : ncols(B_);
     if (!isNull(B_) && nrows(B_) != l) error("internal error: contrasts of different levels");
@@ -414,7 +414,7 @@ static int selection(const double *A, int l, int k, int *col, double *val)
 }
 
 /* The block of X'WX for terms s <= t from their moments M (layout of
-   dm_struct_gram()), added to G (p x p, zero on entry).  The factors of
+   xtx_struct_gram()), added to G (p x p, zero on entry).  The factors of
    the union of the two terms are taken in turn (the moments' dims: first
    those of s, then those of t that s lacks), each with the contrast of
    s, of t, or both for a shared factor.  A factor whose contrasts are
@@ -850,11 +850,11 @@ static void moment_combine(mws *ws, int T, int nacc, const R_xlen_t *len, R_xlen
     double **p = (double **) R_alloc(T, sizeof(double *));
     for (int a = 0; a < nacc; a++) {
 	for (int t = 0; t < T; t++) p[t] = ws[t].acc[a];
-	dm_combine(p, T, len[a]);
+	xtx_combine(p, T, len[a]);
     }
     if (lg > 0) {
 	for (int t = 0; t < T; t++) p[t] = ws[t].Gd;
-	dm_combine(p, T, lg);
+	xtx_combine(p, T, lg);
     }
 }
 
@@ -865,8 +865,8 @@ static void moment_combine(mws *ws, int T, int nacc, const R_xlen_t *len, R_xlen
    factors they share agree within a row, so only these cells can be
    non-zero); s == t: [Ls, ns, ns].  On several threads, fixed chunks of
    rows (whole blocks) with their own moments, added in order (see
-   dm_reduce_threads()). */
-SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_, SEXP nthreads_)
+   xtx_reduce_threads()). */
+SEXP xtx_struct_gram(SEXP setup, SEXP vars, SEXP w_, SEXP nthreads_)
 {
     sctx S;
     build_sctx(&S, setup, vars);
@@ -907,7 +907,7 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_, SEXP nthreads_)
     R_xlen_t lg = (R_xlen_t) qd * qd;
     int T = 1, req = asInteger(nthreads_);
     if (req > 1)
-	T = dm_reduce_threads(req, S.n, (double) S.n * (work + 4.0 * S.nt + 1.0),
+	T = xtx_reduce_threads(req, S.n, (double) S.n * (work + 4.0 * S.nt + 1.0),
 			      (double) moment_total(np, GP.len, lg));
     mws *ws = (mws *) R_alloc(T, sizeof(mws));
     for (int t = 0; t < T; t++) {
@@ -930,9 +930,9 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_, SEXP nthreads_)
 #pragma omp parallel for num_threads(T) schedule(static)
 #endif
 	for (int t = 0; t < T; t++) {
-	    if (t > 0) dm_zero(buf[t], tot);
-	    sgram_rows(&S, &GP, w, dm_chunk_start(S.n, T, t, BLOCK),
-		       dm_chunk_start(S.n, T, t + 1, BLOCK), &ws[t]);
+	    if (t > 0) xtx_zero(buf[t], tot);
+	    sgram_rows(&S, &GP, w, xtx_chunk_start(S.n, T, t, BLOCK),
+		       xtx_chunk_start(S.n, T, t + 1, BLOCK), &ws[t]);
 	}
 	moment_combine(ws, T, np, GP.len, lg);
     }
@@ -1005,8 +1005,8 @@ static void sxty_rows(const sctx *S, const double *Y, int K, R_xlen_t i0s,
 }
 
 /* Moments for X'Y (Y n x K): list per term of [L, ns, K] sums of
-   N[u] Y[, k] by level.  On several threads, as dm_struct_gram(). */
-SEXP dm_struct_xty(SEXP setup, SEXP vars, SEXP Y_, SEXP nthreads_)
+   N[u] Y[, k] by level.  On several threads, as xtx_struct_gram(). */
+SEXP xtx_struct_xty(SEXP setup, SEXP vars, SEXP Y_, SEXP nthreads_)
 {
     sctx S;
     build_sctx(&S, setup, vars);
@@ -1028,7 +1028,7 @@ SEXP dm_struct_xty(SEXP setup, SEXP vars, SEXP Y_, SEXP nthreads_)
     R_xlen_t lg = (R_xlen_t) qd * K;
     int T = 1, req = asInteger(nthreads_);
     if (req > 1)
-	T = dm_reduce_threads(req, S.n, (double) S.n * (work + 4.0 * S.nt + 1.0),
+	T = xtx_reduce_threads(req, S.n, (double) S.n * (work + 4.0 * S.nt + 1.0),
 			      (double) moment_total(S.nt, len, lg));
     mws *ws = (mws *) R_alloc(T, sizeof(mws));
     for (int t = 0; t < T; t++) alloc_mws(&ws[t], &S, S.nt);
@@ -1046,9 +1046,9 @@ SEXP dm_struct_xty(SEXP setup, SEXP vars, SEXP Y_, SEXP nthreads_)
 #pragma omp parallel for num_threads(T) schedule(static)
 #endif
 	for (int t = 0; t < T; t++) {
-	    if (t > 0) dm_zero(buf[t], tot);
-	    sxty_rows(&S, Y, K, dm_chunk_start(S.n, T, t, BLOCK),
-		      dm_chunk_start(S.n, T, t + 1, BLOCK), &ws[t]);
+	    if (t > 0) xtx_zero(buf[t], tot);
+	    sxty_rows(&S, Y, K, xtx_chunk_start(S.n, T, t, BLOCK),
+		      xtx_chunk_start(S.n, T, t + 1, BLOCK), &ws[t]);
 	}
 	moment_combine(ws, T, S.nt, len, lg);
     }
@@ -1071,7 +1071,7 @@ SEXP dm_struct_xty(SEXP setup, SEXP vars, SEXP Y_, SEXP nthreads_)
    row i, column k is sum over t, u of N_t(i)[u] P_t[F_t(i), u, k].  Rows
    are computed in blocks of BLOCK rows, each the same on any number of
    threads. */
-SEXP dm_struct_mult(SEXP setup, SEXP vars, SEXP P, SEXP K_, SEXP nthreads_)
+SEXP xtx_struct_mult(SEXP setup, SEXP vars, SEXP P, SEXP K_, SEXP nthreads_)
 {
     sctx S;
     build_sctx(&S, setup, vars);
@@ -1080,8 +1080,8 @@ SEXP dm_struct_mult(SEXP setup, SEXP vars, SEXP P, SEXP K_, SEXP nthreads_)
     SEXP out = PROTECT(allocMatrix(REALSXP, S.n, K));
     double *o = REAL(out);
     memset(o, 0, sizeof(double) * (size_t) S.n * K);
-    R_xlen_t nblocks = dm_block_count(S.n, BLOCK);
-    int nthreads = dm_worker_count(asInteger(nthreads_), nblocks);
+    R_xlen_t nblocks = xtx_block_count(S.n, BLOCK);
+    int nthreads = xtx_worker_count(asInteger(nthreads_), nblocks);
     dpart *DP = (dpart *) R_alloc(nthreads, sizeof(dpart));
     tblock **Bk = (tblock **) R_alloc(nthreads, sizeof(tblock *));
     for (int t = 0; t < nthreads; t++) {
@@ -1153,7 +1153,7 @@ SEXP dm_struct_mult(SEXP setup, SEXP vars, SEXP P, SEXP K_, SEXP nthreads_)
    of its components' smallest non-zero absolute values (input values or
    contrast entries).  The intercept counts as 1.  Non-finite inputs are
    ignored (the caller handles them). */
-SEXP dm_min_nonzero(SEXP setup, SEXP vars)
+SEXP xtx_min_nonzero(SEXP setup, SEXP vars)
 {
     sctx S;
     build_sctx(&S, setup, vars);
@@ -1189,7 +1189,7 @@ SEXP dm_min_nonzero(SEXP setup, SEXP vars)
    x * 0 is 0 for finite x and NaN otherwise: sums of those in four
    independent chains, over chunks, are much faster than a test per
    value. */
-SEXP dm_all_finite(SEXP x)
+SEXP xtx_all_finite(SEXP x)
 {
     const double *v = REAL(x);
     R_xlen_t n = XLENGTH(x);
@@ -1210,7 +1210,7 @@ SEXP dm_all_finite(SEXP x)
 
 /* Euclidean norms of the columns of a finite double matrix, scaled so
    that they neither overflow nor underflow (as LAPACK's dnrm2). */
-SEXP dm_col_norms(SEXP x)
+SEXP xtx_col_norms(SEXP x)
 {
     int nr = nrows(x), nc = ncols(x);
     const double *v = REAL(x);
@@ -1237,7 +1237,7 @@ SEXP dm_col_norms(SEXP x)
 
 /* Are all values finite, with non-zero absolute values within [lo, hi]?
    (No allocation.) */
-SEXP dm_in_range(SEXP x, SEXP lo_, SEXP hi_)
+SEXP xtx_in_range(SEXP x, SEXP lo_, SEXP hi_)
 {
     const double *v = REAL(x);
     double lo = asReal(lo_), hi = asReal(hi_);

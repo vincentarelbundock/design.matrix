@@ -16,12 +16,12 @@
 ## patches, each applied only when the code it touches is the code it was
 ## written for:
 ##
-##  1. the na.action handed to C_modelframe goes through dm_na(), which
+##  1. the na.action handed to C_modelframe goes through xtx_na(), which
 ##     replaces stats::na.omit and stats::na.exclude (and nothing else) by a
 ##     wrapper that returns the frame without copying it when that is what
-##     the real function would produce (dm_wrap_na());
+##     the real function would produce (xtx_wrap_na());
 ##  2. in the `xlev` loop, the two recoding calls are skipped when
-##     dm_same_factor() shows that they are no-ops. The loop itself still
+##     xtx_same_factor() shows that they are no-ops. The loop itself still
 ##     runs, with its warnings, errors and `data[[nm]] <-` assignment.
 ##
 ## Everything else (non-standard evaluation of `subset` and `...`, the order
@@ -65,7 +65,7 @@
 #' `[.data.frame` are not the ones this package was written for, or if a
 #' self-test at load finds a difference, the corresponding shortcut is
 #' turned off; without shortcuts, `design_frame()` is `model.frame()`.
-#' Option `design.matrix.skip_na_copy = FALSE` turns both shortcuts off.
+#' Option `xtx.skip_na_copy = FALSE` turns both shortcuts off.
 #'
 #' @param ... Arguments of [stats::model.frame()]: `formula`, `data`,
 #'   `subset`, `na.action`, `drop.unused.levels`, `xlev`, and further
@@ -84,8 +84,8 @@ design_frame <- function(...) {
     ## model.frame().
     env <- caller <- parent.frame()
     frame <- the$frame
-    if (!is.null(frame) && isTRUE(getOption("design.matrix.skip_na_copy", TRUE)) &&
-        dm_frame_default_is_stats(frame$original, caller)) {
+    if (!is.null(frame) && isTRUE(getOption("xtx.skip_na_copy", TRUE)) &&
+        xtx_frame_default_is_stats(frame$original, caller)) {
         ## S3 dispatch looks for methods in the calling environment before
         ## the registered ones: with the patched function there under the
         ## name `model.frame.default`, it is found where stats' default
@@ -93,17 +93,17 @@ design_frame <- function(...) {
         env <- new.env(parent = caller)
         env$model.frame.default <- frame$fun
     }
-    generic <- dm_frame_generic
+    generic <- xtx_frame_generic
     environment(generic) <- env
     generic(...)
 }
 
-dm_frame_generic <- function(...) stats::model.frame(...)
+xtx_frame_generic <- function(...) stats::model.frame(...)
 
 ## Would stats::model.frame(), called from `caller`, use stats' own default
 ## method when it reaches the default? Not if a method was registered over
 ## it, or if another `model.frame.default` is visible from the caller.
-dm_frame_default_is_stats <- function(original, caller) {
+xtx_frame_default_is_stats <- function(original, caller) {
     tbl <- asNamespace("stats")[[".__S3MethodsTable__."]]
     if (!identical(tbl[["model.frame.default"]], original)) return(FALSE)
     f <- get0("model.frame.default", envir = caller, mode = "function")
@@ -116,7 +116,7 @@ dm_frame_default_is_stats <- function(original, caller) {
 ## in the call of C_modelframe. `rho` is the frame of that call: the C code
 ## turns a string into a symbol and calls it there, so a string names the
 ## first function of that name seen from `rho`.
-dm_na <- function(na.action, rho) {
+xtx_na <- function(na.action, rho) {
     fn <- na.action
     if (is.character(fn)) {
         if (!length(fn) || is.na(fn[1L])) return(na.action)
@@ -138,7 +138,7 @@ dm_na <- function(na.action, rho) {
 ## matrix, a matrix without columns, a column longer than the frame as
 ## `subset` makes of a 3-d array) goes to the real function. A column with
 ## a missing value does too.
-dm_col_unchanged <- function(x, n) {
+xtx_col_unchanged <- function(x, n) {
     if (!is.atomic(x) || is.null(x)) return(FALSE)
     an <- names(attributes(x))
     if (is.null(an)) return(length(x) == n && !anyNA(x))
@@ -173,14 +173,14 @@ dm_col_unchanged <- function(x, n) {
 ## the names of the response.)
 ##  * Row names known to be unique stay as they are, and the attributes
 ##    are reordered here: automatic row names, and row names that a pass
-##    over them shows to be without NA or duplicates (dm_int_unique(),
-##    dm_str_unique() in C, much faster than anyDuplicated()).
+##    over them shows to be without NA or duplicates (xtx_int_unique(),
+##    xtx_str_unique() in C, much faster than anyDuplicated()).
 ##  * Otherwise (duplicates, NA, or row names for which the pass cannot
 ##    tell) the real method runs on a copy of the frame without columns,
 ##    which gives the row names and the attributes as R makes them; the
 ##    columns are put back. This costs the anyDuplicated() of the row
 ##    names, but none of the column copies.
-dm_wrap_na <- function(method, generic) {
+xtx_wrap_na <- function(method, generic) {
     force(method)
     force(generic)
     stats_ns <- asNamespace("stats")
@@ -191,14 +191,14 @@ dm_wrap_na <- function(method, generic) {
         n <- .row_names_info(object, 2L)
         if (n < 1L || !length(object)) return(method(object))
         cols <- unclass(object)
-        for (x in cols) if (!dm_col_unchanged(x, n)) return(method(object))
+        for (x in cols) if (!xtx_col_unchanged(x, n)) return(method(object))
         a <- attributes(object) # row names in full, as `[.data.frame` reads them
         rn <- .row_names_info(object, 0L)
         if (is.null(attributes(rn)) &&
             if (is.integer(rn)) {
-                (length(rn) == 2L && is.na(rn[1L])) || isTRUE(.Call(C_dm_int_unique, rn))
+                (length(rn) == 2L && is.na(rn[1L])) || isTRUE(.Call(C_xtx_int_unique, rn))
             } else {
-                is.character(rn) && isTRUE(.Call(C_dm_str_unique, rn))
+                is.character(rn) && isTRUE(.Call(C_xtx_str_unique, rn))
             }) {
             keep <- !(names(a) %in% c("row.names", "class"))
             a <- c(a[keep], a["row.names"], a["class"])
@@ -228,7 +228,7 @@ dm_wrap_na <- function(method, generic) {
 ## UTF-8 for one; the result would have the marks of `xl`), without NA
 ## (factor() would give the NA level to missing values) or duplicates (an
 ## error in R).
-dm_same_factor <- function(xi, xl) {
+xtx_same_factor <- function(xi, xl) {
     if (typeof(xi) != "integer" || !identical(names(attributes(xi)), c("levels", "class")))
         return(FALSE)
     cl <- oldClass(xi)
@@ -238,13 +238,13 @@ dm_same_factor <- function(xi, xl) {
         !is.character(lv) || !is.null(attributes(lv))) return(FALSE)
     if (!identical(lv, xl) || !identical(Encoding(lv), Encoding(xl)) ||
         anyNA(xl) || anyDuplicated(xl)) return(FALSE)
-    .Call(C_dm_codes_ok, xi, length(xl))
+    .Call(C_xtx_codes_ok, xi, length(xl))
 }
 
 ## For drop.unused.levels: length(unique(x[!is.na(x)])) < length(levels(x))
 ## for a factor x, from its codes in C when they are all NA or in range.
-dm_unused_levels <- function(x) {
-    r <- if (typeof(x) == "integer") .Call(C_dm_levels_unused, x, length(levels(x))) else NA
+xtx_unused_levels <- function(x) {
+    r <- if (typeof(x) == "integer") .Call(C_xtx_levels_unused, x, length(levels(x))) else NA
     if (is.na(r)) length(unique(x[!is.na(x)])) < length(levels(x)) else r
 }
 
@@ -254,11 +254,11 @@ dm_unused_levels <- function(x) {
 ## them reads differently does not get the corresponding patch.
 
 ## model.frame.default(): the call of the C routine.
-dm_frame_c_call <- quote(.External2(C_modelframe, formula, rownames, variables, varnames,
+xtx_frame_c_call <- quote(.External2(C_modelframe, formula, rownames, variables, varnames,
                                     extras, extranames, subset, na.action))
 
 ## model.frame.default(): the whole statement that applies `xlev`.
-dm_frame_xlev_stmt <- quote(
+xtx_frame_xlev_stmt <- quote(
     if (length(xlev)) {
         for (nm in names(xlev)) if (!is.null(xl <- xlev[[nm]])) {
             xi <- data[[nm]]
@@ -294,7 +294,7 @@ dm_frame_xlev_stmt <- quote(
 
 ## na.omit.data.frame(); na.exclude.data.frame() is the same with the class
 ## "exclude".
-dm_frame_na_body <- function(class) {
+xtx_frame_na_body <- function(class) {
     bquote({
         n <- length(object)
         omit <- logical(nrow(object))
@@ -318,9 +318,9 @@ dm_frame_na_body <- function(class) {
 }
 
 ## `[.data.frame`: the statements that make `x[i, , drop = FALSE]` what
-## dm_wrap_na() takes it to be (attributes copied, row.names and class set
+## xtx_wrap_na() takes it to be (attributes copied, row.names and class set
 ## last, columns subset one by one, row names subset).
-dm_frame_subset_stmts <- list(
+xtx_frame_subset_stmts <- list(
     quote(x <- .Internal(copyDFattr(xx, x))),
     quote(oldClass(x) <- attr(x, "row.names") <- NULL),
     quote(x[[j]] <- if (length(dim(xj)) != 2L) xj[i] else xj[i, , drop = FALSE]),
@@ -330,7 +330,7 @@ dm_frame_subset_stmts <- list(
 
 ## Replace every occurrence of `from` in `e` by `to`, counting them in
 ## `count$n`.
-dm_replace <- function(e, from, to, count) {
+xtx_replace <- function(e, from, to, count) {
     if (identical(e, from)) {
         count$n <- count$n + 1L
         return(to)
@@ -338,17 +338,17 @@ dm_replace <- function(e, from, to, count) {
     if (is.call(e)) {
         for (i in seq_along(e)) {
             ei <- e[[i]]
-            if (!missing(ei) && !is.null(ei)) e[[i]] <- dm_replace(ei, from, to, count)
+            if (!missing(ei) && !is.null(ei)) e[[i]] <- xtx_replace(ei, from, to, count)
         }
     }
     e
 }
 
 ## Number of occurrences of `what` in `e`.
-dm_count <- function(e, what) {
+xtx_count <- function(e, what) {
     count <- new.env(parent = emptyenv())
     count$n <- 0L
-    dm_replace(e, what, what, count)
+    xtx_replace(e, what, what, count)
     count$n
 }
 
@@ -356,7 +356,7 @@ dm_count <- function(e, what) {
 ## which patches it has; or NULL when none applies. `na` and `xlev` say
 ## which patches to try. The other arguments are the functions the na
 ## patch depends on (arguments so that tests can alter them).
-dm_make_frame <- function(f = get("model.frame.default", envir = asNamespace("stats")),
+xtx_make_frame <- function(f = get("model.frame.default", envir = asNamespace("stats")),
                           na = TRUE, xlev = TRUE,
                           omit = get("na.omit.data.frame", envir = asNamespace("stats")),
                           exclude = get("na.exclude.data.frame", envir = asNamespace("stats")),
@@ -368,38 +368,38 @@ dm_make_frame <- function(f = get("model.frame.default", envir = asNamespace("st
     has_na <- has_xlev <- FALSE
 
     if (na &&
-        identical(body(omit), dm_frame_na_body("omit")) &&
-        identical(body(exclude), dm_frame_na_body("exclude")) &&
-        all(vapply(dm_frame_subset_stmts, function(s) dm_count(body(subset), s) == 1L, NA))) {
+        identical(body(omit), xtx_frame_na_body("omit")) &&
+        identical(body(exclude), xtx_frame_na_body("exclude")) &&
+        all(vapply(xtx_frame_subset_stmts, function(s) xtx_count(body(subset), s) == 1L, NA))) {
         count <- new.env(parent = emptyenv())
         count$n <- 0L
-        to <- dm_frame_c_call
-        to[[length(to)]] <- quote(.dm_na(na.action, environment()))
-        new <- lapply(stmts, dm_replace, dm_frame_c_call, to, count)
+        to <- xtx_frame_c_call
+        to[[length(to)]] <- quote(.xtx_na(na.action, environment()))
+        new <- lapply(stmts, xtx_replace, xtx_frame_c_call, to, count)
         if (count$n == 1L) {
             stmts <- new
             has_na <- TRUE
         }
     }
 
-    idx <- which(vapply(stmts, function(e) identical(e, dm_frame_xlev_stmt), NA))
+    idx <- which(vapply(stmts, function(e) identical(e, xtx_frame_xlev_stmt), NA))
     if (xlev && length(idx) == 1L) {
         c1 <- new.env(parent = emptyenv())
         c2 <- new.env(parent = emptyenv())
         c3 <- new.env(parent = emptyenv())
         c1$n <- c2$n <- c3$n <- 0L
-        ## `.dm_same` is a variable of the patched function's frame; R's
+        ## `.xtx_same` is a variable of the patched function's frame; R's
         ## code runs unchanged whenever it is FALSE
-        s <- dm_replace(stmts[[idx]], quote(xi <- xi[, drop = TRUE]),
-                        quote(xi <- if (.dm_same <- .dm_same_factor(xi, xl)) xi else xi[, drop = TRUE]),
+        s <- xtx_replace(stmts[[idx]], quote(xi <- xi[, drop = TRUE]),
+                        quote(xi <- if (.xtx_same <- .xtx_same_factor(xi, xl)) xi else xi[, drop = TRUE]),
                         c1)
-        s <- dm_replace(s, quote(data[[nm]] <- factor(xi, levels = xl, exclude = NULL)),
-                        quote(data[[nm]] <- if (.dm_same) xi else factor(xi, levels = xl, exclude = NULL)),
+        s <- xtx_replace(s, quote(data[[nm]] <- factor(xi, levels = xl, exclude = NULL)),
+                        quote(data[[nm]] <- if (.xtx_same) xi else factor(xi, levels = xl, exclude = NULL)),
                         c2)
         ## (drop.unused.levels: whether a level is unused, from one pass
         ## over the codes in C instead of unique() of a copy)
-        s <- dm_replace(s, quote(length(unique(x[!is.na(x)])) < length(levels(x))),
-                        quote(.dm_unused_levels(x)), c3)
+        s <- xtx_replace(s, quote(length(unique(x[!is.na(x)])) < length(levels(x))),
+                        quote(.xtx_unused_levels(x)), c3)
         if (c1$n == 1L && c2$n == 1L && c3$n == 1L) {
             stmts[[idx]] <- s
             has_xlev <- TRUE
@@ -411,9 +411,9 @@ dm_make_frame <- function(f = get("model.frame.default", envir = asNamespace("st
     body(fun) <- as.call(stmts)
     ## Every name resolves as in stats, except the two helpers.
     env <- new.env(parent = environment(f))
-    env$.dm_na <- dm_na
-    env$.dm_same_factor <- dm_same_factor
-    env$.dm_unused_levels <- dm_unused_levels
+    env$.xtx_na <- xtx_na
+    env$.xtx_same_factor <- xtx_same_factor
+    env$.xtx_unused_levels <- xtx_unused_levels
     environment(fun) <- env
     list(fun = compiler::cmpfun(fun), original = f, na = has_na, xlev = has_xlev)
 }
@@ -422,7 +422,7 @@ dm_make_frame <- function(f = get("model.frame.default", envir = asNamespace("st
 ## check on small frames that go through each shortcut: it covers what the
 ## comparison of function bodies cannot see (the C code of model.frame()
 ## and of subsetting).
-dm_frame_selftest <- function(fun) {
+xtx_frame_selftest <- function(fun) {
     same <- function(...) {
         identical(stats::model.frame(...), fun(...),
                   num.eq = FALSE, single.NA = FALSE, attrib.as.set = FALSE)
@@ -474,19 +474,19 @@ dm_frame_selftest <- function(fun) {
 
 ## The patched function with every patch that applies and passes the
 ## self-test, or NULL.
-dm_init_frame <- function() {
+xtx_init_frame <- function() {
     omit <- get("na.omit.data.frame", envir = asNamespace("stats"))
     exclude <- get("na.exclude.data.frame", envir = asNamespace("stats"))
-    the$na_omit <- dm_wrap_na(omit, stats::na.omit)
-    the$na_exclude <- dm_wrap_na(exclude, stats::na.exclude)
-    frame <- dm_make_frame()
-    if (is.null(frame) || dm_frame_selftest(frame$fun)) return(frame)
+    the$na_omit <- xtx_wrap_na(omit, stats::na.omit)
+    the$na_exclude <- xtx_wrap_na(exclude, stats::na.exclude)
+    frame <- xtx_make_frame()
+    if (is.null(frame) || xtx_frame_selftest(frame$fun)) return(frame)
     ## One patch does not reproduce stats on this version of R: keep the
     ## other, if it does alone.
     for (which in list(c(TRUE, FALSE), c(FALSE, TRUE))) {
         if (!frame[[c("na", "xlev")[which]]]) next
-        one <- dm_make_frame(na = which[1L], xlev = which[2L])
-        if (!is.null(one) && dm_frame_selftest(one$fun)) return(one)
+        one <- xtx_make_frame(na = which[1L], xlev = which[2L])
+        if (!is.null(one) && xtx_frame_selftest(one$fun)) return(one)
     }
     NULL
 }

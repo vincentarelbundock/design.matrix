@@ -2,10 +2,10 @@
 #include <stdint.h>
 #include <R.h>
 #include <Rinternals.h>
-#include "dm.h"
+#include "xtx.h"
 
 /* Are all the codes of an integer vector NA or in 1..k? (No allocation.) */
-SEXP dm_codes_ok(SEXP x, SEXP k_)
+SEXP xtx_codes_ok(SEXP x, SEXP k_)
 {
     if (TYPEOF(x) != INTSXP) return ScalarLogical(0);
     const int *v = INTEGER_RO(x);
@@ -21,7 +21,7 @@ SEXP dm_codes_ok(SEXP x, SEXP k_)
 /* Are the values of an integer vector all different, none of them NA?
    TRUE or FALSE, decided with a bit set over [min, max]; NA when that
    range is too wide for one (more than 64 values per element). */
-SEXP dm_int_unique(SEXP x)
+SEXP xtx_int_unique(SEXP x)
 {
     if (TYPEOF(x) != INTSXP) return ScalarLogical(NA_LOGICAL);
     const int *v = INTEGER_RO(x);
@@ -53,7 +53,7 @@ SEXP dm_int_unique(SEXP x)
    encoding mark are equal only if they are the same object: a set of
    pointers decides. Strings with different marks can be equal after
    translation: NA (not decided here) when the marks are not all the same. */
-SEXP dm_str_unique(SEXP x)
+SEXP xtx_str_unique(SEXP x)
 {
     if (TYPEOF(x) != STRSXP) return ScalarLogical(NA_LOGICAL);
     R_xlen_t n = XLENGTH(x);

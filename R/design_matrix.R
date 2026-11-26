@@ -40,7 +40,7 @@
 #' the same floating point operations as R for every cell.
 #'
 #' **Options.**
-#' * `design.matrix.skip_na_copy` (default `TRUE`): build model frames with
+#' * `xtx.skip_na_copy` (default `TRUE`): build model frames with
 #'   [design_frame()], which returns the model frame of
 #'   [stats::model.frame()] without the copy of the whole frame that
 #'   [stats::na.omit()] and [stats::na.exclude()] make when they remove
@@ -48,9 +48,9 @@
 #'   asked for in `xlev`. The result is identical either way; set `FALSE`
 #'   to build the frame with `model.frame()` itself, for example in
 #'   benchmarks against functions that call it.
-#' * `design.matrix.structured` (default `TRUE`): use the column-structured
+#' * `xtx.structured` (default `TRUE`): use the column-structured
 #'   kernels for products with finite designs (see [design_algebra]).
-#' * `design.matrix.dedup`: see [design_algebra].
+#' * `xtx.dedup`: see [design_algebra].
 #'
 #' @examples
 #' d <- data.frame(y = rnorm(10), x = rnorm(10), f = gl(2, 5))
@@ -69,41 +69,41 @@ design_matrix <- function(object, data = environment(object),
     checkmate::qassert(xlev, c("0", "l"))
 
     ## remote data (see remote.R)
-    if (inherits(object, "dm_remote")) object <- object$plan
-    if (!missing(data) && dm_is_remote_source(data))
-        return(dm_remote(object, data, contrasts.arg, xlev, list(...), na.action))
-    if (!missing(newdata) && dm_is_remote_source(newdata)) {
+    if (inherits(object, "xtx_remote")) object <- object$plan
+    if (!missing(data) && xtx_is_remote_source(data))
+        return(xtx_remote(object, data, contrasts.arg, xlev, list(...), na.action))
+    if (!missing(newdata) && xtx_is_remote_source(newdata)) {
         if (!missing(data)) stop("Supply only one of `data` and `newdata`.", call. = FALSE)
-        return(dm_remote(object, newdata, contrasts.arg, xlev, list(...), na.action))
+        return(xtx_remote(object, newdata, contrasts.arg, xlev, list(...), na.action))
     }
 
     if (!missing(newdata)) {
         if (!missing(data)) stop("Supply only one of `data` and `newdata`.", call. = FALSE)
         if (inherits(object, "formula") && is.null(newdata)) {
             return(structure(list(formula = object, contrasts = contrasts.arg, xlevels = xlev),
-                             class = "design_formula"))
+                             class = "xtx_formula"))
         }
-        if (!inherits(object, c("formula", "design_matrix", "design_formula", "design_plan")))
+        if (!inherits(object, c("formula", "xtx_matrix", "xtx_formula", "xtx_plan")))
             object <- design_plan(object, ...)
         if (is.null(newdata)) {
-            if (inherits(object, "design_matrix")) return(dm_plan_for_design(object))
+            if (inherits(object, "xtx_matrix")) return(xtx_plan_for_design(object))
             return(object)
         }
         data <- newdata
     }
-    if (inherits(object, "design_formula")) {
+    if (inherits(object, "xtx_formula")) {
         if (missing(data)) stop("Supply training data to apply a formula specification.", call. = FALSE)
         return(design_matrix(object$formula, data, contrasts.arg = object$contrasts, xlev = object$xlevels))
     }
-    if (inherits(object, "design_matrix")) {
+    if (inherits(object, "xtx_matrix")) {
         if (missing(data)) stop("`data` is required when reusing a design.", call. = FALSE)
-        object <- dm_plan_for_design(object)
+        object <- xtx_plan_for_design(object)
     }
-    if (inherits(object, "design_plan")) {
+    if (inherits(object, "xtx_plan")) {
         if (missing(data)) {
             stop("`data` is required when `object` is a plan.", call. = FALSE)
         }
-        design <- dm_apply_plan(object, data, na.action)
+        design <- xtx_apply_plan(object, data, na.action)
         design$plan <- object
         return(design)
     }
@@ -115,17 +115,17 @@ design_matrix <- function(object, data = environment(object),
     if (!missing(data)) supplied["data"] <- list(data)
     if (!missing(contrasts.arg)) supplied["contrasts.arg"] <- list(contrasts.arg)
     if (!missing(xlev)) supplied["xlev"] <- list(xlev)
-    if (!dm_uses_default_method(object, parent.frame())) {
-        return(dm_dense_design(dm_call_stats(object, supplied, list(...), parent.frame())))
+    if (!xtx_uses_default_method(object, parent.frame())) {
+        return(xtx_dense_design(xtx_call_stats(object, supplied, list(...), parent.frame())))
     }
 
-    prep <- dm_prepare(object, data, contrasts.arg, xlev, missing(data))
+    prep <- xtx_prepare(object, data, contrasts.arg, xlev, missing(data))
     if (is.null(prep)) {
         ## This version of R's model.matrix.default() is not recognised:
         ## use it directly.
-        return(dm_dense_design(dm_call_stats(object, supplied, list(...), parent.frame())))
+        return(xtx_dense_design(xtx_call_stats(object, supplied, list(...), parent.frame())))
     }
-    design <- dm_new_design(prep$t, prep$data, prep$contrasts, rho = prep$rho)
+    design <- xtx_new_design(prep$t, prep$data, prep$contrasts, rho = prep$rho)
     design$training_terms <- prep$t
     ## Subsetting a supplied model frame can discard its trained predvars.
     if (is.null(attr(prep$data, "terms")) && !missing(data))
@@ -136,7 +136,7 @@ design_matrix <- function(object, data = environment(object),
 ## Would stats::model.matrix(), called from `env`, dispatch to its default
 ## method? UseMethod() looks for a method in the calling environment, then
 ## in the S3 methods table of stats; so do we (getS3method() is ~10x slower).
-dm_uses_default_method <- function(object, env) {
+xtx_uses_default_method <- function(object, env) {
     if (!inherits(object, c("formula", "terms"))) return(FALSE)
     tbl <- asNamespace("stats")[[".__S3MethodsTable__."]]
     for (cl in class(object)) {
@@ -152,7 +152,7 @@ dm_uses_default_method <- function(object, env) {
 ## `supplied` holds only the arguments the caller gave, so omitted ones stay
 ## omitted, and nothing the caller wrote is evaluated a second time: the
 ## values are bound in a fresh environment whose parent is the caller's.
-dm_call_stats <- function(object, supplied, dots, env) {
+xtx_call_stats <- function(object, supplied, dots, env) {
     e <- new.env(parent = env)
     e$object <- object
     args <- list(quote(object))
@@ -161,10 +161,10 @@ dm_call_stats <- function(object, supplied, dots, env) {
         args[[nm]] <- as.name(nm)
     }
     if (length(dots)) {
-        e$.dm_dots <- dots
+        e$.xtx_dots <- dots
         nms <- names(dots)
         if (is.null(nms)) nms <- rep("", length(dots))
-        extra <- lapply(seq_along(dots), function(k) call("[[", quote(.dm_dots), k))
+        extra <- lapply(seq_along(dots), function(k) call("[[", quote(.xtx_dots), k))
         names(extra) <- nms
         args <- c(args, extra)
     }
@@ -176,71 +176,71 @@ deparse2 <- function(x) {
           collapse = " ")
 }
 
-## `vars` is the list given to R's C routine. dm_setup() runs every check,
+## `vars` is the list given to R's C routine. xtx_setup() runs every check,
 ## contrast evaluation and warning of that routine, in the same order.
 ## `rho` is the frame of the prepared model.matrix.default() call, where R's
 ## C routine evaluates contrasts().
-dm_new_design <- function(t, vars, contrasts, setup = NULL, path = "general",
+xtx_new_design <- function(t, vars, contrasts, setup = NULL, path = "general",
                           rho = environment()) {
     ## (plain copies of ALTREP variables, such as factors that stats made
     ## wrappers by setting their contrasts: the kernels would copy them at
     ## every call)
-    vars <- .Call(C_dm_unwrap_vars, vars)
+    vars <- .Call(C_xtx_unwrap_vars, vars)
     if (is.null(setup)) {
-        setup <- .Call(C_dm_setup, t, vars, rho)
+        setup <- .Call(C_xtx_setup, t, vars, rho)
     }
     out <- list(setup = setup, vars = vars, contrasts = contrasts,
                 n = NROW(.subset2(vars, 1L)), dense = NULL, path = path,
                 cache = new.env(parent = emptyenv()))
-    class(out) <- "design_matrix"
+    class(out) <- "xtx_matrix"
     out
 }
 
-dm_dense_design <- function(X) {
+xtx_dense_design <- function(X) {
     out <- list(setup = NULL, vars = NULL, contrasts = attr(X, "contrasts"),
                 n = nrow(X), dense = X, path = "dense")
     out["dense"] <- list(X) # keep the element even when X is NULL
-    class(out) <- "design_matrix"
+    class(out) <- "xtx_matrix"
     out
 }
 
 #' @export
-as.matrix.design_matrix <- function(x, ...) {
-    if (dm_is_comb(x)) return(dm_comb_dense(x))
+as.matrix.xtx_matrix <- function(x, ...) {
+    if (xtx_is_comb(x)) return(xtx_comb_dense(x))
     if (identical(x$path, "dense")) return(x$dense)
-    ans <- .Call(C_dm_fill, x$setup, x$vars, design_threads())
+    ans <- .Call(C_xtx_fill, x$setup, x$vars, design_threads())
     if (!is.null(x$contrasts)) attr(ans, "contrasts") <- x$contrasts
     ans
 }
 
 #' @export
-dim.design_matrix <- function(x) {
-    if (dm_is_comb(x)) return(dim(x$design))
+dim.xtx_matrix <- function(x) {
+    if (xtx_is_comb(x)) return(dim(x$design))
     if (identical(x$path, "dense")) return(dim(x$dense))
     c(x$n, length(x$setup$xnames))
 }
 
 #' @export
-dimnames.design_matrix <- function(x) {
-    if (dm_is_comb(x)) return(dimnames(x$design))
+dimnames.xtx_matrix <- function(x) {
+    if (xtx_is_comb(x)) return(dimnames(x$design))
     if (identical(x$path, "dense")) return(dimnames(x$dense))
     rn <- attr(x$vars, "row.names")
     list(if (is.null(rn)) NULL else as.character(rn), x$setup$xnames)
 }
 
 #' @export
-print.design_matrix <- function(x, ...) {
+print.xtx_matrix <- function(x, ...) {
     d <- dim(x)
     cat(sprintf("<design_matrix: %d rows x %d columns>\n", d[1L], d[2L]))
-    if (dm_is_comb(x)) {
+    if (xtx_is_comb(x)) {
         cat(if (is.null(x$design2)) "scaled rows of one design\n" else "combination of two designs\n")
     }
-    dm_print_columns(dimnames(x)[[2L]])
+    xtx_print_columns(dimnames(x)[[2L]])
     invisible(x)
 }
 
 ## The first column names of a design, for print().
-dm_print_columns <- function(cn) {
+xtx_print_columns <- function(cn) {
     if (!length(cn)) return(invisible())
     shown <- utils::head(cn, 8L)
     more <- if (length(cn) > 8L) sprintf(" ... (%d more)", length(cn) - 8L) else ""

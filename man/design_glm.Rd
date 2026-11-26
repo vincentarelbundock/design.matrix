@@ -2,7 +2,7 @@
 % Please edit documentation in R/glm.R
 \name{design_glm}
 \alias{design_glm}
-\alias{predict.design_glm}
+\alias{predict.xtx_glm}
 \title{Generalized linear models without the model matrix}
 \usage{
 design_glm(
@@ -23,7 +23,7 @@ design_glm(
   ...
 )
 
-\method{predict}{design_glm}(
+\method{predict}{xtx_glm}(
   object,
   newdata = NULL,
   type = c("link", "response"),
@@ -67,7 +67,7 @@ cluster variable (\code{~firm}). Without fixed effects only \code{"iid"}.}
 \item{...}{For remote data: \code{table}, \code{sql}, \code{engine} and \code{chunk_size}; see
 \link{design_remote}. Otherwise not used.}
 
-\item{object}{A \code{"design_glm"} object.}
+\item{object}{A \code{"xtx_glm"} object.}
 
 \item{newdata}{A data frame of new observations, or remote data (a DuckDB
 connection with \code{table} or \code{sql}, or Parquet paths). Omitted,
@@ -77,7 +77,7 @@ predictions are those of the fit's rows (which need \code{model = TRUE}).}
 means).}
 }
 \value{
-An object of class \code{"design_glm"}: a list with, among others,
+An object of class \code{"xtx_glm"}: a list with, among others,
 \code{coefficients}, \code{deviance}, \code{null.deviance}, \code{aic}, \code{iter}, \code{converged},
 \code{boundary}, \code{df.residual}, \code{df.null}, \code{nobs}, \code{rank}, \code{pivot}, \code{R},
 \code{family}, \code{compressed}, \code{patterns}, \code{rows}, \code{spec}, \code{call} and \code{terms}.
@@ -160,7 +160,7 @@ the last weighted least squares step, times the dispersion) or
 sample corrections, \code{(n - 1) / (n - K)} with \code{K} the number of slopes
 and FE parameters, and \code{G / (G - 1)} for clusters (FE nested in the
 clusters not counted in \code{K}).
-\item Methods: those of a \code{design_glm} fit (class \code{c("design_glm_fe", "design_glm")}); \code{logLik()}, \code{AIC()} and \code{BIC()} count the FE
+\item Methods: those of a \code{design_glm} fit (class \code{c("xtx_glm_fe", "xtx_glm")}); \code{logLik()}, \code{AIC()} and \code{BIC()} count the FE
 parameters; \code{fixef()} (the generic of fixest or nlme, when loaded)
 returns the FE values, also in \code{fit$fixef}, normalized as for
 \code{\link[=design_lm]{design_lm()}}; \code{predict()} gives the link or the response (\code{NA} for

@@ -1,7 +1,7 @@
 /*
- *  design.matrix: algebra on a design without forming the dense matrix.
+ *  xtx: algebra on a design without forming the dense matrix.
  *
- *  A design is described by the list returned by dm_setup() plus the
+ *  A design is described by the list returned by xtx_setup() plus the
  *  variables.  Row i of the dense matrix is the intercept followed, for
  *  each term, by the product of its variables' columns, the first variable
  *  varying fastest (as in R's model.matrix).  row_entries() lists the
@@ -29,7 +29,7 @@
 #include <math.h>
 #include <R.h>
 #include <Rinternals.h>
-#include "dm.h"
+#include "xtx.h"
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -109,21 +109,21 @@ static SEXP contrast_rows(SEXP cm)
    points into); the caller unprotects it. */
 static void build_ctx(kctx *K, SEXP setup, SEXP vars)
 {
-    SEXP factors = VECTOR_ELT(setup, DM_SETUP_FACTORS),
-	contr1 = VECTOR_ELT(setup, DM_SETUP_CONTR1),
-	contr2 = VECTOR_ELT(setup, DM_SETUP_CONTR2);
-    const int *nlevs = INTEGER(VECTOR_ELT(setup, DM_SETUP_NLEVS)),
-	*columns = INTEGER(VECTOR_ELT(setup, DM_SETUP_COLUMNS)),
-	*count = INTEGER(VECTOR_ELT(setup, DM_SETUP_COUNT));
-    int rhs_response = asInteger(VECTOR_ELT(setup, DM_SETUP_RHS_RESPONSE)),
-	nVar = asInteger(VECTOR_ELT(setup, DM_SETUP_NVAR)),
-	nterms = asInteger(VECTOR_ELT(setup, DM_SETUP_NTERMS));
+    SEXP factors = VECTOR_ELT(setup, XTX_SETUP_FACTORS),
+	contr1 = VECTOR_ELT(setup, XTX_SETUP_CONTR1),
+	contr2 = VECTOR_ELT(setup, XTX_SETUP_CONTR2);
+    const int *nlevs = INTEGER(VECTOR_ELT(setup, XTX_SETUP_NLEVS)),
+	*columns = INTEGER(VECTOR_ELT(setup, XTX_SETUP_COLUMNS)),
+	*count = INTEGER(VECTOR_ELT(setup, XTX_SETUP_COUNT));
+    int rhs_response = asInteger(VECTOR_ELT(setup, XTX_SETUP_RHS_RESPONSE)),
+	nVar = asInteger(VECTOR_ELT(setup, XTX_SETUP_NVAR)),
+	nterms = asInteger(VECTOR_ELT(setup, XTX_SETUP_NTERMS));
     const int *fac = nterms > 0 ? INTEGER(factors) : NULL;
 
-    SEXP variable = PROTECT(dm_vars(setup, vars));
+    SEXP variable = PROTECT(xtx_vars(setup, vars));
     SEXP cache;
-    if (XLENGTH(setup) > DM_SETUP_CONTRAST_ROWS) {
-        cache = VECTOR_ELT(setup, DM_SETUP_CONTRAST_ROWS);
+    if (XLENGTH(setup) > XTX_SETUP_CONTRAST_ROWS) {
+        cache = VECTOR_ELT(setup, XTX_SETUP_CONTRAST_ROWS);
     } else {
         /* Designs saved before the cache was introduced use a per-call
            index. Keep its vectors alive with the protected variable list. */
@@ -132,8 +132,8 @@ static void build_ctx(kctx *K, SEXP setup, SEXP vars)
         UNPROTECT(1);
     }
     K->n = nrows(VECTOR_ELT(vars, 0));
-    K->intercept = asInteger(VECTOR_ELT(setup, DM_SETUP_INTERCEPT));
-    K->p = LENGTH(VECTOR_ELT(setup, DM_SETUP_XNAMES));
+    K->intercept = asInteger(VECTOR_ELT(setup, XTX_SETUP_INTERCEPT));
+    K->p = LENGTH(VECTOR_ELT(setup, XTX_SETUP_XNAMES));
     K->term = (kterm *) R_alloc(nterms > 0 ? nterms : 1, sizeof(kterm));
     K->nterm = 0;
 
@@ -408,7 +408,7 @@ static const int *rows_ptr(SEXP rows, R_xlen_t n)
 
 #define DENSE_BLOCK 64
 
-SEXP dm_jac_mult(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
+SEXP xtx_jac_mult(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
 		 SEXP s2, SEXP B, SEXP rows_, SEXP nthreads_)
 {
     jctx J;
@@ -416,8 +416,8 @@ SEXP dm_jac_mult(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
     const int *rows = rows_ptr(rows_, J.d[0].n);
     R_xlen_t n = nrows_of(rows_, J.d[0].n);
     int p = J.p, K = ncols(B);
-    R_xlen_t nblocks = dm_block_count(n, DENSE_BLOCK);
-    int nthreads = dm_worker_count(asInteger(nthreads_), K == 1 ? n : nblocks);
+    R_xlen_t nblocks = xtx_block_count(n, DENSE_BLOCK);
+    int nthreads = xtx_worker_count(asInteger(nthreads_), K == 1 ? n : nblocks);
     if (nrows(B) != p) error("non-conformable arguments");
     const double *b = REAL(B);
     SEXP out = PROTECT(allocMatrix(REALSXP, n, K));
@@ -516,8 +516,8 @@ static void jac_crossprod_rows(const jctx *J, const int *rows, const double *w,
    returns p x (K * G), column k + K * g.  A row with a non-finite weight
    lists every column (0 * NA is NA in the dense product).  On several
    threads, fixed chunks of rows with their own sums, added in order (see
-   dm_reduce_threads()). */
-SEXP dm_jac_crossprod(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2,
+   xtx_reduce_threads()). */
+SEXP xtx_jac_crossprod(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2,
 		      SEXP vars2, SEXP s2, SEXP W, SEXP group, SEXP G_, SEXP rows_,
 		      SEXP nthreads_)
 {
@@ -540,10 +540,10 @@ SEXP dm_jac_crossprod(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2,
     double *o = REAL(out);
     memset(o, 0, sizeof(double) * (size_t) len);
     int T = 1, req = asInteger(nthreads_);
-    if (req > 1 && n >= 2 * DM_RED_MIN_ROWS) {
+    if (req > 1 && n >= 2 * XTX_RED_MIN_ROWS) {
 	scratch *S0 = alloc_scratch(1, p, J.nd);
 	double work = (double) n * (JAC_ROW_COST + (K + 1.0) * jac_head_entries(&J, rows, n, S0));
-	T = dm_reduce_threads(req, n, work, (double) len);
+	T = xtx_reduce_threads(req, n, work, (double) len);
     }
     scratch *S = alloc_scratch(T, p, J.nd);
     if (T == 1) {
@@ -551,16 +551,16 @@ SEXP dm_jac_crossprod(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2,
 	UNPROTECT(1 + J.nd);
 	return out;
     }
-    double **acc = dm_chunk_acc(o, T, len);
+    double **acc = xtx_chunk_acc(o, T, len);
 #ifdef _OPENMP
 #pragma omp parallel for num_threads(T) schedule(static)
 #endif
     for (int t = 0; t < T; t++) {
-	if (t > 0) dm_zero(acc[t], len);
-	jac_crossprod_rows(&J, rows, w, grp, n, K, p, dm_chunk_start(n, T, t, 1),
-			   dm_chunk_start(n, T, t + 1, 1), &S[t], acc[t]);
+	if (t > 0) xtx_zero(acc[t], len);
+	jac_crossprod_rows(&J, rows, w, grp, n, K, p, xtx_chunk_start(n, T, t, 1),
+			   xtx_chunk_start(n, T, t + 1, 1), &S[t], acc[t]);
     }
-    dm_combine(acc, T, len);
+    xtx_combine(acc, T, len);
     UNPROTECT(1 + J.nd);
     return out;
 }
@@ -568,14 +568,14 @@ SEXP dm_jac_crossprod(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2,
 /* diag(J V t(J)), V finite.  When a column of the row's projection J V
    could overflow, the whole row is computed densely, so that 0 * Inf
    gives NaN as in the dense computation. */
-SEXP dm_jac_quad(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
+SEXP xtx_jac_quad(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
 		 SEXP s2, SEXP V, SEXP rows_, SEXP nthreads_)
 {
     jctx J;
     build_jac(&J, setup1, vars1, s1, setup2, vars2, s2);
     const int *rows = rows_ptr(rows_, J.d[0].n);
     R_xlen_t n = nrows_of(rows_, J.d[0].n);
-    int p = J.p, nthreads = dm_worker_count(asInteger(nthreads_), n);
+    int p = J.p, nthreads = xtx_worker_count(asInteger(nthreads_), n);
     if (nrows(V) != p || ncols(V) != p) error("'V' must be a %d x %d matrix", p, p);
     const double *v = REAL(V);
     double vmax = 0.0;
@@ -617,7 +617,7 @@ SEXP dm_jac_quad(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
    zeros (+0 and -0) are dropped, as as(<matrix>, "CsparseMatrix") does;
    NA and NaN are kept.  Values are those of the dense matrix, bit for bit:
    each product is computed in the order of the fill. */
-SEXP dm_jac_sparse(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
+SEXP xtx_jac_sparse(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
 		   SEXP s2)
 {
     jctx J;
@@ -678,14 +678,14 @@ SEXP dm_jac_sparse(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
    for bit.  Rows are computed in blocks into a row-major buffer, then
    copied out column by column, so that writes to the column-major result
    are contiguous. */
-SEXP dm_jac_dense(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
+SEXP xtx_jac_dense(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
 		  SEXP s2, SEXP nthreads_)
 {
     jctx J;
     build_jac(&J, setup1, vars1, s1, setup2, vars2, s2);
     R_xlen_t n = J.d[0].n;
-    R_xlen_t nblocks = dm_block_count(n, DENSE_BLOCK);
-    int p = J.p, nthreads = dm_worker_count(asInteger(nthreads_), nblocks);
+    R_xlen_t nblocks = xtx_block_count(n, DENSE_BLOCK);
+    int p = J.p, nthreads = xtx_worker_count(asInteger(nthreads_), nblocks);
     SEXP out = PROTECT(allocMatrix(REALSXP, n, p));
     double *o = REAL(out);
     scratch *S = alloc_scratch(nthreads, p, J.nd);
@@ -723,13 +723,13 @@ SEXP dm_jac_dense(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
        may swap.  Flag any NaN, so that the caller can use R's arithmetic. */
     int any = 0;
     for (int t = 0; t < nthreads; t++) any |= nan[t];
-    if (any) setAttrib(out, install("dm_nan"), ScalarLogical(1));
+    if (any) setAttrib(out, install("xtx_nan"), ScalarLogical(1));
     UNPROTECT(1 + J.nd);
     return out;
 }
 
 /* Mean number of entries per row over the first k rows (a cost estimate). */
-SEXP dm_jac_entries_mean(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2,
+SEXP xtx_jac_entries_mean(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2,
 			 SEXP vars2, SEXP s2, SEXP k_)
 {
     jctx J;
@@ -748,13 +748,13 @@ SEXP dm_jac_entries_mean(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2,
    (the caller checks the inputs); a non-finite scale lists every column of
    its design, so that Inf * 0 is seen.  This catches products and sums that
    overflow.  Returns a logical vector with one value per row. */
-SEXP dm_jac_finite(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
+SEXP xtx_jac_finite(SEXP setup1, SEXP vars1, SEXP s1, SEXP setup2, SEXP vars2,
 		   SEXP s2, SEXP nthreads_)
 {
     jctx J;
     build_jac(&J, setup1, vars1, s1, setup2, vars2, s2);
     R_xlen_t n = J.d[0].n;
-    int p = J.p, nthreads = dm_worker_count(asInteger(nthreads_), n);
+    int p = J.p, nthreads = xtx_worker_count(asInteger(nthreads_), n);
     SEXP out = PROTECT(allocVector(LGLSXP, n));
     int *o = LOGICAL(out);
     scratch *S = alloc_scratch(nthreads, p, J.nd);
@@ -830,8 +830,8 @@ static void jac_gram_rows(const jctx *A, const jctx *B, int sym, const int *rows
    row with a non-finite entry or weight lists every column of the other
    factor (and of itself, when symmetric), so that NA * 0 and Inf * 0 are
    seen as in the dense product.  On several threads, fixed chunks of rows
-   with their own sums, added in order (see dm_reduce_threads()). */
-SEXP dm_jac_gram(SEXP a1, SEXP av1, SEXP as1, SEXP a2, SEXP av2, SEXP as2,
+   with their own sums, added in order (see xtx_reduce_threads()). */
+SEXP xtx_jac_gram(SEXP a1, SEXP av1, SEXP as1, SEXP a2, SEXP av2, SEXP as2,
 		 SEXP b1, SEXP bv1, SEXP bs1, SEXP b2, SEXP bv2, SEXP bs2,
 		 SEXP W, SEXP rows_, SEXP nthreads_)
 {
@@ -854,7 +854,7 @@ SEXP dm_jac_gram(SEXP a1, SEXP av1, SEXP as1, SEXP a2, SEXP av2, SEXP as2,
     double *o = REAL(out);
     memset(o, 0, sizeof(double) * (size_t) len);
     int T = 1, req = asInteger(nthreads_);
-    if (req > 1 && n >= 2 * DM_RED_MIN_ROWS) {
+    if (req > 1 && n >= 2 * XTX_RED_MIN_ROWS) {
 	scratch *S0 = alloc_scratch(1, pa, A.nd);
 	double ma = jac_head_entries(&A, rows, n, S0), mb = ma;
 	if (!sym) {
@@ -862,24 +862,24 @@ SEXP dm_jac_gram(SEXP a1, SEXP av1, SEXP as1, SEXP a2, SEXP av2, SEXP as2,
 	    mb = jac_head_entries(&B, rows, n, S1);
 	}
 	double work = (double) n * ((sym ? 1 : 2) * JAC_ROW_COST + (sym ? ma * (ma + 1) / 2 : ma * mb));
-	T = dm_reduce_threads(req, n, work, (double) len);
+	T = xtx_reduce_threads(req, n, work, (double) len);
     }
     scratch *SA = alloc_scratch(T, pa, A.nd);
     scratch *SB = sym ? NULL : alloc_scratch(T, pb, B.nd);
     if (T == 1) {
 	jac_gram_rows(&A, sym ? NULL : &B, sym, rows, w, pa, 0, n, SA, SB, o);
     } else {
-	double **acc = dm_chunk_acc(o, T, len);
+	double **acc = xtx_chunk_acc(o, T, len);
 #ifdef _OPENMP
 #pragma omp parallel for num_threads(T) schedule(static)
 #endif
 	for (int t = 0; t < T; t++) {
-	    if (t > 0) dm_zero(acc[t], len);
+	    if (t > 0) xtx_zero(acc[t], len);
 	    jac_gram_rows(&A, sym ? NULL : &B, sym, rows, w, pa,
-			  dm_chunk_start(n, T, t, 1), dm_chunk_start(n, T, t + 1, 1),
+			  xtx_chunk_start(n, T, t, 1), xtx_chunk_start(n, T, t + 1, 1),
 			  &SA[t], sym ? NULL : &SB[t], acc[t]);
 	}
-	dm_combine(acc, T, len);
+	xtx_combine(acc, T, len);
     }
     if (sym) {
 	for (int j = 0; j < pa; j++)
@@ -899,11 +899,11 @@ SEXP dm_jac_gram(SEXP a1, SEXP av1, SEXP as1, SEXP a2, SEXP av2, SEXP as2,
    Rule: column j, whose squared residual norm after projection on the
    columns already taken is d, is taken when scale[j] > 0 and
    d > tol * scale[j] (ties = 0) or d >= tol * scale[j] (ties = 1).  The two
-   callers (dm_pivchol() in R):
-   * qr() (dmqr_chol()): G = X'X, scale = diag(G), tol = tol^2 of qr(),
+   callers (xtx_pivchol() in R):
+   * qr() (xtx_qr_chol()): G = X'X, scale = diag(G), tol = tol^2 of qr(),
      ties = 1 (dqrdc2 keeps a column whose residual norm equals tol times
      its norm);
-   * fixed effects (dm_fe_pivchol()): G = X'MX (the FE absorbed), scale the
+   * fixed effects (xtx_fe_pivchol()): G = X'MX (the FE absorbed), scale the
      variances before absorption, tol = collin.tol, ties = 0 (fixest).
 
    Suspect band (lo, hi: p values each, or length 0 for none): from G, d is
@@ -920,7 +920,7 @@ SEXP dm_jac_gram(SEXP a1, SEXP av1, SEXP as1, SEXP a2, SEXP av2, SEXP as2,
    Returns list(R, rank, pivot, suspects): R is p x p upper triangular in
    pivoted order, with zeros in the block of the moved columns' residuals;
    pivot and suspects are 1-based. */
-SEXP dm_chol_pivot(SEXP G_, SEXP scale_, SEXP tol_, SEXP ties_, SEXP lo_, SEXP hi_, SEXP lup_,
+SEXP xtx_chol_pivot(SEXP G_, SEXP scale_, SEXP tol_, SEXP ties_, SEXP lo_, SEXP hi_, SEXP lup_,
 		   SEXP dres_)
 {
     int p = nrows(G_);

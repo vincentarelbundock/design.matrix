@@ -2,7 +2,7 @@
 % Please edit documentation in R/fe.R, R/lm.R
 \name{design_lm}
 \alias{design_lm}
-\alias{predict.design_lm}
+\alias{predict.xtx_lm}
 \title{Linear models without the model matrix}
 \usage{
 design_lm(
@@ -22,7 +22,7 @@ design_lm(
   ...
 )
 
-\method{predict}{design_lm}(
+\method{predict}{xtx_lm}(
   object,
   newdata,
   se.fit = FALSE,
@@ -75,7 +75,7 @@ linear model) or \code{"none"}.}
 \code{data}, or as \code{newdata} in \code{predict()}): \code{table}, \code{sql}, \code{engine} and
 \code{chunk_size}; see \link{design_remote}. Otherwise not used.}
 
-\item{object}{A \code{"design_lm"} object.}
+\item{object}{A \code{"xtx_lm"} object.}
 
 \item{newdata}{A data frame of new observations. Omitted, predictions
 are the fitted values (which need \code{model = TRUE}).}
@@ -92,7 +92,7 @@ are the fitted values (which need \code{model = TRUE}).}
 \code{\link[stats:predict.lm]{stats::predict.lm()}}.}
 }
 \value{
-An object of class \code{"design_lm"}: a list with, among others,
+An object of class \code{"xtx_lm"}: a list with, among others,
 \code{coefficients}, \code{sigma}, \code{df.residual}, \code{nobs}, \code{rank}, \code{pivot}, \code{R}
 (the \code{p} by \code{p} factor of \link{design_qr}, columns in pivoted order),
 \code{rss}, \code{compressed} (whether the fit was compressed) and \code{patterns}
@@ -122,10 +122,10 @@ computed from these sufficient statistics are those of the fit on every
 row, so a fit on millions of rows of categorical data costs about as
 much as one on its distinct patterns. Patterns are found by the
 deduplication machinery of the products (see \link{design_algebra} and the
-option \code{design.matrix.dedup}). With \code{compress = "auto"}, the fit is
+option \code{xtx.dedup}). With \code{compress = "auto"}, the fit is
 compressed when at most half the rows are distinct patterns, and the
 search for patterns gives up as soon as that is exceeded; the search is
-skipped when the option \code{design.matrix.dedup} is \code{FALSE}. \code{compress = TRUE} always compresses (unless every row is distinct) and \code{FALSE} never
+skipped when the option \code{xtx.dedup} is \code{FALSE}. \code{compress = TRUE} always compresses (unless every row is distinct) and \code{FALSE} never
 does.
 
 \strong{What is kept.} The fit keeps the coefficients, the factor \code{R}, the
@@ -199,7 +199,7 @@ parameters counted (\verb{sum(levels) - (number of FE - 1)}); \code{fit$fe_dof_e
 the exact rank of the FE (fixest's \code{K.exact = TRUE}), exact for one or
 two FE and for three or more when the reduced system was factored
 (otherwise \code{NA}).
-\item Methods: those of a \code{design_lm} fit (class \code{c("design_lm_fe", "design_lm")}); \code{summary()} reports R-squared and within R-squared.
+\item Methods: those of a \code{design_lm} fit (class \code{c("xtx_lm_fe", "xtx_lm")}); \code{summary()} reports R-squared and within R-squared.
 \code{fixef()} (the generic of fixest or nlme, when loaded) returns the FE
 values, also in \code{fit$fixef}: one named vector per FE, normalized with
 one level per connected set of levels at zero in every FE but the
@@ -219,15 +219,15 @@ by more than one variable.
 For remote data, the response and \code{weights} are column names,
 \code{DBI::SQL()} or R expressions, as without FE (expressions with no SQL
 translation are evaluated in R, in batches).
-\item Options: \code{design.matrix.fe_solver} (\code{"auto"}, \code{"dense"}, \code{"pcg"}, or
-\code{"chol"} for a sparse Cholesky factor), \code{design.matrix.fe_precond}
+\item Options: \code{xtx.fe_solver} (\code{"auto"}, \code{"dense"}, \code{"pcg"}, or
+\code{"chol"} for a sparse Cholesky factor), \code{xtx.fe_precond}
 (\code{"auto"}, default: incomplete Cholesky when the reduced system is
 formed, Jacobi otherwise; \code{"jacobi"}; or \code{"ichol"}, which always forms
-it), \code{design.matrix.fe_form_max} (when to form the reduced system:
-default 25, \code{0} never, \code{Inf} always), \code{design.matrix.fe_refine} (refinement steps:
+it), \code{xtx.fe_form_max} (when to form the reduced system:
+default 25, \code{0} never, \code{Inf} always), \code{xtx.fe_refine} (refinement steps:
 \code{"auto"}, default, one step, after which the residuals are computed
 again unless the step's correction is negligible; or a count of steps,
-each followed by the residuals) and \code{design.matrix.fe_center} (default \code{TRUE}).
+each followed by the residuals) and \code{xtx.fe_center} (default \code{TRUE}).
 }
 }
 

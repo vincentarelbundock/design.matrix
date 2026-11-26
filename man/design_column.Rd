@@ -2,30 +2,30 @@
 % Please edit documentation in R/column.R
 \name{design_column}
 \alias{design_column}
-\alias{as.vector.design_column}
-\alias{as.matrix.design_column}
+\alias{as.vector.xtx_column}
+\alias{as.matrix.xtx_column}
 \alias{col_compute}
-\alias{as.data.frame.design_column}
-\alias{[.design_column}
-\alias{format.design_column}
-\alias{print.design_column}
+\alias{as.data.frame.xtx_column}
+\alias{[.xtx_column}
+\alias{format.xtx_column}
+\alias{print.xtx_column}
 \title{Columns of a design}
 \usage{
 design_column(x, column)
 
-\method{as.vector}{design_column}(x, mode = "any")
+\method{as.vector}{xtx_column}(x, mode = "any")
 
-\method{as.matrix}{design_column}(x, ...)
+\method{as.matrix}{xtx_column}(x, ...)
 
 col_compute(x, name = NULL, overwrite = FALSE, nm = NULL)
 
-\method{as.data.frame}{design_column}(x, row.names = NULL, optional = FALSE, ..., keep = NULL, nm = NULL)
+\method{as.data.frame}{xtx_column}(x, row.names = NULL, optional = FALSE, ..., keep = NULL, nm = NULL)
 
-\method{[}{design_column}(x, i, j, ..., drop = TRUE)
+\method{[}{xtx_column}(x, i, j, ..., drop = TRUE)
 
-\method{format}{design_column}(x, ...)
+\method{format}{xtx_column}(x, ...)
 
-\method{print}{design_column}(x, ...)
+\method{print}{xtx_column}(x, ...)
 }
 \arguments{
 \item{x}{For \code{design_column()}, a design: a \code{design_matrix} or a remote
@@ -143,7 +143,7 @@ outside the package. The table holds the rows of the design (after its
 filter: \code{na.action}, subsets), each with every column of the frame the
 values were computed on: the columns of the data, the values (named
 \code{nm}: by default as \code{as.data.frame()} names them) and internal columns
-of the package (names starting with \verb{__dm_}, the products and lookups
+of the package (names starting with \verb{__xtx_}, the products and lookups
 under the column), which can be ignored. The column returned reads
 that table and stays aligned with the rows of its design, as with a
 temporary table: the rows keep, next to the values, the columns that

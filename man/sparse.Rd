@@ -2,8 +2,8 @@
 % Please edit documentation in R/sparse.R
 \name{sparse}
 \alias{sparse}
-\alias{coerce,design_matrix,CsparseMatrix-method}
-\alias{coerce,design_matrix,dgCMatrix-method}
+\alias{coerce,xtx_matrix,CsparseMatrix-method}
+\alias{coerce,xtx_matrix,dgCMatrix-method}
 \title{Sparse model matrices}
 \arguments{
 \item{from}{A \code{design_matrix}.}

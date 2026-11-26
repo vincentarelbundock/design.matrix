@@ -12,19 +12,19 @@
 #include <math.h>
 #include <string.h>
 #include <Rmath.h>
-#include "dm.h"
+#include "xtx.h"
 
 /* R's sum() of doubles: long double accumulation, +-Inf beyond DBL_MAX */
-static double dm_ld_value(long double s)
+static double xtx_ld_value(long double s)
 {
     if (s > DBL_MAX) return R_PosInf;
     if (s < -DBL_MAX) return R_NegInf;
     return (double) s;
 }
 
-/* dmc_ifelse() in memory: `no` (recycled) with `yes` (recycled) where test
+/* xtx_c_ifelse() in memory: `no` (recycled) with `yes` (recycled) where test
    is TRUE and NA where test is NA.  test logical; yes, no doubles. */
-SEXP dm_ifelse(SEXP test_, SEXP yes_, SEXP no_)
+SEXP xtx_ifelse(SEXP test_, SEXP yes_, SEXP no_)
 {
     R_xlen_t n = XLENGTH(test_), ny = XLENGTH(yes_), nn = XLENGTH(no_);
     const int *t = LOGICAL_RO(test_);
@@ -42,9 +42,9 @@ SEXP dm_ifelse(SEXP test_, SEXP yes_, SEXP no_)
     return out;
 }
 
-/* dmc_notnan() in memory: TRUE where x is present, FALSE where it is NA
+/* xtx_c_notnan() in memory: TRUE where x is present, FALSE where it is NA
    or NaN (as !is.na(x) gives). */
-SEXP dm_notnan(SEXP x_)
+SEXP xtx_notnan(SEXP x_)
 {
     R_xlen_t n = XLENGTH(x_);
     SEXP out = PROTECT(allocVector(LGLSXP, n));
@@ -56,15 +56,15 @@ SEXP dm_notnan(SEXP x_)
 	const int *x = TYPEOF(x_) == INTSXP ? INTEGER_RO(x_) : LOGICAL_RO(x_);
 	for (R_xlen_t i = 0; i < n; i++) o[i] = x[i] != NA_INTEGER;
     } else {
-	error("internal error: dm_notnan() of a non-numeric vector");
+	error("internal error: xtx_notnan() of a non-numeric vector");
     }
     UNPROTECT(1);
     return out;
 }
 
 /* f + fe_1[codes_1] + ... + fe_K[codes_K] (in that order), NA for a code
-   outside 1..G_k: dmc_fe_add() in memory, with one column. */
-SEXP dm_fe_fitted_add(SEXP f_, SEXP fe_, SEXP codes_)
+   outside 1..G_k: xtx_c_fe_add() in memory, with one column. */
+SEXP xtx_fe_fitted_add(SEXP f_, SEXP fe_, SEXP codes_)
 {
     R_xlen_t n = XLENGTH(f_);
     int K = LENGTH(fe_);
@@ -88,12 +88,12 @@ SEXP dm_fe_fitted_add(SEXP f_, SEXP fe_, SEXP codes_)
     return out;
 }
 
-/* The residuals of dm_fe_core() in memory (dmc_fe_resid()): f = Xb + fe_1[codes_1] + ...
-   + fe_K[codes_K] (as dm_fe_fitted(), in that order), e = z - f, we = w e
+/* The residuals of xtx_fe_core() in memory (xtx_c_fe_resid()): f = Xb + fe_1[codes_1] + ...
+   + fe_K[codes_K] (as xtx_fe_fitted(), in that order), e = z - f, we = w e
    (e without weights), and in the same pass the sums of we within the
-   levels of each FE (as dm_fe_gsum()) and sum(we e) (as sum()).
+   levels of each FE (as xtx_fe_gsum()) and sum(we e) (as sum()).
    list(we (an n x 1 matrix), Be (one G_k x 1 matrix per FE), rss). */
-SEXP dm_fe_resid(SEXP z_, SEXP xb_, SEXP w_, SEXP fe_, SEXP codes_, SEXP G_)
+SEXP xtx_fe_resid(SEXP z_, SEXP xb_, SEXP w_, SEXP fe_, SEXP codes_, SEXP G_)
 {
     R_xlen_t n = XLENGTH(z_);
     int K = LENGTH(codes_);
@@ -119,7 +119,7 @@ SEXP dm_fe_resid(SEXP z_, SEXP xb_, SEXP w_, SEXP fe_, SEXP codes_, SEXP G_)
 	nfe[k] = XLENGTH(VECTOR_ELT(fe_, k));
 	if (nfe[k] < G[k]) error("internal error: one FE value per level");
 	/* (the sums within levels index by code) */
-	dm_check_codes(ck, G[k]);
+	xtx_check_codes(ck, G[k]);
 	SEXP m = SET_VECTOR_ELT(Be, k, allocMatrix(REALSXP, G[k], 1));
 	acc[k] = REAL(m);
 	memset(acc[k], 0, sizeof(double) * (size_t) G[k]);
@@ -139,15 +139,15 @@ SEXP dm_fe_resid(SEXP z_, SEXP xb_, SEXP w_, SEXP fe_, SEXP codes_, SEXP G_)
 	rss += sq;
 	for (int k = 0; k < K; k++) acc[k][codes[k][i] - 1] += wei;
     }
-    SET_VECTOR_ELT(out, 2, ScalarReal(dm_ld_value(rss)));
+    SET_VECTOR_ELT(out, 2, ScalarReal(xtx_ld_value(rss)));
     UNPROTECT(1);
     return out;
 }
 
-/* The moments of dm_fe_core() in memory (dmc_moments()), as its R code sums them:
+/* The moments of xtx_fe_core() in memory (xtx_c_moments()), as its R code sums them:
    c(sum(wz z), sum(w), sum(wz), sum(w (z - ybar)^2)) with wz = w z (z
    without weights; then sum(w) is n) and ybar = sum(wz) / sum(w). */
-SEXP dm_fe_moments(SEXP z_, SEXP w_)
+SEXP xtx_fe_moments(SEXP z_, SEXP w_)
 {
     R_xlen_t n = XLENGTH(z_);
     const double *z = REAL_RO(z_);
@@ -161,8 +161,8 @@ SEXP dm_fe_moments(SEXP z_, SEXP w_)
 	if (w) s2 += w[i];
 	s3 += wz;
     }
-    double sw = w ? dm_ld_value(s2) : (double) n;
-    double ybar = dm_ld_value(s3) / sw;
+    double sw = w ? xtx_ld_value(s2) : (double) n;
+    double ybar = xtx_ld_value(s3) / sw;
     for (R_xlen_t i = 0; i < n; i++) {
 	double d = z[i] - ybar;
 	double d2 = d * d;
@@ -170,23 +170,23 @@ SEXP dm_fe_moments(SEXP z_, SEXP w_)
 	s4 += t;
     }
     SEXP out = PROTECT(allocVector(REALSXP, 4));
-    REAL(out)[0] = dm_ld_value(s1);
-    REAL(out)[1] = w ? dm_ld_value(s2) : 0.0;
-    REAL(out)[2] = dm_ld_value(s3);
-    REAL(out)[3] = dm_ld_value(s4);
+    REAL(out)[0] = xtx_ld_value(s1);
+    REAL(out)[1] = w ? xtx_ld_value(s2) : 0.0;
+    REAL(out)[2] = xtx_ld_value(s3);
+    REAL(out)[3] = xtx_ld_value(s4);
     UNPROTECT(1);
     return out;
 }
 
-/* The working weights and responses of IRLS (dmglm_working() in memory),
+/* The working weights and responses of IRLS (xtx_glm_working_memory() in memory),
    from the prior weights W, eta, mu, the response y, the offset off
    (length 1 or n) and the family's variance v and d mu / d eta me at mu:
    good = W > 0 & me != 0 (NA as R's & gives it), w2 = W me me / v and
    z = (eta - off) + (y - mu) / me where good (0 where not, NA where good
-   is NA), and the counts of the checks of dmglm_working(), as its R code
+   is NA), and the counts of the checks of xtx_glm_working_memory(), as its R code
    gives them: W > 0 and v missing, W > 0 and v == 0, W > 0 and me
    missing, good, and rows where w2 or z is not finite.  list(w2, z, counts). */
-SEXP dm_glm_working(SEXP W_, SEXP eta_, SEXP mu_, SEXP y_, SEXP off_, SEXP v_, SEXP me_)
+SEXP xtx_glm_working(SEXP W_, SEXP eta_, SEXP mu_, SEXP y_, SEXP off_, SEXP v_, SEXP me_)
 {
     R_xlen_t n = XLENGTH(eta_);
     SEXP args[6] = {W_, mu_, y_, off_, v_, me_};
@@ -209,7 +209,7 @@ SEXP dm_glm_working(SEXP W_, SEXP eta_, SEXP mu_, SEXP y_, SEXP off_, SEXP v_, S
 	int wpos = ISNAN(Wi) ? NA_LOGICAL : (Wi > 0);
 	int menz = ISNAN(mei) ? NA_LOGICAL : (mei != 0);
 	int good = (wpos == 0 || menz == 0) ? 0 : ((wpos == NA_LOGICAL || menz == NA_LOGICAL) ? NA_LOGICAL : 1);
-	/* (W > 0) & !dmc_notnan(v), (W > 0) & v == 0, (W > 0) & !dmc_notnan(me) */
+	/* (W > 0) & !xtx_c_notnan(v), (W > 0) & v == 0, (W > 0) & !xtx_c_notnan(me) */
 	if (wpos == 1 && ISNAN(vi)) c0++;
 	if (wpos == 1 && !ISNAN(vi) && vi == 0) c1++;
 	if (wpos == 1 && ISNAN(mei)) c2++;
@@ -239,10 +239,10 @@ SEXP dm_glm_working(SEXP W_, SEXP eta_, SEXP mu_, SEXP y_, SEXP off_, SEXP v_, S
     return out;
 }
 
-/* The Poisson deviance residuals of dmglm_cf() in memory:
+/* The Poisson deviance residuals of xtx_glm_cf() in memory:
    y > 0 ? 2 w (y log(y / m) - (y - m)) : 2 m w, NA where y > 0 is NA
    (y, m, w of length 1 or n). */
-SEXP dm_poisson_dev(SEXP y_, SEXP m_, SEXP w_)
+SEXP xtx_poisson_dev(SEXP y_, SEXP m_, SEXP w_)
 {
     R_xlen_t ny = XLENGTH(y_), nm = XLENGTH(m_), nw = XLENGTH(w_);
     R_xlen_t n = ny > nm ? ny : nm;
@@ -279,7 +279,7 @@ SEXP dm_poisson_dev(SEXP y_, SEXP m_, SEXP w_)
    factor on a column shared with the model frame, which makes it a
    wrapper; the kernels take writable pointers to the variables, and R
    then copies a wrapper's data at every call.  One copy here instead. */
-SEXP dm_unwrap_vars(SEXP vars)
+SEXP xtx_unwrap_vars(SEXP vars)
 {
     if (TYPEOF(vars) != VECSXP) return vars;
     R_xlen_t nv = XLENGTH(vars);
@@ -309,7 +309,7 @@ SEXP dm_unwrap_vars(SEXP vars)
 /* Does factor x (integer codes, L levels) leave a level unused, as
    length(unique(x[!is.na(x)])) < length(levels(x)) tells?  NA when a code
    is out of range (then the R code decides). */
-SEXP dm_levels_unused(SEXP x_, SEXP L_)
+SEXP xtx_levels_unused(SEXP x_, SEXP L_)
 {
     R_xlen_t n = XLENGTH(x_);
     int L = asInteger(L_);
@@ -327,13 +327,13 @@ SEXP dm_levels_unused(SEXP x_, SEXP L_)
     return ScalarLogical(distinct < L);
 }
 
-/* The sums of dmfit_ls() in memory, from z, the fitted values f and the
+/* The sums of xtx_fit_ls() in memory, from z, the fitted values f and the
    weights w (NULL for 1), as its R code computes them with r = z - f:
    rss = sum(r^2) (sum(ifelse(w > 0, w r^2, 0)) with weights) and, with an
    intercept, mss = sum((f - fbar)^2) with fbar = mean(f) (sum(w (f -
    fbar)^2), fbar = sum(w f) / sum(w) with weights), without one sum(f^2)
    (sum(w f^2)).  c(rss, mss). */
-SEXP dm_ls_sums(SEXP z_, SEXP f_, SEXP w_, SEXP intercept_)
+SEXP xtx_ls_sums(SEXP z_, SEXP f_, SEXP w_, SEXP intercept_)
 {
     R_xlen_t n = XLENGTH(z_);
     const double *z = REAL_RO(z_), *f = REAL_RO(f_);
@@ -360,7 +360,7 @@ SEXP dm_ls_sums(SEXP z_, SEXP f_, SEXP w_, SEXP intercept_)
     double fbar = 0.0;
     if (intercept) {
 	if (w) {
-	    fbar = dm_ld_value(s) / dm_ld_value(sw);
+	    fbar = xtx_ld_value(s) / xtx_ld_value(sw);
 	} else {
 	    /* mean(): the long double mean (from the terms divided by n if
 	       the sum overflows), then one correcting pass */
@@ -388,25 +388,25 @@ SEXP dm_ls_sums(SEXP z_, SEXP f_, SEXP w_, SEXP intercept_)
 	mss += v;
     }
     SEXP out = PROTECT(allocVector(REALSXP, 2));
-    REAL(out)[0] = dm_ld_value(rss);
-    REAL(out)[1] = dm_ld_value(mss);
+    REAL(out)[0] = xtx_ld_value(rss);
+    REAL(out)[1] = xtx_ld_value(mss);
     UNPROTECT(1);
     return out;
 }
 
 /* R's log() */
-static double dm_rlog(double x)
+static double xtx_rlog(double x)
 {
     return x > 0 ? log(x) : (x == 0 ? R_NegInf : R_NaN);
 }
 
-/* The weighted binomial log densities of the AIC (dmglm_final() in
+/* The weighted binomial log densities of the AIC (xtx_glm_final() in
    memory), with kk = round(m y), mm = round(m):
    ifelse(m > 0, w / m, 0) * (lgamma(mm + 1) - lgamma(kk + 1) -
    lgamma(mm - kk + 1) + ifelse(kk > 0, kk log(mu), 0) +
    ifelse(mm - kk > 0, (mm - kk) log(1 - mu), 0)), NA where a test is NA
    (m, y, w, mu of length 1 or n). */
-SEXP dm_binomial_ll(SEXP m_, SEXP y_, SEXP w_, SEXP mu_)
+SEXP xtx_binomial_ll(SEXP m_, SEXP y_, SEXP w_, SEXP mu_)
 {
     SEXP a[4] = {m_, y_, w_, mu_};
     R_xlen_t n = 0;
@@ -427,9 +427,9 @@ SEXP dm_binomial_ll(SEXP m_, SEXP y_, SEXP w_, SEXP mu_)
 	double l1 = lgammafn(mm + 1);
 	double l2 = lgammafn(kk + 1);
 	double l3 = lgammafn(d + 1);
-	double t2 = ISNAN(kk) ? NA_REAL : (kk > 0 ? kk * dm_rlog(mui) : 0.0);
+	double t2 = ISNAN(kk) ? NA_REAL : (kk > 0 ? kk * xtx_rlog(mui) : 0.0);
 	double om = 1 - mui;
-	double t3 = ISNAN(d) ? NA_REAL : (d > 0 ? d * dm_rlog(om) : 0.0);
+	double t3 = ISNAN(d) ? NA_REAL : (d > 0 ? d * xtx_rlog(om) : 0.0);
 	double s = l1 - l2;
 	s = s - l3;
 	s = s + t2;

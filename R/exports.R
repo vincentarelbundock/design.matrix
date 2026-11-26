@@ -36,9 +36,9 @@
 #' @param compress `"auto"` (default), `TRUE` or `FALSE`. With `"auto"`, the
 #'   patterns are returned only when compression pays (few patterns
 #'   relative to rows): in memory, following the option
-#'   `design.matrix.dedup` (see [design_algebra]) and at most half as many
+#'   `xtx.dedup` (see [design_algebra]) and at most half as many
 #'   patterns as rows; remotely, following the option
-#'   `design.matrix.remote_compress` (see [design_remote]). The two backends
+#'   `xtx.remote_compress` (see [design_remote]). The two backends
 #'   can therefore decide differently with `"auto"`. With `TRUE`, the
 #'   patterns are returned unless every row is a pattern of its own. With
 #'   `FALSE`, `NULL` is returned.
@@ -86,10 +86,10 @@
 design_patterns <- function(x, z, w = NULL, keys = NULL, compress = "auto") {
     if (!(isTRUE(compress) || isFALSE(compress) || identical(compress, "auto")))
         stop("`compress` must be \"auto\", TRUE or FALSE.", call. = FALSE)
-    out <- if (inherits(x, "dm_remote")) {
-        dm_patterns_remote(x, z, w, keys, compress)
-    } else if (inherits(x, "design_matrix")) {
-        dm_patterns_memory(x, z, w, keys, compress)
+    out <- if (inherits(x, "xtx_remote")) {
+        xtx_patterns_remote(x, z, w, keys, compress)
+    } else if (inherits(x, "xtx_matrix")) {
+        xtx_patterns_memory(x, z, w, keys, compress)
     } else {
         stop("`x` must be a design: a `design_matrix` or a remote design.", call. = FALSE)
     }
@@ -100,8 +100,8 @@ design_patterns <- function(x, z, w = NULL, keys = NULL, compress = "auto") {
          within = as.double(out$within), rows = as.double(out$rows), keys = out$keys)
 }
 
-dm_patterns_memory <- function(x, z, w, keys, compress) {
-    if (dm_is_comb(x)) stop("`x` must not be a scaled design.", call. = FALSE)
+xtx_patterns_memory <- function(x, z, w, keys, compress) {
+    if (xtx_is_comb(x)) stop("`x` must not be a scaled design.", call. = FALSE)
     n <- nrow(x)
     vec <- function(v, what) {
         ## (a one-column matrix, such as D %*% b, is a vector)
@@ -128,23 +128,23 @@ dm_patterns_memory <- function(x, z, w, keys, compress) {
         knames <- colnames(keys) %||% paste0("keys", seq_len(ncol(keys)))
         storage.mode(keys) <- "double"
     }
-    out <- dmp_patterns(x, z, w, compress, keys = keys)
+    out <- xtx_p_patterns(x, z, w, compress, keys = keys)
     if (!is.null(out$keys)) colnames(out$keys) <- knames
     out
 }
 
 ## Remote: z, w and keys as column names, DBI::SQL() expressions or
-## design_column()s, resolved as the other public remote inputs (dm_remote_cols(),
+## design_column()s, resolved as the other public remote inputs (xtx_remote_cols(),
 ## which moves the design to the frame of a remote column), then the scan of
-## dm_sql_patterns() on their SQL.
-dm_patterns_remote <- function(x, z, w, keys, compress) {
+## xtx_sql_patterns() on their SQL.
+xtx_patterns_remote <- function(x, z, w, keys, compress) {
     if (!is.null(x$scale)) stop("`x` must not be a scaled design.", call. = FALSE)
-    zc <- dm_remote_cols(x, z, "z")
+    zc <- xtx_remote_cols(x, z, "z")
     D <- zc$D
     if (length(zc$sql) != 1L) stop("`z` must be one column.", call. = FALSE)
     ws <- NULL
     if (!is.null(w)) {
-        wc <- dm_remote_cols(D, w, "w")
+        wc <- xtx_remote_cols(D, w, "w")
         D <- wc$D
         ws <- wc$sql
         if (length(ws) != 1L) stop("`w` must be one column.", call. = FALSE)
@@ -152,7 +152,7 @@ dm_patterns_remote <- function(x, z, w, keys, compress) {
     ks <- NULL
     knames <- NULL
     if (!is.null(keys)) {
-        kc <- dm_remote_cols(D, keys, "keys", several = TRUE)
+        kc <- xtx_remote_cols(D, keys, "keys", several = TRUE)
         D <- kc$D
         ks <- kc$sql
         knames <- kc$names %||% paste0("keys", seq_along(ks))
@@ -164,13 +164,13 @@ dm_patterns_remote <- function(x, z, w, keys, compress) {
     if (!is.null(ws))
         chk <- c(chk, sprintf("SUM(CASE WHEN COALESCE(isfinite(%s) AND %s >= 0, FALSE) THEN 0 ELSE 1 END) AS bad_w",
                               dbl(ws), dbl(ws)))
-    s <- dm_query(D, sprintf("SELECT %s FROM (%s) AS s WHERE %s", paste(chk, collapse = ", "), D$src$select, D$filter))
+    s <- xtx_query(D, sprintf("SELECT %s FROM (%s) AS s WHERE %s", paste(chk, collapse = ", "), D$src$select, D$filter))
     if (isTRUE(as.numeric(s$bad_z) > 0)) stop("`z` has missing or infinite values.", call. = FALSE)
     if (!is.null(ws) && isTRUE(as.numeric(s$bad_w) > 0))
         stop("`w` must be finite and non-negative.", call. = FALSE)
     if (isFALSE(compress)) return(NULL)
-    mode <- if (isTRUE(compress)) TRUE else dm_compress_mode()
-    pt <- dm_sql_patterns(D, zc$sql, ws, keys = ks, mode = mode, fit = "lm")
+    mode <- if (isTRUE(compress)) TRUE else xtx_compress_mode()
+    pt <- xtx_sql_patterns(D, zc$sql, ws, keys = ks, mode = mode, fit = "lm")
     if (is.null(pt)) return(NULL)
     pos <- which(pt$sw > 0)
     K <- NULL
@@ -179,6 +179,6 @@ dm_patterns_remote <- function(x, z, w, keys, compress) {
         storage.mode(K) <- "double"
         colnames(K) <- knames
     }
-    list(x = dm_dense_design(pt$x[pos, , drop = FALSE]), z = pt$sy[pos] / pt$sw[pos], w = pt$sw[pos],
+    list(x = xtx_dense_design(pt$x[pos, , drop = FALSE]), z = pt$sy[pos] / pt$sw[pos], w = pt$sw[pos],
          within = sum(pt$within), rows = sum(pt$n), keys = K)
 }
