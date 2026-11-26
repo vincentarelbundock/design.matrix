@@ -182,19 +182,13 @@ result has \code{NA}.
 with \code{weights} and \code{offset} naming columns, \code{offset()} terms in the
 formula, and a remote design with \code{y} naming the response column (two
 columns for successes and failures). The response, weights and offset
-must have SQL translations. Families and links are those of
-\link[stats:family]{stats::family} (every one has a SQL translation). With few design
-patterns (see \emph{Compression}), one \verb{GROUP BY} returns the sums of each
-pattern and the iterations run in memory, with the results of the fit
-on every row. Otherwise each iteration computes \verb{X'WX}, \verb{X'Wz} and the
-deviance in the database (SQL engine) or in batches (chunked engine),
-from the normal equations, with aliased columns detected at the
-tolerance \code{max(1e-7, min(1e-7, epsilon / 1000))} (that of \code{\link[=lm]{lm()}}: the
-normal equations cannot resolve \code{glm()}'s smaller tolerance).
+must have SQL translations. The fit is the same code as in memory, on
+the remote methods of the products: with few design patterns (see
+\emph{Compression}), the iterations run on the patterns; otherwise each
+iteration computes its products in the database or in batches.
 \code{predict(fit, newdata = con, table = ..., type = "response")}, \code{fitted()}
-and \code{residuals(fit, type = )} return the name of a temporary view or
-table with a \code{.fitted} (and \code{.resid}) column next to the columns of the
-remote data.
+and \code{residuals(fit, type = )} return the name of a temporary view with a
+\code{.fitted} (and \code{.resid}) column next to the columns of the remote data.
 }
 
 \section{Linear models}{

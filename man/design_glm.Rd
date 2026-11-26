@@ -101,10 +101,9 @@ contributes to each iteration only through the sum of its prior weights
 and its weighted mean response, and to the deviance through a constant
 that is computed once. The fit then runs on the patterns and gives the
 results of the fit on every row, with the same iterations (the first
-iteration, which starts from per-row values, is summed from the rows).
-The AIC is computed from the rows, and the dispersion of the families
-that estimate it from the within-pattern sums of squares. \code{compress}
-works as in \code{\link[=design_lm]{design_lm()}}.
+iteration, which starts from per-row values, runs on the rows). The AIC,
+the dispersion and the null deviance are computed from the rows. A fit
+with an offset is not compressed. \code{compress} works as in \code{\link[=design_lm]{design_lm()}}.
 
 \strong{Families.} The families of \link[stats:family]{stats::family}: \code{binomial}, \code{poisson},
 \code{gaussian}, \code{Gamma}, \code{inverse.gaussian}, \code{quasibinomial}, \code{quasipoisson}
@@ -119,13 +118,10 @@ error.
 \code{sql}) or Parquet paths, and the first argument a remote design (see
 \link{design_remote}); \code{weights} and \code{offset} then name columns (\code{offset()}
 terms of the formula are also used when they have a SQL translation).
-When the rows have few design patterns, one \verb{GROUP BY} returns the sums
-that the compressed fit needs, and the iterations run in memory on the
-patterns. Otherwise each iteration computes \verb{X'WX} and \verb{X'Wz} in the
-database (SQL engine: the linear predictor from the current coefficients,
-the working weights and responses from the family, all in SQL), or in
-batches of rows read into R (chunked engine). See the section \emph{GLMs} of
-\link{design_remote}.
+The fit is the same code as in memory: its columns (response, weights,
+linear predictor, working weights) are SQL expressions, and its products
+with the design run in the database or in batches. See the section
+\emph{GLMs} of \link{design_remote}.
 
 \strong{What is kept.} As in \code{\link[=design_lm]{design_lm()}}: the coefficients, the factor \code{R}
 of the last weighted least squares problem (which gives the covariance
