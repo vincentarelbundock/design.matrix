@@ -47,6 +47,12 @@
 #'   [is.finite()], [is.infinite()] and the functions of the `Math` group
 #'   (`exp()`, `log()` with one argument, `sqrt()`, `abs()`, ...), with R's
 #'   missing values (SQL `NULL` is `NA`, and `NaN` stays `NaN`).
+#'   `col_ifelse()`, `col_pmin()` and `col_pmax()` combine columns, and
+#'   `sum()`, `mean()`, `min()`, `range()`, `any()`, ... and `col_sums()`
+#'   summarize them, in one query: see [column_arithmetic].
+#' * `e * D` (or `D / w`), with `e` a column of a remote design `D`: the
+#'   design with rows scaled by the column, as for a vector in memory (for
+#'   instance `colSums(e * D, group = "cl")`, or `crossprod(D, w * D)`).
 #'
 #' @section Getting values:
 #' * `collect(x)`: the values in R, a double vector (a matrix for several

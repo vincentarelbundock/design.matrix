@@ -28,7 +28,7 @@ Three choices follow from this, and the rest of the page describes them:
   [Frame and plan], [The model frame of R, and the fixed transformations, levels and contrasts that new data must reuse], [`R/frame.R`, `R/prep.R`, `R/plan.R`],
   [Design], [Checks, contrasts and column names as in R; the dense fill], [`src/modelmatrix.c`, `R/design_matrix.R`],
   [Kernels], [Products with the design from codes and numbers], [`src/kernels.c`, `src/structured.c`, `R/algebra.R`],
-  [Primitives], [Operations on designs and columns, in memory and remote; the public column type], [`R/primitives.R`, `R/primitives_lookup.R`, `R/column.R`],
+  [Primitives], [Operations on designs and columns, in memory and remote; the public column type], [`R/primitives.R`, `R/primitives_lookup.R`, `R/column.R`, `R/columns_public.R`],
   [Fits], [Least squares, IRLS, fixed effects], [`R/qr.R`, `R/lm.R`, `R/glm.R`, `R/fe.R`, `R/fe_glm.R`, `R/na_action.R`, `src/fe.c`, `src/fused.c`],
   [Remote], [Designs over DuckDB tables, queries and Parquet files], [`R/remote.R`, `R/remote_sql.R`, `R/remote_fit.R`, `R/remote_compress.R`],
 )
@@ -110,6 +110,8 @@ The operations are products with the design ($X'X$, $X'c$, $X B$, $op("rowSums")
 == One public column type
 
 The remote column of the fitting core is also the column users get (`R/column.R`). `D %*% b`, `rowSums(D)`, `rowMeans(D)` and `quadratic_diagonal(D, V)` of a remote design return a `design_column` where a design in memory returns a vector, and `design_column(D, "y")` or `design_column(D, DBI::SQL(...))` makes one from the data, so that public calls chain: `exp(D %*% b) - design_column(D, "y")` is a column like the ones the fits build. `collect()` reads the values into R (a `SELECT` of every row), `as.data.frame()` reads them with columns of the data (`keep`, for instance a key to match rows), and `compute()` stores the column in a temporary table (the frame of `dmc_freeze(table = TRUE)`). In memory the same calls return the vector itself. A column is valid while its connection is open; the views and temporary tables under it are temporaries of that session. Frames, their depth and lineage stay internal: users see columns, which combine when they come from the same design, including separate products such as `(D %*% b) / sqrt(quadratic_diagonal(D, V))`. The one exception: two products each read (or computed) before they are combined sit on two branches of views, whose rows the database cannot align; that is an error, and combining them before reading either avoids it. Results of fits with one value per row (`fitted()`, `predict()`, `qr.fitted()`) remain tables that keep the columns of the data.
+
+Base generics complete the type (`R/columns_public.R`): `sum()`, `prod()`, `min()`, `max()`, `range()`, `any()`, `all()` and `mean()` of remote columns are one query each, whatever the number of arguments, with R's rule for missing values (`NA` if a value is `NA`, else `NaN` if one is `NaN`; `na.rm` drops both); `round(x, digits)` and `signif()` follow R's algorithms step by step in SQL. What base R cannot dispatch on is exported as `col_ifelse()`, `col_pmin()`, `col_pmax()` and `col_sums()` (several sums, one query), thin wrappers of the primitives. `e * D` scales the rows of a remote design by a column `e` (R's `chooseOpsMethod()` picks the design's method), so that cluster scores are `colSums(e * D, group = cl)` on both backends.
 
 == Groupings
 

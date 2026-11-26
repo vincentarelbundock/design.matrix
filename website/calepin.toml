@@ -33,6 +33,9 @@ fold = true
   [[sidebar.section.item]]
   target = "architecture.typ"
 
+  [[sidebar.section.item]]
+  target = "primitives.typ"
+
 [[sidebar.section]]
 title = "Recipes"
 

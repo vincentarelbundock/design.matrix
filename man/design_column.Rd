@@ -105,6 +105,12 @@ the same design, comparisons, \code{&}, \code{|}, \code{!}, \code{\link[=is.na]{
 \code{\link[=is.finite]{is.finite()}}, \code{\link[=is.infinite]{is.infinite()}} and the functions of the \code{Math} group
 (\code{exp()}, \code{log()} with one argument, \code{sqrt()}, \code{abs()}, ...), with R's
 missing values (SQL \code{NULL} is \code{NA}, and \code{NaN} stays \code{NaN}).
+\code{col_ifelse()}, \code{col_pmin()} and \code{col_pmax()} combine columns, and
+\code{sum()}, \code{mean()}, \code{min()}, \code{range()}, \code{any()}, ... and \code{col_sums()}
+summarize them, in one query: see \link{column_arithmetic}.
+\item \code{e * D} (or \code{D / w}), with \code{e} a column of a remote design \code{D}: the
+design with rows scaled by the column, as for a vector in memory (for
+instance \code{colSums(e * D, group = "cl")}, or \code{crossprod(D, w * D)}).
 }
 }
 

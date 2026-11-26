@@ -889,11 +889,24 @@ Ops.dm_remote <- function(e1, e2) {
         if (d1 && d2) stop(sprintf("`%s` between two remote designs is not supported.", op), call. = FALSE)
         if (op == "/" && d2) stop("Only `design / scale` is supported, with the design first.", call. = FALSE)
         D <- if (d1) e1 else e2
-        D$scale <- dm_remote_scale_sql(D, if (d1) e2 else e1, op)
+        s <- if (d1) e2 else e1
+        ## (a remote column of the design, as `e * D` or `D / w`: the design
+        ## moves to the column's frame, see dmp_scale(); tapx)
+        if (dm_is_column(s)) {
+            if (length(s) != 1L) stop("A remote design is scaled by a column with one column.", call. = FALSE)
+            return(dmp_scale(D, if (op == "/") 1 / s else s))
+        }
+        D$scale <- dm_remote_scale_sql(D, s, op)
         return(D)
     }
     stop(sprintf("`%s` is not supported for remote designs.", op), call. = FALSE)
 }
+
+## `col * D` and `D * col` with a remote column (design_column) and a
+## remote design: both classes have Ops methods, so R asks which one to use
+## (base::chooseOpsMethod(), R >= 4.3): the design's, which scales rows.
+#' @export
+chooseOpsMethod.dm_remote <- function(x, y, mx, my, cl, reverse) inherits(y, "design_column")
 
 ## The design without its row scale.
 dm_remote_unscaled <- function(D) {
