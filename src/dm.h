@@ -42,5 +42,8 @@ SEXP dm_in_range(SEXP, SEXP, SEXP);
 SEXP dm_codes_ok(SEXP, SEXP);
 SEXP dm_int_unique(SEXP);
 SEXP dm_str_unique(SEXP);
+SEXP dm_fe_gsum(SEXP, SEXP, SEXP);
+SEXP dm_fe_crosstab(SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP dm_fe_components(SEXP, SEXP, SEXP, SEXP);
 SEXP dm_omp_max_threads(void);
 #endif
