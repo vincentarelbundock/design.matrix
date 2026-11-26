@@ -1,0 +1,46 @@
+title = "design.matrix"
+description = "Exact and fast model matrices for R."
+base-url = "https://vincentarelbundock.github.io/design.matrix"
+search = "pagefind"
+
+[menus]
+
+  [[menus.social]]
+  target = "https://github.com/vincentarelbundock/design.matrix"
+  label = "{icon:github}"
+  aria-label = "GitHub"
+
+[footer]
+
+  [[footer.item]]
+  label = "© 2026 Vincent Arel-Bundock"
+
+  [[footer.item]]
+  label = "Made with Calepin."
+  target = "https://vincentarelbundock.github.io/calepin"
+
+[sidebar]
+fold = true
+
+[[sidebar.section]]
+
+  [[sidebar.section.item]]
+  target = "index.typ"
+
+  [[sidebar.section.item]]
+  target = "operations.typ"
+
+[[sidebar.section]]
+title = "Recipes"
+
+  [[sidebar.section.item]]
+  target = "recipes/estimation.typ"
+
+  [[sidebar.section.item]]
+  target = "recipes/prediction.typ"
+
+[[sidebar.section]]
+title = "Reference"
+
+  [[sidebar.section.item]]
+  glob = "reference/*.typ"
