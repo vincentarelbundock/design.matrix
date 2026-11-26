@@ -23,4 +23,4 @@ bench::mark(
     fast_sparse(sfo, big),
     Matrix::sparse.model.matrix(sfo, big),
     MatrixModels::model.Matrix(sfo, big, sparse = TRUE),
-    iterations = 5, check = FALSE)
+    iterations = iters(5), check = FALSE)

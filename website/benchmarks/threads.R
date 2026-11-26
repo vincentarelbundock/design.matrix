@@ -7,4 +7,4 @@ bench::mark(
     model.matrix(fo, big),
     fast_model_matrix(fo, big, threads = 1),
     fast_model_matrix(fo, big, threads = 4),
-    iterations = 10, check = same)
+    iterations = iters(10), check = same)

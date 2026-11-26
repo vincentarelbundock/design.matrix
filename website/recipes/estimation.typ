@@ -123,7 +123,16 @@ D <- design_matrix(y ~ x + f, d)
 all.equal(coef(fit), qr.coef(qr(D), d$y))
 ```
 
-The benchmark below compares `qr()` on a design matrix with eight other implementations of least squares, on 200,000 rows and designs from 3 to 401 columns. It runs outside this page, because a fair comparison needs a fresh R process for each method and design: `bench/ols/run.sh` runs it and writes `bench/ols/results.csv`, which the tables below read. The protocol:
+#calepin.chunk(echo: false, results: "typst")[
+```r
+## (the number of rows, from the results: the run sets it, OLS_BENCH_N)
+ols_n <- unique(read.csv(file.path(normalizePath(file.path(Sys.getenv("DESIGN_MATRIX_ROOT", "../.."), "bench", "ols")),
+                                   "results.csv"))$n)[1]
+cat("The benchmark below compares `qr()` on a design matrix with eight other implementations of least squares, on ",
+    format(ols_n, big.mark = ",", scientific = FALSE),
+    " rows and designs from 3 to 401 columns. It runs outside this page, because a fair comparison needs a fresh R process for each method and design: `bench/ols/run.sh` runs it and writes `bench/ols/results.csv`, which the tables below read. The protocol:\n", sep = "")
+```
+]
 
 - Two comparisons. _From formula_: every method starts from the formula and the data, as a user would. _Prebuilt_: the model matrix (or design matrix) is built before timing, and only the fit is timed.
 - One thread everywhere, including the BLAS. The model frame is built exactly as `model.matrix()` builds it (option `design.matrix.skip_na_copy = FALSE`).

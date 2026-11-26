@@ -15,19 +15,42 @@
 # Safe: a memory cap and a time limit per process.
 #
 # Usage: bench/ols/run.sh [cores]   default "0"; one worker per listed core
-# Writes bench/ols/results.csv only when every measurement succeeded.
+# Writes bench/ols/results.csv (and machine.txt) only when every measurement
+# succeeded.
+#
+# BENCH_SIZE=quick (make bench-quick): two widths per family and 3 timed
+# calls per method, to check the scripts. Quick results never go to
+# bench/ols/: they go to $BENCH_OUT/ols (default
+# ${TMPDIR:-/tmp}/design.matrix-bench-quick/ols), printed at the end.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 cores=${1:-"0"}
+size=${BENCH_SIZE:-full}
 out=$(mktemp -d)
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
-n=200000
-iters=11
+# Rows: 50,000 by default (OLS_BENCH_N): the slowest implementations take
+# seconds per fit at the widest designs, and each fit is timed several times
+# in a fresh process, so larger data mostly add waiting.
+n=${OLS_BENCH_N:-50000}
+case "$size" in
+  full)
+    dest=$here
+    iters=11
+    w_numeric="5 20 50 100"; w_mixed="25 50 100"; w_factor="5 20 50 100"; w_interaction="6 20 50 100" ;;
+  quick)
+    dest=${BENCH_OUT:-${TMPDIR:-/tmp}/design.matrix-bench-quick}/ols
+    mkdir -p "$dest" || exit 1
+    iters=3
+    w_numeric="5 50"; w_mixed="25 100"; w_factor="5 50"; w_interaction="6 50" ;;
+  *)
+    echo "BENCH_SIZE must be full or quick, not $size" >&2
+    exit 1 ;;
+esac
 designs=()
-for w in 5 20 50 100; do designs+=("numeric $w"); done
-for w in 25 50 100; do designs+=("mixed $w"); done
-for w in 5 20 50 100; do designs+=("factor $w"); done
-for w in 6 20 50 100; do designs+=("interaction $w"); done
+for w in $w_numeric; do designs+=("numeric $w"); done
+for w in $w_mixed; do designs+=("mixed $w"); done
+for w in $w_factor; do designs+=("factor $w"); done
+for w in $w_interaction; do designs+=("interaction $w"); done
 designs+=("aliased 49")
 
 jobs_file="$out/jobs"
@@ -80,10 +103,12 @@ Rscript -e 'args <- commandArgs(TRUE); f <- list.files(args[1], "^(formula|prebu
   err <- is.na(d$ms)
   if (any(err)) { message("methods that stopped with an error:"); print(d[err, c("mode", "family", "width", "method", "note")]) }
   d <- d[order(d$mode, d$family, d$width, d$ms), ]
-  write.csv(d, args[2], row.names = FALSE)' "$out" "$here/results.csv" || exit 1
+  write.csv(d, args[2], row.names = FALSE)' "$out" "$dest/results.csv" || exit 1
 Rscript -e 'si <- sessionInfo(); writeLines(c(R.version.string,
   paste("BLAS:", basename(si$BLAS), "(limited to 1 thread)"),
   paste("CPU:", system("lscpu | grep \"Model name\" | sed \"s/.*: *//\"", intern = TRUE)),
-  paste("Cores used:", commandArgs(TRUE)[2])), commandArgs(TRUE)[1])' "$here/machine.txt" "$cores"
+  paste("Cores used:", commandArgs(TRUE)[2]),
+  if (commandArgs(TRUE)[3] == "quick") "Quick run (BENCH_SIZE=quick): fewer widths, 3 timed calls"),
+  commandArgs(TRUE)[1])' "$dest/machine.txt" "$cores" "$size"
 rm -rf "$out"
-echo "done: $got measurements"
+echo "done: $got measurements in $dest/results.csv"

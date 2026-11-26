@@ -6,4 +6,4 @@ fast_predict <- function(fit, newdata, spec) {
 bench::mark(
     "predict(fit, newdata)" = predict(fit_big, big),
     "fast_predict"          = fast_predict(fit_big, big, spec_big),
-    iterations = 5, check = close)
+    iterations = iters(5), check = close)

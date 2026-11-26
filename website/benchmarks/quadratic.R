@@ -6,4 +6,4 @@ bench::mark(
     quadratic_diagonal(design_matrix(fo, big), V),
     base_diagonal(X, V),
     quadratic_diagonal(DX, V),
-    iterations = 5, check = close)
+    iterations = iters(5), check = close)

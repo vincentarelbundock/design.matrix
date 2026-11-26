@@ -11,4 +11,4 @@ fast_model_matrix <- function(batch) {
 bench::mark(
     base_model_matrix(batch),
     fast_model_matrix(batch),
-    iterations = 200, check = same)
+    iterations = iters(200), check = same)

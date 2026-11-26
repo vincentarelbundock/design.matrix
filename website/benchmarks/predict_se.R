@@ -9,4 +9,4 @@ fast_predict_se <- function(fit, newdata, spec) {
 bench::mark(
     base_predict_se(fit_big, big),
     fast_predict_se(fit_big, big, spec_big),
-    iterations = 5, check = close)
+    iterations = iters(5), check = close)

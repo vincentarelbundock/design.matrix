@@ -10,4 +10,4 @@ bench::mark(
     hatvalues(fit_big),
     base_leverage(X, XtXi),
     fast_leverage(DX, XtXi),
-    iterations = 5, check = close)
+    iterations = iters(5), check = close)

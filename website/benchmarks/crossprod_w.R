@@ -4,4 +4,4 @@ bench::mark(
     "design_matrix, then crossprod" = crossprod(design_matrix(fo, big), w),
     "prebuilt X"                    = crossprod(X, w),
     "prebuilt design matrix"        = crossprod(DX, w),
-    iterations = 10, check = close)
+    iterations = iters(10), check = close)

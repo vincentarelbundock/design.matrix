@@ -4,4 +4,4 @@ bench::mark(
     "design_matrix, then %*%" = design_matrix(fo, big) %*% beta,
     "prebuilt X"              = X %*% beta,
     "prebuilt design matrix"  = DX %*% beta,
-    iterations = 10, check = close)
+    iterations = iters(10), check = close)

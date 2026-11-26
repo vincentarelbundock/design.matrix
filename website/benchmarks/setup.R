@@ -4,8 +4,13 @@ design_threads(1)
 # with functions that call it are fair, and compute every row.
 options(design.matrix.skip_na_copy = FALSE, design.matrix.dedup = FALSE)
 
+# BENCH_SIZE=quick (make bench-quick) checks the scripts on fewer rows and
+# at most 3 iterations; run.R then saves the results outside results/.
+quick <- identical(Sys.getenv("BENCH_SIZE", "full"), "quick")
+iters <- function(k) if (quick) min(k, 3) else k
+
 set.seed(1)
-n <- 2e5
+n <- if (quick) 2e4 else 2e5
 big <- data.frame(
     y = rnorm(n),
     x = rnorm(n),
