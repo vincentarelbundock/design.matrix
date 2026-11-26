@@ -123,6 +123,24 @@ head(as.data.frame(p))
 
 Expressions with no SQL translation, such as `weights = myfun(x)` or a response `my_transform(y)`, are evaluated in R, batch by batch, into a temporary table on which the fit runs; with `engine = "auto"`, a message names the expression.
 
+= Generalized linear models
+
+`design_glm()` takes remote data as `design_lm()` does, with `weights` and `offset` naming columns. With few design patterns, one `GROUP BY` returns the sums of each pattern (including the working weights of the first iteration and the parts of the deviance and AIC that do not depend on the coefficients), and the iterations run in memory. Otherwise, each iteration computes the linear predictor, the working weights and responses, `X'WX` and `X'Wz` in the database (the family and link are translated to SQL), or in batches with the chunked engine. Either way, the results are those of `glm()` on the same rows.
+
+```r
+d2 <- transform(d, k = rpois(n, exp(0.2 * z)), yb = as.integer(y > 5))
+DBI::dbWriteTable(con, "d2", d2)
+fit <- design_glm(k ~ x + f, poisson, con, table = "d2")
+all.equal(coef(fit), coef(glm(k ~ x + f, poisson, d2)))
+fit$method
+
+fit_z <- design_glm(yb ~ factor(z) * f, binomial, con, table = "d2")
+all.equal(coef(fit_z), coef(glm(yb ~ factor(z) * f, binomial, d2)))
+fit_z$method
+```
+
+`predict(fit, newdata = con, table = , type = "response")` scores in the database, and `residuals(fit, type = )` returns the remote design with `.fitted` and `.resid` columns, as for linear models.
+
 = Robust standard errors
 
 `residuals()` of a remote fit returns the remote design with two more columns, `.fitted` and `.resid`, which can scale its rows. The heteroskedasticity-consistent (HC1) and clustered (CR1, as in `sandwich::vcovCL()`) covariance matrices follow:

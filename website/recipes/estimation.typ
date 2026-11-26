@@ -49,7 +49,7 @@ all.equal(coef(design_lm(D, y = d$y)), coef(fit))
 
 = Fixed effects
 
-A formula `y ~ x | fe1 + fe2` absorbs fixed effects, as `fixest::feols()` does: each fixed effect is a variable, or an interaction `a^b`. The fit never builds the dummies and never demeans the rows. It solves the normal equations from sums over rows: products with the design, sums within the levels of each fixed effect, and crosstabs of the fixed effects. The largest fixed effect is eliminated exactly, and the others are solved densely (up to 3,000 levels) or by conjugate gradients with an incomplete Cholesky preconditioner. Singletons are dropped as `feols()` drops them, and `vcov = ~cl` clusters the standard errors with `feols()`'s small sample corrections. The same code fits remote data (a DuckDB table or Parquet files; see #link("out-of-core.html")[out-of-core data]).
+A formula `y ~ x | fe1 + fe2` absorbs fixed effects, as `fixest::feols()` does: each fixed effect is a variable, or an interaction `a^b`. The fit never builds the dummies and never demeans the rows. It solves the normal equations from sums over rows: products with the design, sums within the levels of each fixed effect, and crosstabs of the fixed effects. The largest fixed effect is eliminated exactly, and the others are solved densely (up to 3,000 levels) or by conjugate gradients with a Jacobi preconditioner (an incomplete Cholesky preconditioner is available with `options(design.matrix.fe_precond = "ichol")`). Singletons are dropped as `feols()` drops them, and `vcov = ~cl` clusters the standard errors with `feols()`'s small sample corrections. The same code fits remote data (a DuckDB table or Parquet files; see #link("out-of-core.html")[out-of-core data]).
 
 ```r
 set.seed(3)
@@ -71,6 +71,32 @@ if (requireNamespace("fixest", quietly = TRUE)) {
 nd <- data.frame(id = c(1, 2, 999), t = c(1, 5, 2), x = 0, f = factor("a", levels = c("a", "b")))
 predict(fe, nd)
 ```
+
+= Generalized linear models
+
+`design_glm()` fits a generalized linear model like `glm()`, by iteratively reweighted least squares on the design matrix: each iteration needs `X'WX`, `X'Wz` and `X beta`, which the design computes without the dense matrix. The iterations are those of `glm.fit()`, step for step (starting values, step halving, convergence rule, warnings), so the coefficients, covariance matrix, deviances, AIC and number of iterations agree with those of `glm()`.
+
+```r
+set.seed(2)
+dg <- data.frame(x = rnorm(500), f = factor(sample(c("a", "b", "c"), 500, TRUE)),
+                 e = sample(1:3, 500, TRUE))
+dg$y <- rbinom(500, 1, plogis(dg$x))
+dg$k <- rpois(500, dg$e * exp(0.3 * as.integer(dg$f)))
+fit <- design_glm(y ~ x + f, binomial, dg)
+all.equal(coef(fit), coef(glm(y ~ x + f, binomial, dg)))
+all.equal(vcov(fit), vcov(glm(y ~ x + f, binomial, dg)))
+summary(fit)
+```
+
+When rows share a design pattern and an offset, they share their fitted value, and the fit runs on the patterns: for every supported family, a pattern enters each iteration only through the sum of its prior weights and its weighted mean response, and the deviance of the rows is that of the patterns plus a constant. The first iteration, which starts from per-row values, is summed from the rows, so even the iterations are those of the fit on every row.
+
+```r
+fit <- design_glm(k ~ f + offset(log(e)), poisson, dg)
+fit$patterns
+all.equal(deviance(fit), deviance(glm(k ~ f + offset(log(e)), poisson, dg)))
+```
+
+The families are those of `stats` (binomial, Poisson, Gaussian, Gamma, inverse Gaussian and the quasi families) with their standard links. Every option of `design_glm()` also works on remote data (see #link("out-of-core.html")[out-of-core data]), which is why `subset`, `etastart`, `mustart` and standard errors of predictions are not offered.
 
 = Least squares
 
