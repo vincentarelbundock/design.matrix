@@ -316,7 +316,9 @@ dmfit_ls <- function(x, z, w, tol, intercept, sums = TRUE) {
     names(coef) <- cn
     ## (the weighted least squares steps of a GLM need only the solution)
     if (!sums) return(list(coefficients = coef, rank = q$rank, pivot = q$pivot, R = q$R, tol = tol))
-    f <- dmp_mult(x, beta, along = list(z, w))
+    ## (remotely pending: its view is made only if dmc_ls_sums() reads it,
+    ## on the frame of z and w)
+    f <- dmp_mult(x, beta)
     ww <- if (is.null(w)) 1 else w
     ## w v^2, 0 for rows with zero weight (whose squares can overflow)
     wsq <- function(v) if (is.null(w)) v^2 else dmc_ifelse(w > 0, w * v^2, 0)
@@ -386,9 +388,9 @@ dmfit_data <- function(object, what) {
 }
 
 ## X b for a design, without the offset.
-dmfit_linpred <- function(object, D, along = list()) {
+dmfit_linpred <- function(object, D) {
     if (ncol(D) == 0L) return(dmc_const(D, 0))
-    dmp_mult(D, dmfit_beta(object), along)
+    dmp_mult(D, dmfit_beta(object))
 }
 
 #' @export
@@ -488,7 +490,7 @@ residuals.design_lm <- function(object, ...) {
     ## (y - offset) - X b on the rows of the fit: a vector in memory, the
     ## remote design with .fitted and .resid columns remotely
     rw <- dmfit_predict_rows(object, NULL, NULL, list(), "residuals()")
-    xb <- dmfit_linpred(object, rw$D, along = list(rw$z))
+    xb <- dmfit_linpred(object, rw$D)
     fit <- if (is.null(rw$off)) xb else xb + rw$off
     dmp_output(rw$D, list(.fitted = fit, .resid = rw$z - xb), design = TRUE,
                memory = function(d) dm_na_pad(rw$na_act, d$.resid, rw$D, stats::naresid))
@@ -566,7 +568,9 @@ dmfit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, do
     rw <- dmfit_predict_rows(object, newdata, na.action, dots, what)
     D <- rw$D
     no_data <- is.null(newdata)
-    fit <- dmfit_linpred(object, D, along = list(rw$off, rw$w, rw$z))
+    ## (remotely the products below are pending: each binds at its first
+    ## use, on the frame of the columns it is used with)
+    fit <- dmfit_linpred(object, D)
     xb <- fit
     if (!is.null(rw$off)) fit <- fit + rw$off
     nonest <- NULL
@@ -577,7 +581,7 @@ dmfit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, do
             warning(gettextf("%s; consider predict(., rankdeficient=\"NA\")", msg), call. = FALSE)
         } else {
             checkmate::assert_number(tol, lower = 0)
-            nonest <- dmfit_nonestimable(object, D, tol, along = list(fit))
+            nonest <- dmfit_nonestimable(object, D, tol)
             k <- dm_colsum(dmc_count(nonest))
             if (startsWith(rankdeficient, "NA")) {
                 fit <- dmc_ifelse(nonest, NA_real_, fit)
@@ -598,7 +602,7 @@ dmfit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, do
         res_var <- object$sigma^2
         V <- dmfit_vcov(object, 1)
         V[is.na(V)] <- 0
-        ip <- if (ncol(D) == 0L) dmc_const(fit, 0) else dmp_quad(D, V, along = list(fit))
+        ip <- if (ncol(D) == 0L) dmc_const(fit, 0) else dmp_quad(D, V)
         se <- sqrt(ip * res_var)
         if (interval != "none") {
             pred_var <- res_var
@@ -655,7 +659,7 @@ dmfit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, do
 ## Rows of D whose predictions are not estimable from a rank-deficient fit:
 ## rows with a component, relative to their norm, in the null space of the
 ## design (as predict.lm() determines them).
-dmfit_nonestimable <- function(object, D, tol, along = list()) {
+dmfit_nonestimable <- function(object, D, tol) {
     p <- length(object$coefficients)
     k <- object$rank
     tR <- t(object$R)
@@ -664,9 +668,10 @@ dmfit_nonestimable <- function(object, D, tol, along = list()) {
     B <- matrix(0, p, p - k)
     B[object$pivot, ] <- nb
     ## (a logical vector in memory, a logical column remotely)
-    Xb <- dmp_mult(D, B, along)
+    Xb <- dmp_mult(D, B)
     Xb_norm <- sqrt(dmc_rowsums(Xb * Xb))
-    X_norm <- sqrt(dmp_quad(D, diag(1, p), along = list(Xb_norm)))
+    ## (remotely both products bind together, at the first use of the result)
+    X_norm <- sqrt(dmp_quad(D, diag(1, p)))
     tol * X_norm <= Xb_norm
 }
 

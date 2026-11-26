@@ -137,7 +137,11 @@ memory returns a vector. Arithmetic on it builds another column;
 \code{\link[=collect]{collect()}} reads its values into R, \code{as.data.frame(p, keep = "id")}
 reads them with columns of the remote data (to join them back), and
 \code{\link[=compute]{compute()}} stores it in a temporary table. \code{design_column(D, "y")}
-makes a column from a column of the remote data.
+makes a column from a column of the remote data. Columns of one design
+combine, separate products included (\code{D \%*\% b1 + D \%*\% b2}): a
+product becomes a view only when it is first read, on top of the
+products it is combined with (two products each read before they are
+combined cannot be).
 \item \code{as.matrix(D)} collects the rows and builds the dense matrix, only when
 there are at most \code{getOption("design.matrix.remote_max_rows", 1e5)} rows
 or with \code{force = TRUE}.

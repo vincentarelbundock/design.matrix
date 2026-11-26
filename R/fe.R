@@ -673,8 +673,7 @@ dm_fe_suspects <- function(x, cols, A, xcols, M, scale, dxx, tol) {
             beta[xcols] <- bk
             beta[xcols[j]] <- -1
             ## e = 0 - (X_K c - x_j) - F f
-            r <- dmc_fe_resid(z0, dmp_mult(x, beta, along = list(z0, cols$w)), cols$w, A$effects(bk, j),
-                              cols$codes)
+            r <- dmc_fe_resid(z0, dmp_mult(x, beta), cols$w, A$effects(bk, j), cols$codes)
             r[[3L]]
         }, 0)
         list(dres = d, taken = is.finite(d) & d > 0 & d > thr[sus])
@@ -702,8 +701,9 @@ dm_fe_moments <- function(x, z, w, xcols, n) {
 dm_fe_residuals <- function(x, cols, xcols, b, fe) {
     beta <- numeric(ncol(x))
     beta[xcols] <- b
-    ## (along z and w: remotely, on a frame that has their columns)
-    r <- dmc_fe_resid(cols$z, dmp_mult(x, beta, along = list(cols$z, cols$w)), cols$w, fe, cols$codes)
+    ## (remotely the product and the lookups of the FE bind on the frame of
+    ## z and w, at the sums of dmc_fe_resid())
+    r <- dmc_fe_resid(cols$z, dmp_mult(x, beta), cols$w, fe, cols$codes)
     list(xte = unname(dmp_crossprod(x, r[[1L]]))[, 1L], Be = lapply(r[[2L]], function(m) m[, 1L]),
          rss = r[[3L]], we = drop(r[[1L]]))
 }
@@ -811,8 +811,8 @@ dm_fe_cluster <- function(est, cl, we) {
 ## X beta plus the FE values of the rows' levels, as a column (codes: per
 ## FE, integer codes, or, with `levels`, key columns matched to levels).
 ## With beta a p x k matrix and each fe[[k]] a G_k x k matrix, k columns.
-dm_fe_fitted <- function(x, beta, fe, codes, levels = NULL, along = list()) {
-    dmc_fe_add(dmp_mult(x, beta, along = along), fe, codes, levels)
+dm_fe_fitted <- function(x, beta, fe, codes, levels = NULL) {
+    dmc_fe_add(dmp_mult(x, beta), fe, codes, levels)
 }
 
 ## Map a fit on the centered design X~ = X T back to X: b = T b~ (but the
@@ -1044,12 +1044,11 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
     rm1 <- isTRUE(bounds$one) && fixef.rm %in% c("infinite_coef", "perfect_fit")
     nsingle <- nperfect <- 0
     repeat {
-        last <- list()
-        cds <- vector("list", length(keys))
-        for (k in seq_along(keys)) {
-            cds[[k]] <- dmc_dense_codes(keys[[k]], along = last)
-            last <- list(cds[[k]]$codes$codes)
-        }
+        cds <- unname(lapply(keys, dmc_dense_codes))
+        ## (remotely the codes, read one by one below, bound together on one
+        ## frame, so that they still combine)
+        bound <- dmc_bind(lapply(cds, `[[`, "codes"))
+        for (k in seq_along(cds)) cds[[k]]$codes <- bound[[k]]
         if (!rm_single && !rm0 && !rm1) break
         ## per level: rows, rows with a response not 0, not 1 (without
         ## bounds, the rows per level: no columns to form; in memory they
@@ -1075,12 +1074,11 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
         single <- perfect <- NULL
         for (k in seq_along(keys)) {
             ## (the flags of the rows' levels)
-            lk <- dmc_lookup_flags(masks[[k]], cds[[k]]$codes, along = last)
+            lk <- dmc_lookup_flags(masks[[k]], cds[[k]]$codes)
             p1 <- lk[[1L]]
             s1 <- lk[[2L]]
             perfect <- if (is.null(perfect)) p1 else perfect | p1
             single <- if (is.null(single)) s1 else single | s1
-            last <- list(p1)
         }
         drop <- perfect | single
         s <- dmc_sums(dmc_count(perfect), dmc_count(drop))
@@ -1093,25 +1091,23 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
     if (!is.null(clv)) {
         m <- match(clv, names(pf$fe))
         if (is.na(m)) {
-            cc <- dmc_dense_codes(clkey, along = last)
-            last <- list(cc$codes$codes)
-            cl <- cc$codes
+            cl <- dmc_dense_codes(clkey)$codes
         } else {
             cl <- cds[[m]]$codes
         }
         if (cl$G < 2L) stop("Clustered standard errors need at least two clusters.", call. = FALSE)
     }
-    ## the design over the frame of the last columns (which keeps the
-    ## others), and every column on it (remotely, columns combine on the
-    ## latest of their frames: one chain of frames)
+    ## the design over the latest frame of the columns (remotely their
+    ## pending codes bound together, one on the other: one chain of frames)
     ## Remotely the rows used are then copied to a temporary table
     ## (dmp_materialize()), which every later query scans, instead of
     ## recomputing the codes' joins; x_rows keeps the design over the data,
     ## whose rows not used pad the results with na.exclude.
-    x <- dm_rebase(x, if (length(last)) dm_column_frame(last[[1L]]))
+    used <- list(z, w, more, lapply(cds, `[[`, "codes"), cl)
+    x <- dmp_rebase(x, used)
     x_rows <- x
     ## (remotely, only the columns that the design and these columns read)
-    x <- dmp_materialize(x, cols = list(z, w, more, lapply(cds, `[[`, "codes"), cl))
+    x <- dmp_materialize(x, cols = used)
     on <- function(col) dmc_on(col, x)
     oncodes <- function(g) if (!is.null(g)) dmc_codes(on(g$codes), g$G)
     list(x = x, x_rows = x_rows,

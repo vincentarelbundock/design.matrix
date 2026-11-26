@@ -662,7 +662,7 @@ dmqr_refine <- function(D, R11, keep, b, Y, G = NULL, h = NULL, steps = 3L) {
     ## moments already computed (X'Y - X'X b), which refines the solution
     ## of the normal equations without another pass
     residual <- function(b) {
-        if (!is.null(G)) h - G %*% full(b) else dmp_crossprod(D, Y - dmp_mult(D, full(b), along = list(Y)))
+        if (!is.null(G)) h - G %*% full(b) else dmp_crossprod(D, Y - dmp_mult(D, full(b)))
     }
     correct <- function(b, g) {
         db <- dmqr_bs(R11, dmqr_bs(R11, g[keep, , drop = FALSE], transpose = TRUE))
@@ -703,7 +703,7 @@ dmqr_result <- function(qr, cols, prefix, yy, rows = yy$rows) {
 ## The fitted values of y (a column, one or several).
 dmqr_fitted <- function(qr, Y) {
     if (!is.null(qr$dense)) return(unname(base::qr.fitted(qr$dense, Y)))
-    dmp_mult(qr$design, dmqr_full(qr, dmqr_coef(qr, Y)), along = list(Y))
+    dmp_mult(qr$design, dmqr_full(qr, dmqr_coef(qr, Y)))
 }
 
 #' @importFrom methods setOldClass

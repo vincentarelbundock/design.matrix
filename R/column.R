@@ -76,14 +76,18 @@
 #' the session of that connection, and disappear when it is closed; for a
 #' Parquet source, the column keeps its private connection open. To keep
 #' values beyond the session, read them with `as.data.frame()` and write
-#' them where they belong. Columns of one design combine with each other;
-#' columns of different designs do not. Nor do the results of two separate
-#' products of one design (such as `D %*% b1` and `quadratic_diagonal(D,
-#' V)`), whose rows the database has no key to align: compute such
-#' columns in one product (`D %*% cbind(b1, b2)`, then `[, 1]` and
-#' `[, 2]`), or read them with `as.data.frame(keep = "id")` and match them
-#' in R. A column made by `design_column()` combines with any product of
-#' its design.
+#' them where they belong. Columns of one design combine with each other,
+#' including the results of separate products (`D %*% b1 + D %*% b2`, or
+#' `(D %*% b) / sqrt(quadratic_diagonal(D, V))`): a product becomes a view
+#' only when its values are first needed, on top of the other products it
+#' is combined with. Columns of different designs do not combine. Nor do
+#' two products that were each read (by `collect()`, `as.data.frame()`,
+#' `compute()` or a sum) before being combined, since their views then
+#' stand side by side and the database has no key to align their rows:
+#' combine the columns first, compute them in one product (`D %*% cbind(b1,
+#' b2)`, then `[, 1]` and `[, 2]`), or read them with `as.data.frame(keep =
+#' "id")` and match them in R. A column made by `design_column()` combines
+#' with any product of its design.
 #'
 #' `collect()` and `compute()` are generics of this package. If another
 #' package that defines functions of the same names is attached after
@@ -206,7 +210,7 @@ compute.design_column <- function(x, ...) {
 #' @export
 as.data.frame.design_column <- function(x, row.names = NULL, optional = FALSE, ..., keep = NULL, nm = NULL) {
     dm_column_valid(x)
-    fr <- unclass(x)$frame
+    fr <- dm_frame_bind(unclass(x)$frame)
     sql <- unclass(x)$sql
     k <- length(sql)
     nm <- nm %||% unclass(x)$label %||% (if (k == 1L) ".value" else paste0(".value", seq_len(k)))
