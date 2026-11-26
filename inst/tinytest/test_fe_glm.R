@@ -34,15 +34,9 @@ if (remote) {
     dir.create(pq_dir)
 }
 
-# Write a data set to DuckDB (table) and to a Parquet file.
-put <- function(d, name) {
-    if (!remote) return(NULL)
-    d$.row <- seq_len(nrow(d))
-    DBI::dbWriteTable(con, name, d, overwrite = TRUE)
-    path <- file.path(pq_dir, paste0(name, ".parquet"))
-    DBI::dbExecute(con, sprintf("COPY %s TO '%s' (FORMAT PARQUET)", name, path))
-    list(table = name, parquet = path)
-}
+# Write a data set to DuckDB (table) and to a Parquet file (NULL without
+# DuckDB).
+put <- function(d, name) if (remote) write_fe_source(con, pq_dir, d, name)
 
 # Fits of the same model in memory and on remote data (`weights` and
 # `offset` name columns; `modes`: the remote modes).
