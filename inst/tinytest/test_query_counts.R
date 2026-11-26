@@ -26,7 +26,9 @@ nq <- function(expr) count_queries(expr)$count
 ## first use)
 expect_equal(nq(design_lm(y ~ x1 + f, con, table = "d", compress = FALSE)), 11L, info = "lm")
 expect_equal(nq(design_lm(y ~ xd + f, con, table = "d", compress = TRUE)), 9L, info = "lm compressed")
-expect_equal(nq(design_lm(y ~ xd + f, con, table = "d")), 10L, info = "lm auto")
+## (12 since etg8 + nh9e: auto now runs its estimate and declines at 4%
+## patterns (lm compresses only at <= 1e-3), and the unread fitted view is gone)
+expect_equal(nq(design_lm(y ~ xd + f, con, table = "d")), 12L, info = "lm auto")
 ## weighted LM
 expect_equal(nq(design_lm(y ~ x1 + f, con, table = "d", weights = "w", compress = FALSE)), 13L,
              info = "weighted lm")
