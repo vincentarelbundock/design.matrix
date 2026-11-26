@@ -189,11 +189,10 @@ dm_need_duckdb <- function() {
 dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = stats::na.pass,
                       drop_unused = FALSE, subset = NULL, extra = list(), override = list()) {
     dm_need_duckdb()
-    keys <- c("table", "sql", "engine", "chunk_size")
     nms <- names(dots)
     if (is.null(nms)) nms <- rep("", length(dots))
-    ra <- dots[nms %in% keys]
-    rest <- dots[!nms %in% keys]
+    ra <- dots[nms %in% dm_remote_keys]
+    rest <- dots[!nms %in% dm_remote_keys]
     engine <- ra$engine %||% "auto"
     checkmate::assert_choice(engine, c("auto", "sql"), .var.name = "engine")
     chunk_size <- ra$chunk_size %||% getOption("design.matrix.chunk_size", 250000)

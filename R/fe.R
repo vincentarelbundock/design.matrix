@@ -946,6 +946,7 @@ NULL
 dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, model,
                      vcov, fixef.rm, dots) {
     if (!is.null(call$na.action)) dm_fe_na_kind(eval(call$na.action, env))
+    dmfit_check_compress(compress)
     if (isTRUE(compress)) stop("`compress = TRUE` is not supported with fixed effects.", call. = FALSE)
     if (!is.null(call$subset)) stop("`subset` is not supported with fixed effects.", call. = FALSE)
     checkmate::assert_number(tol, lower = 0, finite = TRUE)

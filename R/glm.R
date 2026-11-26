@@ -201,13 +201,13 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
     family <- dmglm_family(family, parent.frame())
     dmglm_kind(family)
     control <- do.call(stats::glm.control, as.list(control))
-    dmfit_check_compress(compress)
-    checkmate::assert_flag(model)
     cl <- match.call()
     fe <- dm_fe_has_bar(formula)
-    if (!fe && !identical(vcov, "iid"))
-        stop("`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", call. = FALSE)
     if (inherits(formula, c("design_matrix", "dm_remote"))) {
+        dmfit_check_compress(compress)
+        checkmate::assert_flag(model)
+        if (!identical(vcov, "iid"))
+            stop("`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", call. = FALSE)
         if (!missing(data) || !missing(na.action) || !is.null(contrasts))
             stop("With a design matrix, give the response as `y`; `data`, ",
                  "`na.action` and `contrasts` do not apply.", call. = FALSE)
@@ -231,10 +231,15 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
     ## fixed effects (fe_glm.R)
     if (fe) {
         return(dm_fe_glm(cl, parent.frame(), formula, family, if (missing(data)) NULL else data, start, control,
-                         contrasts, compress, model, vcov, fixef.rm, list(...)))
+                         contrasts, compress, model, vcov, fixef.rm, dm_dots(...)))
     }
+    ## (the checks of design_lm(), in the same order)
+    if (!identical(vcov, "iid"))
+        stop("`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", call. = FALSE)
+    dmfit_check_compress(compress)
+    checkmate::assert_flag(model)
     ## the design and columns of a data frame or remote data (remote_fit.R)
-    P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, list(...),
+    P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, dm_dots(...),
                         family = dmglm_kind(family))
     fit <- dmglm_fit(P$x, P$cols, family, start, control, attr(P$terms, "intercept") > 0L, compress,
                      wmsg = "negative weights not allowed")

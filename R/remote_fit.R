@@ -101,6 +101,22 @@ dm_na_kind <- function(na.action, allowed = c("omit", "exclude", "fail", "pass")
                  paste(paste0("na.", allowed), collapse = ", ")), call. = FALSE)
 }
 
+## The arguments of remote data that a fit on a formula takes in `...`.
+dm_remote_keys <- c("table", "sql", "engine", "chunk_size")
+
+## The arguments in `...` of a fit on a formula, as a named list: those of
+## remote data (dm_remote_keys) evaluated, the others NULL, unevaluated,
+## for the check of unknown arguments (design_problem(); so that
+## design_glm(subset = x > 0) reports `subset`, not that `x` is not found).
+dm_dots <- function(...) {
+    n <- ...length()
+    nm <- ...names() %||% rep("", n)
+    out <- vector("list", n)
+    names(out) <- nm
+    for (i in which(nm %in% dm_remote_keys)) out[i] <- list(...elt(i))
+    out
+}
+
 ## na.action of a fit with fixed effects: na.omit or na.exclude, in memory
 ## and remotely.
 dm_fe_na_kind <- function(na.action) {
@@ -231,9 +247,8 @@ dm_problem_remote <- function(call, env, formula, source, contrasts, dots, famil
     na <- if (is.null(call$na.action)) "omit" else dm_na_kind(eval(call$na.action, env), what = "For remote data, ")
     if (!is.null(fe)) {
         nms <- names(dots) %||% rep("", length(dots))
-        keys <- c("table", "sql", "engine", "chunk_size")
-        if (any(!nms %in% keys))
-            stop("Unknown arguments: ", paste(nms[!nms %in% keys], collapse = ", "), call. = FALSE)
+        if (any(!nms %in% dm_remote_keys))
+            stop("Unknown arguments: ", paste(nms[!nms %in% dm_remote_keys], collapse = ", "), call. = FALSE)
     }
     dm_need_duckdb()
     src <- dm_remote_source(source, dots$table, dots$sql)

@@ -66,6 +66,8 @@ expect_error(design_lm(y ~ x, d, y = 1, compress = "no"),
              "`y` applies only when the first argument is a design matrix.", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, compress = "no", tol = -1),
              "`compress` must be \"auto\", TRUE or FALSE.", fixed = TRUE)
+expect_error(design_lm(y ~ x, d, foo = nosuch),
+             "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, weights = wneg, subset = x > 100),
              "0 (non-NA) cases", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, na.action = function(x) stop("custom na")),
@@ -116,6 +118,12 @@ expect_error(design_lm(y ~ x, con, table = "d", weights = wneg, subset = x > 100
              "0 (non-NA) cases", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", vcov = "hc1", compress = "no"),
              "`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", fixed = TRUE)
+expect_error(design_lm(y ~ x, con, table = "d", foo = nosuch),
+             "Unknown arguments: foo", fixed = TRUE)
+expect_error(design_glm(y ~ x, gaussian, con, table = "d", vcov = "hc1", compress = "no"),
+             "`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", fixed = TRUE)
+expect_error(design_glm(y ~ x, gaussian, con, table = "d", y = 1, compress = "no"),
+             "`y` applies only when the first argument is a design matrix.", fixed = TRUE)
 
 # GLM memory
 expect_error(design_glm(b1 ~ x, binomial, d, weights = wneg),
@@ -151,7 +159,7 @@ expect_error(design_glm(cbind(b1, fails) ~ x, poisson, d),
 expect_error(design_glm(as.Date(k) ~ x, gaussian, d),
              "The response must be numeric, logical or a factor.", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, d, subset = x > 0),
-             "object 'x' not found", fixed = TRUE)
+             "Unknown arguments: subset", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, d, foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, d, foo = 1, weights = wneg),
@@ -161,7 +169,13 @@ expect_error(design_glm(cbind(b1, fails, k) ~ x, binomial, d, weights = ch),
 expect_error(design_glm(f ~ x, poisson, d, weights = wneg),
              "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, d, vcov = "hc1", compress = "no"),
+             "`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", fixed = TRUE)
+expect_error(design_glm(y ~ x, gaussian, d, y = 1, compress = "no"),
+             "`y` applies only when the first argument is a design matrix.", fixed = TRUE)
+expect_error(design_glm(y ~ x, gaussian, d, compress = "no", model = NA),
              "`compress` must be \"auto\", TRUE or FALSE.", fixed = TRUE)
+expect_error(design_glm(y ~ x, gaussian, d, subset = x > 0, foo = nosuch),
+             "Unknown arguments: subset, foo", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, d, y = 1, na.action = na.pass),
              "`y` applies only when the first argument is a design matrix.", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, d, na.action = na.pass, foo = 1),
@@ -202,7 +216,7 @@ expect_error(design_glm(cbind(b1, fails, k) ~ x, binomial, con, table = "d"),
 expect_error(design_glm(cbind(b1, fails) ~ x, poisson, con, table = "d"),
              "A two-column response (successes and failures) needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, con, table = "d", subset = x > 0),
-             "object 'x' not found", fixed = TRUE)
+             "Unknown arguments: subset", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, con, table = "d", foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, con, table = "d", foo = 1, weights = wneg),
@@ -246,6 +260,18 @@ expect_error(design_lm(y ~ x | id, d, subset = x > 0),
              "`subset` is not supported with fixed effects.", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, d, compress = TRUE),
              "`compress = TRUE` is not supported with fixed effects.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, d, compress = "no"),
+             "`compress` must be \"auto\", TRUE or FALSE.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, con, table = "d", compress = "no"),
+             "`compress` must be \"auto\", TRUE or FALSE.", fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, d, compress = "no"),
+             "`compress` must be \"auto\", TRUE or FALSE.", fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, con, table = "d", compress = "no"),
+             "`compress` must be \"auto\", TRUE or FALSE.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, d, na.action = na.pass, compress = "no"),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, d, na.action = na.pass, compress = "no"),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, d, foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, d, foo = 1, weights = wneg),
@@ -318,7 +344,7 @@ expect_error(design_glm(k ~ x | id, poisson, d, start = 1),
 expect_error(design_glm(k ~ x | id, poisson, d, foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, subset = x > 0),
-             "object 'x' not found", fixed = TRUE)
+             "Unknown arguments: subset", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, compress = TRUE),
              "`compress = TRUE` is not supported with fixed effects.", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, foo = 1, weights = wneg),
@@ -346,7 +372,7 @@ expect_error(design_glm(k ~ x | id, poisson, con, table = "d", na.action = funct
 expect_error(design_glm(k ~ x | id, poisson, con, table = "d", foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, con, table = "d", subset = x > 0),
-             "object 'x' not found", fixed = TRUE)
+             "Unknown arguments: subset", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, con, table = "d", foo = 1, weights = wneg),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(f ~ x | id, poisson, con, table = "d", weights = ch),
