@@ -703,7 +703,7 @@ Math.design_column <- function(x, ...) {
     a <- unclass(x)$sql
     sql <- switch(.Generic,
         exp = sprintf("exp(%s)", a), sqrt = sprintf("sqrt(%s)", a),
-        abs = sprintf("abs(%s)", a), log1p = sprintf("ln(1 + %s)", a), expm1 = sprintf("(exp(%s) - 1)", a),
+        abs = sprintf("abs(%s)", a), log1p = dm_sql_log1p(sprintf("CAST(%s AS DOUBLE)", a)), expm1 = sprintf("(exp(%s) - 1)", a),
         cos = sprintf("cos(%s)", a), sin = sprintf("sin(%s)", a), tan = sprintf("tan(%s)", a),
         floor = sprintf("floor(%s)", a), ceiling = sprintf("ceil(%s)", a),
         ## (DuckDB's sign(NaN) is 0, R's NaN)
@@ -723,11 +723,8 @@ Math.design_column <- function(x, ...) {
 ## `base`: a number (its R_log() computed in R) or a column of the design
 ## (one column, or as many as x).
 dm_column_log <- function(x, base) {
-    rlog <- function(v, fun = "ln")
-        sprintf("(CASE WHEN %1$s = 0 THEN CAST('-Infinity' AS DOUBLE) WHEN %1$s < 0 THEN CAST('NaN' AS DOUBLE) ELSE %2$s(%1$s) END)",
-                v, fun)
     xv <- sprintf("CAST(%s AS DOUBLE)", unclass(x)$sql)
-    if (missing(base)) return(dm_column(unclass(x)$frame, rlog(xv)))
+    if (missing(base)) return(dm_column(unclass(x)$frame, dm_sql_rlog(xv)))
     if (dm_is_column(base)) {
         f <- dm_column_frame(x, base)
         bv <- sprintf("CAST(%s AS DOUBLE)", unclass(base)$sql)
@@ -737,22 +734,42 @@ dm_column_log <- function(x, base) {
         xv <- rep_len(xv, k)
         bv <- rep_len(bv, k)
         sql <- sprintf("(CASE WHEN %1$s = 10 THEN %2$s WHEN %1$s = 2 THEN %3$s ELSE %4$s / %5$s END)",
-                       bv, rlog(xv, "log10"), rlog(xv, "log2"), rlog(xv), rlog(bv))
+                       bv, dm_sql_rlog(xv, "log10"), dm_sql_rlog(xv, "log2"), dm_sql_rlog(xv), dm_sql_rlog(bv))
         return(dm_column(f, sql))
     }
     if (!(is.numeric(base) || is.logical(base)) || length(base) != 1L || !is.null(dim(base)))
         stop("log() of a remote column: `base` must be one number or a column of the same design.", call. = FALSE)
-    base <- as.double(base)
-    sql <- if (!is.na(base) && base == 10) rlog(xv, "log10")
-           else if (!is.na(base) && base == 2) rlog(xv, "log2")
-           else {
-               ## R_log(base), in R (NA is NULL: the result is NA)
-               den <- if (is.na(base) && !is.nan(base)) "CAST(NULL AS DOUBLE)"
-                      else dm_sql_double(if (is.nan(base)) NaN else if (base > 0) log(base) else if (base == 0) -Inf else NaN)
-               sprintf("(%s / %s)", rlog(xv), den)
-           }
-    dm_column(unclass(x)$frame, sql)
+    dm_column(unclass(x)$frame, dm_sql_log(xv, base))
 }
+
+## R_log(v) in SQL, `v` a DOUBLE operand (named three times: a short one);
+## `fun` ln, log2 or log10.
+dm_sql_rlog <- function(v, fun = "ln")
+    sprintf("(CASE WHEN %1$s = 0 THEN CAST('-Infinity' AS DOUBLE) WHEN %1$s < 0 THEN CAST('NaN' AS DOUBLE) ELSE %2$s(%1$s) END)",
+            v, fun)
+
+## log(v, base) in SQL as R computes it (see dm_column_log()), `v` a DOUBLE
+## operand, `base` one number or logical.
+dm_sql_log <- function(v, base) {
+    base <- as.double(base)
+    if (!is.na(base) && base == 10) return(dm_sql_rlog(v, "log10"))
+    if (!is.na(base) && base == 2) return(dm_sql_rlog(v, "log2"))
+    ## R_log(base), in R (NA is NULL: the result is NA)
+    den <- if (is.na(base) && !is.nan(base)) "CAST(NULL AS DOUBLE)"
+           else dm_sql_double(if (is.nan(base)) NaN else if (base > 0) log(base) else if (base == 0) -Inf else NaN)
+    sprintf("(%s / %s)", dm_sql_rlog(v), den)
+}
+
+## log1p(v) in SQL, `v` a DOUBLE operand (named several times: a short
+## one). DuckDB has no log1p(), and ln(1 + v) loses the digits of v near 0:
+## with u = 1 + v rounded, ln(u) * v / (u - 1) is accurate to a few ulps
+## (Goldberg 1991, Theorem 4), and v itself where u rounds to 1. As R: -Inf
+## at -1, NaN below (and at -Inf), Inf at Inf, NaN for NaN, NA for NA.
+dm_sql_log1p <- function(v)
+    sprintf(paste("(CASE WHEN %1$s = -1 THEN CAST('-Infinity' AS DOUBLE)",
+                  "WHEN %1$s < -1 THEN CAST('NaN' AS DOUBLE)",
+                  "WHEN 1 + %1$s = 1 OR isinf(%1$s) THEN %1$s",
+                  "ELSE ln(1 + %1$s) * %1$s / ((1 + %1$s) - 1) END)"), v)
 
 ## x^y in SQL (a, b the SQL of the operands, e2 the R operand y), with R's
 ## R_pow() where DuckDB's pow() differs: x^0 and 1^y are 1 for any x and y

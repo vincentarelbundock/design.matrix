@@ -183,6 +183,13 @@ m <- m[order(m[, 1]), -1]
 expect_identical(unname(m), unname(cbind(lg(d$a, 2), lg(d$b, 2), lg(d$a), lg(d$b))))
 expect_error(log(a, c(2, 3)), "one number or a column")
 expect_error(log(a, "2"), "one number or a column")
+## log1p (y12r): -Inf at -1, NaN below, accurate near 0 (not ln(1 + x))
+check(log1p(a), suppressWarnings(log1p(d$a)), "log1p")
+lpv <- c(-1, -1.5, 1e-10, -1e-12, 3e-17, 2.5, 1e300)
+DBI::dbWriteTable(con, "lp", data.frame(y = 1, id = seq_along(lpv), v = lpv))
+Rp <- design_matrix(y ~ id, con, table = "lp")
+m <- dmp_collect(dmc_cbind(dmp_column(Rp, 's."id"'), log1p(dmp_column(Rp, 's."v"'))))
+expect_equal(m[order(m[, 1]), 2], suppressWarnings(log1p(lpv)), tolerance = 1e-15, info = "log1p near 0")
 
 ## ifelse and counts: a NA test gives NA (ifelse) and does not count
 check(dmc_ifelse(a > 0, a, 7), dmc_ifelse(d$a > 0, d$a, 7), "ifelse")

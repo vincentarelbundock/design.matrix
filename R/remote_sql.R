@@ -35,7 +35,19 @@ dm_sql_num <- function(expr, types, con) {
         stop(structure(class = c("dm_untranslatable", "error", "condition"),
                        list(message = msg, call = NULL)))
     }
-    unary <- c(exp = "exp", sqrt = "sqrt", abs = "abs", log2 = "log2", log10 = "log10")
+    unary <- c(exp = "exp", sqrt = "sqrt", abs = "abs")
+    ## a constant base of log(): a number, its negation, Inf or NaN (where no
+    ## column has that name, as model.frame() finds them), NA
+    const <- function(e) {
+        if (is.call(e) && identical(e[[1L]], as.name("-")) && length(e) == 2L) {
+            v <- const(e[[2L]])
+            return(if (is.null(v)) NULL else -v)
+        }
+        if (is.name(e) && as.character(e) %in% c("Inf", "NaN") && is.na(types[as.character(e)]))
+            return(get(as.character(e), baseenv()))
+        if ((is.numeric(e) || is.logical(e)) && length(e) == 1L && is.null(attributes(e))) return(as.double(e))
+        NULL
+    }
     tr <- function(e) {
         if (is.name(e)) {
             nm <- as.character(e)
@@ -66,12 +78,15 @@ dm_sql_num <- function(expr, types, con) {
             if (is.na(ix)) { ix <- pos[1L]; pos <- pos[-1L] }
             if (is.na(ib) && nargs == 2L) ib <- pos[1L]
             x <- args[[ix]]
-            if (nargs == 1L) return(sprintf("ln(%s)", tr(x)))
-            b <- args[[ib]]
-            if (!is.numeric(b) || length(b) != 1L) fail("log() with a base that is not a number")
-            if (b == 10) return(sprintf("log10(%s)", tr(x)))
-            if (b == 2) return(sprintf("log2(%s)", tr(x)))
-            return(sprintf("(ln(%s) / ln(%s))", tr(x), dm_sql_double(b)))
+            ## as R, also at 0, below, and for any base (dm_sql_log())
+            if (nargs == 1L) return(dm_sql_rlog(tr(x)))
+            b <- const(args[[ib]])
+            if (is.null(b)) fail("log() with a base that is not a number")
+            return(dm_sql_log(tr(x), b))
+        }
+        if (fn %in% c("log2", "log10", "log1p") && nargs == 1L && is.null(an)) {
+            v <- tr(args[[1L]])
+            return(switch(fn, log2 = dm_sql_log(v, 2), log10 = dm_sql_log(v, 10), log1p = dm_sql_log1p(v)))
         }
         if (!is.null(an) && any(an != "")) fail(sprintf("%s() with named arguments", fn))
         if (fn %in% c("(", "I") && nargs == 1L) return(sprintf("(%s)", tr(args[[1L]])))

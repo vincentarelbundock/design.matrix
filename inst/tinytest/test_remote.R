@@ -200,7 +200,24 @@ DBI::dbWriteTable(con, "na2", transform(na, w = c(1, 1, 1, 1, 1, NA, 1, 1)))
 Dr2 <- design_matrix(fo, con, table = "na2")
 expect_true(all(is.na(crossprod(Dr2, "w"))))
 
-## engine choice
+## log(x), log(x, base), log2, log10, log1p in formula terms (y12r): the
+## values of model.matrix(), also at 0 (-Inf), below (NaN), for NA, NaN,
+## Inf, -Inf, for any base, and near 0 for log1p
+lx <- c(NA, NaN, Inf, -Inf, 0, -0.5, -1, -2, 1e-10, -1e-12, 3e-17, 1, 2.5, 1e300)
+DBI::dbWriteTable(con, "lg", data.frame(y = seq_along(lx), x = lx))
+lgf <- list(y ~ log(x), y ~ log(x, 2), y ~ log(x, 10), y ~ log(x, 3), y ~ log(base = 0.5, x),
+            y ~ log(x, 1), y ~ log(x, 0), y ~ log(x, Inf), y ~ log(x, 1e-3), y ~ log2(x), y ~ log10(x),
+            y ~ log1p(x), y ~ log1p(2 * x) + log(x + 1, 2), y ~ log(abs(x), 0.25) + x)
+for (fo in lgf) {
+    M <- suppressWarnings(design_matrix(fo, data.frame(y = seq_along(lx), x = lx)))
+    Dr <- design_matrix(fo, con, table = "lg")
+    info <- deparse(fo)
+    expect_identical(Dr$engine, "sql", info = info)
+    expect_true(isTRUE(all.equal(unname(as.matrix(Dr)), unname(as.matrix(M)), tolerance = 1e-15)), info = info)
+}
+## a base that is not a constant is evaluated in R
+expect_message(design_matrix(y ~ log(x, y), con, table = "lg"), "Evaluated in R", fixed = TRUE)
+
 expect_message(design_matrix(y ~ poly(z, 2) + f1, con, table = "d"),
                "Evaluated in R: term `poly(z, 2)` cannot be translated", fixed = TRUE)
 expect_error(design_matrix(y ~ poly(z, 2) + f1, con, table = "d", engine = "sql"),
