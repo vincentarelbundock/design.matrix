@@ -109,20 +109,21 @@ static SEXP contrast_rows(SEXP cm)
    points into); the caller unprotects it. */
 static void build_ctx(kctx *K, SEXP setup, SEXP vars)
 {
-    SEXP factors = VECTOR_ELT(setup, 0), contr1 = VECTOR_ELT(setup, 1),
-	contr2 = VECTOR_ELT(setup, 2);
-    const int *nlevs = INTEGER(VECTOR_ELT(setup, 3)),
-	*columns = INTEGER(VECTOR_ELT(setup, 4)),
-	*count = INTEGER(VECTOR_ELT(setup, 5));
-    int rhs_response = asInteger(VECTOR_ELT(setup, 6)),
-	nVar = asInteger(VECTOR_ELT(setup, 10)),
-	nterms = asInteger(VECTOR_ELT(setup, 11));
+    SEXP factors = VECTOR_ELT(setup, DM_SETUP_FACTORS),
+	contr1 = VECTOR_ELT(setup, DM_SETUP_CONTR1),
+	contr2 = VECTOR_ELT(setup, DM_SETUP_CONTR2);
+    const int *nlevs = INTEGER(VECTOR_ELT(setup, DM_SETUP_NLEVS)),
+	*columns = INTEGER(VECTOR_ELT(setup, DM_SETUP_COLUMNS)),
+	*count = INTEGER(VECTOR_ELT(setup, DM_SETUP_COUNT));
+    int rhs_response = asInteger(VECTOR_ELT(setup, DM_SETUP_RHS_RESPONSE)),
+	nVar = asInteger(VECTOR_ELT(setup, DM_SETUP_NVAR)),
+	nterms = asInteger(VECTOR_ELT(setup, DM_SETUP_NTERMS));
     const int *fac = nterms > 0 ? INTEGER(factors) : NULL;
 
     SEXP variable = PROTECT(dm_vars(setup, vars));
     SEXP cache;
-    if (XLENGTH(setup) > 12) {
-        cache = VECTOR_ELT(setup, 12);
+    if (XLENGTH(setup) > DM_SETUP_CONTRAST_ROWS) {
+        cache = VECTOR_ELT(setup, DM_SETUP_CONTRAST_ROWS);
     } else {
         /* Designs saved before the cache was introduced use a per-call
            index. Keep its vectors alive with the protected variable list. */
@@ -131,8 +132,8 @@ static void build_ctx(kctx *K, SEXP setup, SEXP vars)
         UNPROTECT(1);
     }
     K->n = nrows(VECTOR_ELT(vars, 0));
-    K->intercept = asInteger(VECTOR_ELT(setup, 7));
-    K->p = LENGTH(VECTOR_ELT(setup, 8));
+    K->intercept = asInteger(VECTOR_ELT(setup, DM_SETUP_INTERCEPT));
+    K->p = LENGTH(VECTOR_ELT(setup, DM_SETUP_XNAMES));
     K->term = (kterm *) R_alloc(nterms > 0 ? nterms : 1, sizeof(kterm));
     K->nterm = 0;
 

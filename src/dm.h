@@ -87,6 +87,26 @@ static inline void dm_zero(double *x, R_xlen_t len)
     for (R_xlen_t j = 0; j < len; j++) x[j] = 0.0;
 }
 
+/* Slots of the list returned by dm_setup(), in order.  Designs saved
+   before the contrast cache was introduced stop at DM_SETUP_NTERMS: check
+   XLENGTH(setup) > DM_SETUP_CONTRAST_ROWS before reading that slot. */
+enum {
+    DM_SETUP_FACTORS = 0,
+    DM_SETUP_CONTR1,
+    DM_SETUP_CONTR2,
+    DM_SETUP_NLEVS,
+    DM_SETUP_COLUMNS,
+    DM_SETUP_COUNT,
+    DM_SETUP_RHS_RESPONSE,
+    DM_SETUP_INTERCEPT,
+    DM_SETUP_XNAMES,
+    DM_SETUP_ASSIGN,
+    DM_SETUP_NVAR,
+    DM_SETUP_NTERMS,
+    DM_SETUP_CONTRAST_ROWS,
+    DM_SETUP_LEN
+};
+
 SEXP dm_setup(SEXP terms, SEXP vars, SEXP rho);
 SEXP dm_vars(SEXP setup, SEXP vars);
 SEXP dm_fill(SEXP setup, SEXP vars, SEXP nthreads);

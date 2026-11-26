@@ -31,13 +31,13 @@ static void add_dbl(keycols *K, const double *x) { K->dc[K->ndbl++] = x; }
 /* Key columns of one design: variables used by a term with columns. */
 static void design_keys(keycols *K, SEXP setup, SEXP variable, R_xlen_t n)
 {
-    SEXP factors = VECTOR_ELT(setup, 0);
-    const int *nlevs = INTEGER(VECTOR_ELT(setup, 3)),
-	*columns = INTEGER(VECTOR_ELT(setup, 4)),
-	*count = INTEGER(VECTOR_ELT(setup, 5));
-    int rhs_response = asInteger(VECTOR_ELT(setup, 6)),
-	nVar = asInteger(VECTOR_ELT(setup, 10)),
-	nterms = asInteger(VECTOR_ELT(setup, 11));
+    SEXP factors = VECTOR_ELT(setup, DM_SETUP_FACTORS);
+    const int *nlevs = INTEGER(VECTOR_ELT(setup, DM_SETUP_NLEVS)),
+	*columns = INTEGER(VECTOR_ELT(setup, DM_SETUP_COLUMNS)),
+	*count = INTEGER(VECTOR_ELT(setup, DM_SETUP_COUNT));
+    int rhs_response = asInteger(VECTOR_ELT(setup, DM_SETUP_RHS_RESPONSE)),
+	nVar = asInteger(VECTOR_ELT(setup, DM_SETUP_NVAR)),
+	nterms = asInteger(VECTOR_ELT(setup, DM_SETUP_NTERMS));
     const int *fac = nterms > 0 ? INTEGER(factors) : NULL;
     for (int i = 0; i < nVar; i++) {
 	int used = 0;
@@ -57,8 +57,8 @@ static void design_keys(keycols *K, SEXP setup, SEXP variable, R_xlen_t n)
 
 static int design_nkeys(SEXP setup, SEXP variable)
 {
-    const int *columns = INTEGER(VECTOR_ELT(setup, 4));
-    int nVar = asInteger(VECTOR_ELT(setup, 10)), total = 0;
+    const int *columns = INTEGER(VECTOR_ELT(setup, DM_SETUP_COLUMNS));
+    int nVar = asInteger(VECTOR_ELT(setup, DM_SETUP_NVAR)), total = 0;
     for (int i = 0; i < nVar; i++)
 	total += columns[i] > 0 ? ncols(VECTOR_ELT(variable, i)) : 0;
     return total;

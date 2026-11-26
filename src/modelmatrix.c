@@ -84,10 +84,15 @@ static const char *type_name(SEXP x)
 #endif
 }
 
-/* Names of the elements of the list returned by dm_setup(). */
-static const char *setup_names[] = {
-    "factors", "contr1", "contr2", "nlevs", "columns", "count",
-    "rhs_response", "intercept", "xnames", "assign", "nVar", "nterms", "contrast_rows", ""
+/* Names of the elements of the list returned by dm_setup() (slots in dm.h). */
+static const char *setup_names[DM_SETUP_LEN + 1] = {
+    [DM_SETUP_FACTORS] = "factors", [DM_SETUP_CONTR1] = "contr1",
+    [DM_SETUP_CONTR2] = "contr2", [DM_SETUP_NLEVS] = "nlevs",
+    [DM_SETUP_COLUMNS] = "columns", [DM_SETUP_COUNT] = "count",
+    [DM_SETUP_RHS_RESPONSE] = "rhs_response", [DM_SETUP_INTERCEPT] = "intercept",
+    [DM_SETUP_XNAMES] = "xnames", [DM_SETUP_ASSIGN] = "assign",
+    [DM_SETUP_NVAR] = "nVar", [DM_SETUP_NTERMS] = "nterms",
+    [DM_SETUP_CONTRAST_ROWS] = "contrast_rows", [DM_SETUP_LEN] = ""
 };
 
 /* .Call(C_dm_setup, terms, vars, rho)
@@ -372,20 +377,21 @@ SEXP dm_setup(SEXP terms, SEXP vars, SEXP rho)
     }
 
     SEXP out = PROTECT(mkNamed(VECSXP, setup_names));
-    SET_VECTOR_ELT(out, 0, factors);
-    SET_VECTOR_ELT(out, 1, contr1);
-    SET_VECTOR_ELT(out, 2, contr2);
-    SET_VECTOR_ELT(out, 3, nlevs);
-    SET_VECTOR_ELT(out, 4, columns);
-    SET_VECTOR_ELT(out, 5, count);
-    SET_VECTOR_ELT(out, 6, ScalarInteger(rhs_response));
-    SET_VECTOR_ELT(out, 7, ScalarInteger(intrcept));
-    SET_VECTOR_ELT(out, 8, xnames);
-    SET_VECTOR_ELT(out, 9, assign);
-    SET_VECTOR_ELT(out, 10, ScalarInteger(nVar));
-    SET_VECTOR_ELT(out, 11, ScalarInteger(nterms));
+    SET_VECTOR_ELT(out, DM_SETUP_FACTORS, factors);
+    SET_VECTOR_ELT(out, DM_SETUP_CONTR1, contr1);
+    SET_VECTOR_ELT(out, DM_SETUP_CONTR2, contr2);
+    SET_VECTOR_ELT(out, DM_SETUP_NLEVS, nlevs);
+    SET_VECTOR_ELT(out, DM_SETUP_COLUMNS, columns);
+    SET_VECTOR_ELT(out, DM_SETUP_COUNT, count);
+    SET_VECTOR_ELT(out, DM_SETUP_RHS_RESPONSE, ScalarInteger(rhs_response));
+    SET_VECTOR_ELT(out, DM_SETUP_INTERCEPT, ScalarInteger(intrcept));
+    SET_VECTOR_ELT(out, DM_SETUP_XNAMES, xnames);
+    SET_VECTOR_ELT(out, DM_SETUP_ASSIGN, assign);
+    SET_VECTOR_ELT(out, DM_SETUP_NVAR, ScalarInteger(nVar));
+    SET_VECTOR_ELT(out, DM_SETUP_NTERMS, ScalarInteger(nterms));
     /* One lazy row index per variable and contrast coding, shared by plans. */
-    SET_VECTOR_ELT(out, 12, allocVector(VECSXP, 2 * (R_xlen_t) nVar));
+    SET_VECTOR_ELT(out, DM_SETUP_CONTRAST_ROWS,
+		   allocVector(VECSXP, 2 * (R_xlen_t) nVar));
     UNPROTECT(13);
     return out;
 }
@@ -396,12 +402,12 @@ SEXP dm_setup(SEXP terms, SEXP vars, SEXP rho)
    is, without a coerced copy at every call. */
 SEXP dm_vars(SEXP setup, SEXP vars)
 {
-    int nVar = asInteger(VECTOR_ELT(setup, 10));
-    const int *nlevs = INTEGER(VECTOR_ELT(setup, 3));
-    const int *count = INTEGER(VECTOR_ELT(setup, 5));
-    int rhs_response = asInteger(VECTOR_ELT(setup, 6)),
-	nterms = asInteger(VECTOR_ELT(setup, 11));
-    const int *fac = nterms > 0 ? INTEGER(VECTOR_ELT(setup, 0)) : NULL;
+    int nVar = asInteger(VECTOR_ELT(setup, DM_SETUP_NVAR));
+    const int *nlevs = INTEGER(VECTOR_ELT(setup, DM_SETUP_NLEVS));
+    const int *count = INTEGER(VECTOR_ELT(setup, DM_SETUP_COUNT));
+    int rhs_response = asInteger(VECTOR_ELT(setup, DM_SETUP_RHS_RESPONSE)),
+	nterms = asInteger(VECTOR_ELT(setup, DM_SETUP_NTERMS));
+    const int *fac = nterms > 0 ? INTEGER(VECTOR_ELT(setup, DM_SETUP_FACTORS)) : NULL;
     SEXP variable = PROTECT(allocVector(VECSXP, nVar));
     for (int i = 0; i < nVar; i++) {
 	SEXP v = VECTOR_ELT(vars, i);
@@ -550,17 +556,19 @@ static void fill_rows(double *rx, R_xlen_t n, int r0, int nr, int intrcept,
  * `vars` is the list given to R's C routine (it carries the row names). */
 SEXP dm_fill(SEXP setup, SEXP vars, SEXP nthreads_)
 {
-    SEXP factors = VECTOR_ELT(setup, 0), contr1 = VECTOR_ELT(setup, 1),
-	contr2 = VECTOR_ELT(setup, 2);
-    const int *nlevs = INTEGER(VECTOR_ELT(setup, 3)),
-	*columns = INTEGER(VECTOR_ELT(setup, 4)),
-	*count = INTEGER(VECTOR_ELT(setup, 5));
-    int rhs_response = asInteger(VECTOR_ELT(setup, 6)),
-	intrcept = asInteger(VECTOR_ELT(setup, 7)),
-	nVar = asInteger(VECTOR_ELT(setup, 10)),
-	nterms = asInteger(VECTOR_ELT(setup, 11)),
+    SEXP factors = VECTOR_ELT(setup, DM_SETUP_FACTORS),
+	contr1 = VECTOR_ELT(setup, DM_SETUP_CONTR1),
+	contr2 = VECTOR_ELT(setup, DM_SETUP_CONTR2);
+    const int *nlevs = INTEGER(VECTOR_ELT(setup, DM_SETUP_NLEVS)),
+	*columns = INTEGER(VECTOR_ELT(setup, DM_SETUP_COLUMNS)),
+	*count = INTEGER(VECTOR_ELT(setup, DM_SETUP_COUNT));
+    int rhs_response = asInteger(VECTOR_ELT(setup, DM_SETUP_RHS_RESPONSE)),
+	intrcept = asInteger(VECTOR_ELT(setup, DM_SETUP_INTERCEPT)),
+	nVar = asInteger(VECTOR_ELT(setup, DM_SETUP_NVAR)),
+	nterms = asInteger(VECTOR_ELT(setup, DM_SETUP_NTERMS)),
 	nthreads = asInteger(nthreads_);
-    SEXP xnames = VECTOR_ELT(setup, 8), assign = VECTOR_ELT(setup, 9);
+    SEXP xnames = VECTOR_ELT(setup, DM_SETUP_XNAMES),
+	assign = VECTOR_ELT(setup, DM_SETUP_ASSIGN);
     int nc = LENGTH(xnames);
     const int *fac = nterms > 0 ? INTEGER(factors) : NULL;
 

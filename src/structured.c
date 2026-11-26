@@ -45,19 +45,20 @@
    Leaves one object PROTECTed (the coerced variables). */
 void build_sctx(sctx *S, SEXP setup, SEXP vars)
 {
-    SEXP factors = VECTOR_ELT(setup, 0), contr1 = VECTOR_ELT(setup, 1),
-	contr2 = VECTOR_ELT(setup, 2);
-    const int *nlevs = INTEGER(VECTOR_ELT(setup, 3)),
-	*columns = INTEGER(VECTOR_ELT(setup, 4)),
-	*count = INTEGER(VECTOR_ELT(setup, 5));
-    int rhs_response = asInteger(VECTOR_ELT(setup, 6)),
-	intercept = asInteger(VECTOR_ELT(setup, 7)),
-	nVar = asInteger(VECTOR_ELT(setup, 10)),
-	nterms = asInteger(VECTOR_ELT(setup, 11));
+    SEXP factors = VECTOR_ELT(setup, DM_SETUP_FACTORS),
+	contr1 = VECTOR_ELT(setup, DM_SETUP_CONTR1),
+	contr2 = VECTOR_ELT(setup, DM_SETUP_CONTR2);
+    const int *nlevs = INTEGER(VECTOR_ELT(setup, DM_SETUP_NLEVS)),
+	*columns = INTEGER(VECTOR_ELT(setup, DM_SETUP_COLUMNS)),
+	*count = INTEGER(VECTOR_ELT(setup, DM_SETUP_COUNT));
+    int rhs_response = asInteger(VECTOR_ELT(setup, DM_SETUP_RHS_RESPONSE)),
+	intercept = asInteger(VECTOR_ELT(setup, DM_SETUP_INTERCEPT)),
+	nVar = asInteger(VECTOR_ELT(setup, DM_SETUP_NVAR)),
+	nterms = asInteger(VECTOR_ELT(setup, DM_SETUP_NTERMS));
     const int *fac = nterms > 0 ? INTEGER(factors) : NULL;
     SEXP variable = PROTECT(dm_vars(setup, vars));
     S->n = nrows(VECTOR_ELT(vars, 0));
-    S->p = LENGTH(VECTOR_ELT(setup, 8));
+    S->p = LENGTH(VECTOR_ELT(setup, DM_SETUP_XNAMES));
     S->t = (sterm *) R_alloc(nterms + 1, sizeof(sterm));
     S->nt = 0;
     int off = 0;
