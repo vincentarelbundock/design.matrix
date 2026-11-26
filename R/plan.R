@@ -49,7 +49,7 @@ design_plan.formula <- function(object, data, contrasts.arg = NULL, xlev = NULL,
     checkmate::assert_list(contrasts.arg, null.ok = TRUE)
     checkmate::assert_list(xlev, null.ok = TRUE)
 
-    mf <- stats::model.frame(object, data, xlev = xlev)
+    mf <- design_frame(object, data, xlev = xlev)
     tt <- attr(mf, "terms")
     xlevels <- stats::.getXlevels(tt, mf)
     prep <- dm_prepare(tt, mf, contrasts.arg, NULL, FALSE)
@@ -221,7 +221,7 @@ dm_apply_general <- function(plan, newdata, na.action, vals = NULL) {
         attr(data, "row.names") <- .row_names_info(newdata, 0L)
         class(data) <- "data.frame"
     }
-    mf <- stats::model.frame(tt, data, xlev = plan$xlevels, na.action = na.action)
+    mf <- design_frame(tt, data, xlev = plan$xlevels, na.action = na.action)
     d <- design_matrix(plan$terms, mf, contrasts.arg = plan$contrasts)
     ## the fast path reuses this set-up, so it drops the column too
     if (isTRUE(plan$drop_intercept)) d <- dm_drop_intercept(d)

@@ -37,6 +37,9 @@ static const R_CallMethodDef CallEntries[] = {
     {"dm_all_finite", (DL_FUNC) &dm_all_finite, 1},
     {"dm_col_norms", (DL_FUNC) &dm_col_norms, 1},
     {"dm_in_range", (DL_FUNC) &dm_in_range, 3},
+    {"dm_codes_ok", (DL_FUNC) &dm_codes_ok, 2},
+    {"dm_int_unique", (DL_FUNC) &dm_int_unique, 1},
+    {"dm_str_unique", (DL_FUNC) &dm_str_unique, 1},
     {"dm_omp_max_threads", (DL_FUNC) &dm_omp_max_threads, 0},
     {NULL, NULL, 0}
 };

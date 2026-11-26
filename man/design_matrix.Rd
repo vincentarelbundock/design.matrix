@@ -61,13 +61,14 @@ the same floating point operations as R for every cell.
 
 \strong{Options.}
 \itemize{
-\item \code{design.matrix.skip_na_copy} (default \code{TRUE}): when the model frame
-has no missing value and \code{na.action} is \code{\link[stats:na.omit]{stats::na.omit()}},
-\code{\link[stats:na.exclude]{stats::na.exclude()}}, \code{\link[stats:na.fail]{stats::na.fail()}} or \code{\link[stats:na.pass]{stats::na.pass()}},
-skip the copy of the whole frame that \code{na.omit()} and \code{na.exclude()}
-make even when they remove nothing. The result is identical either
-way; set \code{FALSE} to build the frame exactly as \code{model.matrix()} does,
-for example in benchmarks against functions that call it.
+\item \code{design.matrix.skip_na_copy} (default \code{TRUE}): build model frames with
+\code{\link[=design_frame]{design_frame()}}, which returns the model frame of
+\code{\link[stats:model.frame]{stats::model.frame()}} without the copy of the whole frame that
+\code{\link[stats:na.omit]{stats::na.omit()}} and \code{\link[stats:na.exclude]{stats::na.exclude()}} make when they remove
+nothing, and without recoding factors that already have the levels
+asked for in \code{xlev}. The result is identical either way; set \code{FALSE}
+to build the frame with \code{model.frame()} itself, for example in
+benchmarks against functions that call it.
 \item \code{design.matrix.structured} (default \code{TRUE}): use the column-structured
 kernels for products with finite designs (see \link{design_algebra}).
 \item \code{design.matrix.dedup}: see \link{design_algebra}.
