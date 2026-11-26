@@ -158,7 +158,8 @@ xtx_summary_aggregates <- function(args, what) {
 #'   c(FALSE, TRUE))` counts the rows where `cond` is `TRUE` (`NA` counting as
 #'   `FALSE`) in the query that sums `dev`.
 #' * `col_const(like, value)`: a constant column with the rows of `like` (a
-#'   column or a design): `rep(value, n)` in memory.
+#'   column or a design): `rep(value, n)` in memory (names may change before
+#'   the first release).
 #' * `cbind(...)`: columns side by side, one column with several columns
 #'   (numbers recycle), as `cbind()` of vectors in memory; `x[, j]` selects
 #'   them again.

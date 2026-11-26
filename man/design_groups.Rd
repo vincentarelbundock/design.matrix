@@ -10,7 +10,7 @@
 \alias{print.xtx_groups}
 \title{Groupings of the rows of a design}
 \usage{
-design_groups(x, key)
+design_groups(x, key, levels = NULL)
 
 group_sums(col, g)
 
@@ -42,6 +42,15 @@ For a remote design, also a \code{DBI::SQL()} expression over the columns of
 the remote data, or a \code{\link[=design_column]{design_column()}} of \code{x} (each of its columns a
 key variable). A list combines several of these.}
 
+\item{levels}{\code{NULL}, or the levels of a grouping made before (its
+\code{levels}, a data frame with one column per key variable): the rows of
+\code{x} are then coded against those levels, as new data against the levels
+of a fit, instead of the levels that occur in \code{x}. Rows whose key is
+missing or not among \code{levels} get the code \code{NA} (no error): such a
+grouping works with \code{group_lookup()} (\code{NA} for those rows) and
+\code{\link[=design_absorb_fitted]{design_absorb_fitted()}}, not with \code{group_sums()}, \code{group_crosstab()} or
+\code{group_nested()}. Names may change before the first release.}
+
 \item{col}{A column: in memory a numeric (or logical) vector with one
 value per row, or a matrix or data frame of such columns; for a remote
 design a \code{\link[=design_column]{design_column()}} (with one or more columns). A character
@@ -64,8 +73,8 @@ order. Missing values give missing values.}
 }
 \value{
 \code{design_groups()}: a grouping (see \emph{The grouping object}).
-\code{group_sums()}: a \code{G x k} numeric matrix, \code{k} the number of columns of
-\code{col}. \code{group_crosstab()}: a \code{G1 x G2} \link[Matrix:dgCMatrix-class]{Matrix::dgCMatrix} of the
+\code{group_sums()}: a \verb{G x k} numeric matrix, \code{k} the number of columns of
+\code{col}. \code{group_crosstab()}: a \verb{G1 x G2} \link[Matrix:dgCMatrix-class]{Matrix::dgCMatrix} of the
 sums of \code{w} (counts without \code{w}) in each pair of groups; pairs with no
 row are not stored. \code{group_lookup()}: a column (in memory a double
 vector, or a matrix for a matrix of \code{values}; remotely a
@@ -73,7 +82,7 @@ vector, or a matrix for a matrix of \code{values}; remotely a
 }
 \description{
 A \emph{grouping} gives each row of a design the number of its group, from the
-values of one or more key variables: integer codes \code{1..G}, one per level
+values of one or more key variables: integer codes \verb{1..G}, one per level
 of the key. Grouped sums, crosstabs, lookups of a value per group and
 nesting tests then work from the codes, in memory and on a remote design
 (see \link{design_remote}) with the same code and the same results. These are
@@ -85,9 +94,9 @@ within transformation of a column is \code{y - group_lookup(group_sums(y, g) / n
 \item \code{design_groups(x, key)} makes the grouping of the rows of design \code{x} by
 \code{key}.
 \item \code{group_sums(col, g)}: the sums of a column (or several) within each
-group, a \code{G x k} matrix (one query remotely).
+group, a \verb{G x k} matrix (one query remotely).
 \item \code{group_crosstab(g1, g2, w)}: the (weighted) number of rows in each pair
-of groups, a sparse \code{G1 x G2} \link[Matrix:dgCMatrix-class]{Matrix::dgCMatrix}.
+of groups, a sparse \verb{G1 x G2} \link[Matrix:dgCMatrix-class]{Matrix::dgCMatrix}.
 \item \code{group_lookup(values, g)}: the column whose value in a row is the value
 of its group, \code{values[codes]}.
 \item \code{group_nested(g1, g2)}: is \code{g1} nested in \code{g2} (does each group of \code{g1}
@@ -98,7 +107,7 @@ lie within one group of \code{g2})?
 
 A list of class \code{xtx_groups} with elements
 \describe{
-\item{\code{codes}}{The group of each row, integers \code{1..G}: in memory an
+\item{\code{codes}}{The group of each row, integers \verb{1..G}: in memory an
 integer vector with one value per row of the design; for a remote
 design, a \code{\link[=design_column]{design_column()}} (lazy: a join of the rows with a table of
 the levels, made when its values are first needed). \code{codes} is a
@@ -112,7 +121,7 @@ yet known).}
 \item{\code{design}}{The design.}
 }
 Treat it as read-only: the functions check that the codes are within
-\code{1..G} before they use them.
+\verb{1..G} before they use them.
 }
 
 \section{Levels and their order}{

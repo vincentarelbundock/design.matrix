@@ -18,7 +18,7 @@ Three choices follow from this, and the rest of the page describes them:
 
 + *A design is a description of the matrix.* The dense matrix is built only by `as.matrix()`, and then bit for bit as `model.matrix()` builds it.
 + *Estimation is a sequence of sums over rows.* $X'X$, $X'y$, grouped column sums and crosstabs are computed from codes and numbers. Linear models, GLMs and fixed effects are fitted from these sums: the rows are never transformed (no demeaning, no dense $Q$).
-+ *The fitting code is written once.* It calls a small set of internal primitives, each with a method for data in memory (C) and for remote data (SQL). There is no second implementation for out-of-core data.
++ *The fitting code is written once.* It calls a small set of primitives, each with a method for data in memory (C) and for remote data (SQL), through exported functions only. There is no second implementation for out-of-core data.
 
 = Layers
 
@@ -29,7 +29,8 @@ Three choices follow from this, and the rest of the page describes them:
   [Design], [Checks, contrasts and column names as in R; the dense fill], [`src/modelmatrix.c`, `R/design_matrix.R`],
   [Kernels], [Products with the design from codes and numbers], [`src/kernels.c`, `src/structured.c`, `R/algebra.R`],
   [Primitives], [Operations on designs and columns, in memory and remote; the public column type], [`R/primitives.R`, `R/primitives_lookup.R`, `R/column.R`, `R/columns_public.R`],
-  [Fits], [Least squares, IRLS, fixed effects], [`R/qr.R`, `R/lm.R`, `R/glm.R`, `R/fe.R`, `R/fe_glm.R`, `R/na_action.R`, `src/fe.c`, `src/fused.c`],
+  [Fitting layers], [Least squares, the input stage, GLM families on columns, the fixed-effects estimator], [`R/qr.R`, `R/wls.R`, `R/problem.R`, `R/family.R`, `R/absorb.R`, `src/fe.c`, `src/fused.c`],
+  [Fits], [`design_lm()`, `design_glm()`: IRLS, checks, covariances, methods (exports only)], [`R/lm.R`, `R/glm.R`, `R/fe.R`, `R/fe_glm.R`, `R/remote_fit.R`, `R/checks.R`, `R/na_action.R`],
   [Remote], [Designs over DuckDB tables, queries and Parquet files], [`R/remote.R`, `R/remote_sql.R`, `R/remote_fit.R`, `R/remote_compress.R`],
 )
 
@@ -126,6 +127,29 @@ A variable that SQL cannot compute (an R function with no translation) is evalua
 == Compression in the database
 
 When the data have few design patterns, the scan of the SQL engine also groups by the numeric variables of the design, and returns each cell with its number of rows and the sums of the weights and responses; the design of the cells is built in memory from the engine's own $C_t$ and the fit runs there (`R/remote_compress.R`). An estimate of the number of patterns, from a sample and from `approx_count_distinct()`, decides whether to try.
+
+== The API of the fitting code
+
+The fitting code (`lm.R`, `glm.R`, the fit side of `fe.R`, `fe_glm.R`, `remote_fit.R`, `checks.R`, `na_action.R`) reaches the rest of the package only through exported functions, so that it can live in a package of its own. Besides base generics on designs and columns (`%*%`, arithmetic, `sum()`, `is.na()`, `is.finite()`, `round()`, `log()`, `cbind()`, `x[, j]`, `rowSums()`), it uses (names may change before the first release):
+
+#table(
+  columns: 2,
+  table.header([Function], [Role]),
+  [`design_problem()`], [The input stage: a formula and a data frame or remote data, a design matrix or a remote design, as the design of the rows used and the response, weights and offset as columns (class `xtx_problem`)],
+  [`design_resolve()`, `is_remote_source()`], [Arguments of a fit as columns of a design (SQL, or evaluated in R into a table); remote data or not],
+  [`design_exclude()`], [`na.exclude` for remote fits (`napredict()` and `naresid()` methods)],
+  [`design_wls()`], [Weighted least squares with `lm()`'s pivoting, in memory or remote],
+  [`design_patterns(check = FALSE, fit =)`], [Compression: rows that share a design pattern and their sufficient statistics],
+  [`design_output()`], [Results with one value per row: vectors in memory, tables remotely],
+  [`column_family()`, `col_irls_working()`], [GLM families as functions of columns (links, variances, deviances, starting values, log densities); the working weights and responses of IRLS],
+  [`col_sums()`, `col_ifelse()`, `col_pmax()`, `col_const()`, `col_compute(table = FALSE)`], [Sums of several columns in one query (one `na.rm` per argument), conditionals, constants, columns computed once in a projection],
+  [`design_absorb_rows()`], [The rows of a fit with fixed effects and the codes of the FE (missing values, singletons, levels perfectly fit)],
+  [`design_absorb_wls()`, `design_absorb()`, `absorb_control()`], [The estimator with absorbed fixed effects: coefficients, bread, FE values, degrees of freedom; the absorption operator, whose `scores()` are the raw cluster scores (the fit applies fixest's small sample corrections); solver options],
+  [`design_center()`, `design_uncenter()`], [Exact centering of numeric variables, and the map of a fit back to the design],
+  [`design_absorb_fitted()`, `design_groups(levels =)`], [$X b$ plus the FE values of the rows' levels; groupings of new rows coded against the levels of a fit],
+)
+
+The IRLS loop, the checks and messages of `lm()` and `glm()`, the covariance matrices, the small sample corrections and the methods of the fits stay in the fitting code.
 
 = Generalized linear models
 

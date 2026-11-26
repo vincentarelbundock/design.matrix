@@ -4,7 +4,15 @@
 \alias{design_patterns}
 \title{Compress a design and a response to sufficient statistics}
 \usage{
-design_patterns(x, z, w = NULL, keys = NULL, compress = "auto")
+design_patterns(
+  x,
+  z,
+  w = NULL,
+  keys = NULL,
+  compress = "auto",
+  fit = c("lm", "glm"),
+  check = TRUE
+)
 }
 \arguments{
 \item{x}{A design: a \code{design_matrix} built from a data frame, or a remote
@@ -35,6 +43,18 @@ patterns as rows; remotely, following the option
 can therefore decide differently with \code{"auto"}. With \code{TRUE}, the
 patterns are returned unless every row is a pattern of its own. With
 \code{FALSE}, \code{NULL} is returned.}
+
+\item{fit}{\code{"lm"} (default) or \code{"glm"}: the fit the patterns are for,
+which sets the rule of \code{compress = "auto"} for a remote design (a GLM
+iterates on the patterns, so compression pays sooner). In memory both
+give the same result.}
+
+\item{check}{Check the inputs (default). \code{FALSE} is for callers that
+pass columns of \code{x} they have already checked, as \code{\link[=design_lm]{design_lm()}} and
+\code{\link[=design_glm]{design_glm()}} do: \code{z}, \code{w} and \code{keys} are then a numeric vector (or
+matrix, for \code{keys}) with one value per row in memory, \code{\link[=design_column]{design_column()}}s
+of \code{x} remotely, and they are used as given (remotely, without the query
+that checks them). Names may change before the first release.}
 }
 \value{
 \code{NULL} when compression does not apply: with \code{compress = FALSE};

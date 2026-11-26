@@ -8,6 +8,9 @@
 \alias{col_pmin}
 \alias{col_pmax}
 \alias{col_sums}
+\alias{col_const}
+\alias{cbind.xtx_column}
+\alias{rowSums,xtx_column-method}
 \title{Summaries and arithmetic of columns}
 \usage{
 \method{Summary}{xtx_column}(..., na.rm = FALSE)
@@ -21,12 +24,20 @@ col_pmin(a, b)
 col_pmax(a, b)
 
 col_sums(..., na.rm = FALSE)
+
+col_const(like, value)
+
+\method{cbind}{xtx_column}(..., deparse.level = 1)
+
+\S4method{rowSums}{xtx_column}(x, na.rm = FALSE, dims = 1, ...)
 }
 \arguments{
 \item{...}{For \code{col_sums()}, columns or numbers, optionally named. For
-the methods, as in base R.}
+\code{cbind()}, columns or numbers. For the methods, as in base R.}
 
-\item{na.rm}{For \code{col_sums()}, drop \code{NA} and \code{NaN} values (as \code{sum()}).}
+\item{na.rm}{For \code{col_sums()}, drop \code{NA} and \code{NaN} values (as \code{sum()}):
+\code{TRUE} or \code{FALSE}, or one value per argument (names may change before
+the first release). For \code{rowSums()}, only the default.}
 
 \item{x}{A remote column.}
 
@@ -36,6 +47,14 @@ the methods, as in base R.}
 
 \item{yes, no, a, b}{Columns (vectors in memory, \code{design_column}s remotely)
 or numbers.}
+
+\item{like}{A column, or a design: the rows of the constant column.}
+
+\item{value}{One number.}
+
+\item{deparse.level}{Not used.}
+
+\item{dims}{For \code{rowSums()}, only the default.}
 }
 \value{
 \code{col_ifelse()}, \code{col_pmin()}, \code{col_pmax()}: a column (a double
@@ -106,7 +125,17 @@ the attributes of \code{test}.
 two columns, or of a column and a number, as \code{\link[=pmin]{pmin()}} and \code{\link[=pmax]{pmax()}}.
 \item \code{col_sums(...)}: the sums of several columns (each over all its
 values, as \code{sum()}), in one query remotely: a named double vector, one
-value per argument, named after the argument (\code{col_sums(n = 1 + 0 * r, rss = r^2)}), or after the variable for a bare name.
+value per argument, named after the argument (\code{col_sums(n = 1 + 0 * r, rss = r^2)}), or after the variable for a bare name. \code{na.rm} can
+differ by argument: \code{col_sums(dev, col_ifelse(cond, 1, 0), na.rm = c(FALSE, TRUE))} counts the rows where \code{cond} is \code{TRUE} (\code{NA} counting as
+\code{FALSE}) in the query that sums \code{dev}.
+\item \code{col_const(like, value)}: a constant column with the rows of \code{like} (a
+column or a design): \code{rep(value, n)} in memory (names may change before
+the first release).
+\item \code{cbind(...)}: columns side by side, one column with several columns
+(numbers recycle), as \code{cbind()} of vectors in memory; \code{x[, j]} selects
+them again.
+\item \code{rowSums(x)}: the sums across the columns of a column with several
+columns, a column.
 \item \code{col_compute(x, name = NULL)} (see \link{design_column}): the column stored
 once in a table, a temporary one or, with a \code{name}, a permanent table
 of the connection, and a column that reads it, for a column that later

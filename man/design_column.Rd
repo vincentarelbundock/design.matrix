@@ -17,9 +17,16 @@ design_column(x, column)
 
 \method{as.matrix}{xtx_column}(x, ...)
 
-col_compute(x, name = NULL, overwrite = FALSE, nm = NULL)
+col_compute(x, name = NULL, overwrite = FALSE, nm = NULL, table = TRUE)
 
-\method{as.data.frame}{xtx_column}(x, row.names = NULL, optional = FALSE, ..., keep = NULL, nm = NULL)
+\method{as.data.frame}{xtx_column}(
+  x,
+  row.names = NULL,
+  optional = FALSE,
+  ...,
+  keep = NULL,
+  nm = NULL
+)
 
 \method{[}{xtx_column}(x, i, j, ..., drop = TRUE)
 
@@ -38,21 +45,25 @@ SQL expression over its columns (\code{DBI::SQL()}).}
 
 \item{...}{Not used.}
 
-\item{row.names, optional}{Not used.}
-
-\item{keep}{Names of columns of the remote data to read with the values
-(for instance a key, to match the rows with other data).}
-
-\item{nm}{Names of the value columns (one per column of \code{x}): of the data
-frame for \code{as.data.frame()}, of the table for \code{col_compute()} with a
-\code{name}.}
-
 \item{name}{For \code{col_compute()}: \code{NULL} (default) for a temporary table,
 or the name of a permanent table to create on the connection (a
 string, quoted as an identifier).}
 
 \item{overwrite}{For \code{col_compute()} with a \code{name}: replace a table of
 that name if it exists (otherwise that is an error).}
+
+\item{nm}{Names of the value columns (one per column of \code{x}): of the data
+frame for \code{as.data.frame()}, of the table for \code{col_compute()} with a
+\code{name}.}
+
+\item{table}{For \code{col_compute()}: \code{TRUE} (default) to store the values in
+a table, \code{FALSE} for a projection (see \emph{Getting values}; not with a
+\code{name}).}
+
+\item{row.names, optional}{Not used.}
+
+\item{keep}{Names of columns of the remote data to read with the values
+(for instance a key, to match the rows with other data).}
 
 \item{i}{Not supported for a remote column (remote rows have no order).}
 
@@ -77,11 +88,11 @@ as they would a vector in memory. So the same code runs on a data frame
 and on a DuckDB table:
 }
 \details{
-\preformatted{eta <- D \%*\% beta                 # vector in memory, design_column remotely
+\if{html}{\out{<div class="sourceCode">}}\preformatted{eta <- D \%*\% beta                 # vector in memory, design_column remotely
 mu  <- exp(eta)
 r   <- design_column(D, "y") - mu
 as.vector(r)                      # the values, in R
-}
+}\if{html}{\out{</div>}}
 }
 \section{Making columns}{
 
@@ -151,6 +162,13 @@ later columns of the design read, so a product made later is a view
 over the table. To match the values with other data outside the
 package, join on a key column of the data (such as \code{id}). In memory
 \code{col_compute()} returns \code{x} (there is no table).
+\code{col_compute(x, table = FALSE)}: the column computed once in a
+projection instead of a table: its expressions become columns of a view
+one level deeper, so that later expressions refer to them instead of
+repeating them (an iterative fit keeps its SQL small this way), with no
+statement run. Columns computed separately this way stand on sibling
+views, which do not combine: compute them together (\code{cbind()} them,
+then \verb{[, j]}). (Names may change before the first release.)
 \item \code{x[, j]}: the columns \code{j} of a column with several columns (as for the
 matrix in memory), for instance of \code{D \%*\% cbind(b1, b2)}. Rows cannot
 be selected: remote rows have no order.
