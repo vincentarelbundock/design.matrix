@@ -47,6 +47,31 @@ D <- design_matrix(~ x + f, d)
 all.equal(coef(design_lm(D, y = d$y)), coef(fit))
 ```
 
+= Fixed effects
+
+A formula `y ~ x | fe1 + fe2` absorbs fixed effects, as `fixest::feols()` does: each fixed effect is a variable, or an interaction `a^b`. The fit never builds the dummies and never demeans the rows. It solves the normal equations from sums over rows: products with the design, sums within the levels of each fixed effect, and crosstabs of the fixed effects. The largest fixed effect is eliminated exactly, and the others are solved densely (up to 3,000 levels) or by conjugate gradients with an incomplete Cholesky preconditioner. Singletons are dropped as `feols()` drops them, and `vcov = ~cl` clusters the standard errors with `feols()`'s small sample corrections. The same code fits remote data (a DuckDB table or Parquet files; see #link("out-of-core.html")[out-of-core data]).
+
+```r
+set.seed(3)
+panel <- data.frame(id = rep(1:200, each = 5), t = rep(1:5, 200),
+                    x = rnorm(1000), f = factor(sample(c("a", "b"), 1000, TRUE)))
+panel$y <- panel$x + (panel$f == "b") + panel$id / 100 + panel$t / 10 + rnorm(1000)
+fe <- design_lm(y ~ x + f | id + t, panel, vcov = ~id)
+summary(fe)
+if (requireNamespace("fixest", quietly = TRUE)) {
+    fx <- fixest::feols(y ~ x + f | id + t, panel, cluster = ~id, fixef.tol = 1e-11, notes = FALSE)
+    print(all.equal(coef(fe), coef(fx)))
+    print(all.equal(unclass(vcov(fe)), unclass(vcov(fx)), check.attributes = FALSE))
+}
+```
+
+`fe$fixef` (or `fixef(fe)` with fixest or nlme loaded) holds the values of the fixed effects, one named vector per fixed effect, and `predict(fe, newdata)` adds them to `X b`: levels absent from the fit give `NA`. `subset`, offsets, `se.fit` and intervals in `predict()`, and clustering by more than one variable are not supported with fixed effects.
+
+```r
+nd <- data.frame(id = c(1, 2, 999), t = c(1, 5, 2), x = 0, f = factor("a", levels = c("a", "b")))
+predict(fe, nd)
+```
+
 = Least squares
 
 Least squares coefficients only need `X'X` and `X'y`, so `qr()` on a design matrix gives them without forming the dense matrix. With weights, use `qr(sqrt(w) * D)` and `sqrt(w) * y`.
