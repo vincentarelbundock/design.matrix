@@ -559,25 +559,22 @@ dmp_quad <- function(x, V, along = list()) {
 }
 
 ## Compressed least squares (see the header); the in-memory method groups
-## identical rows (lm.R), the remote one is one GROUP BY (remote_compress.R).
+## identical rows (lm.R), the remote one is the scan of the SQL engine
+## grouped by the cells of the design (remote_compress.R).
 dmp_patterns <- function(x, z, w = NULL, compress = "auto", keys = NULL) {
     if (inherits(x, "dm_remote")) {
         mode <- if (isTRUE(compress)) TRUE else if (isFALSE(compress)) FALSE else dm_compress_mode()
         ## (extra key columns: more keys of the GROUP BY)
-        nm <- if (!is.null(keys)) paste0("__dm_g", seq_along(keys))
         if (!is.null(keys)) x <- dm_remote_cols(x, keys, "keys")$D
-        pt <- dm_remote_patterns(x, unclass(z)$sql, if (!is.null(w)) unclass(w)$sql, within = TRUE,
-                                 mode = mode, group = if (!is.null(keys)) unclass(keys)$sql)
+        pt <- dm_sql_patterns(x, unclass(z)$sql, if (!is.null(w)) unclass(w)$sql,
+                              keys = if (!is.null(keys)) unclass(keys)$sql, mode = mode)
         if (is.null(pt)) return(NULL)
-        pd <- dm_pattern_design(x, pt$P[dm_compress_keys(x)])
-        k <- pd$keep
-        sw <- pt$sw[k]
-        pos <- which(sw > 0)
-        ws <- sw[pos]
+        pos <- which(pt$sw > 0)
+        ws <- pt$sw[pos]
         if (is.null(w) && all(ws == 1)) ws <- NULL
-        return(list(x = pd$design[pos, ], z = pt$sy[k, 1L][pos] / sw[pos], w = ws,
-                    within = sum(pt$within[k]), rows = sum(pt$n[k]),
-                    keys = if (!is.null(keys)) as.matrix(pt$P[k[pos], nm, drop = FALSE])))
+        return(list(x = dm_dense_design(pt$x[pos, , drop = FALSE]), z = pt$sy[pos] / pt$sw[pos], w = ws,
+                    within = sum(pt$within), rows = sum(pt$n),
+                    keys = if (!is.null(keys)) pt$keys[pos, , drop = FALSE]))
     }
     g <- dmfit_groups(x, compress)
     if (is.null(g)) return(NULL)
