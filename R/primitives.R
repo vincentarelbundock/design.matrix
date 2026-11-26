@@ -206,7 +206,8 @@ dm_rcols_frame <- function(...) {
 ## SQL of an operand (a remote column, or a number)
 dm_rcols_operand <- function(x) {
     if (dm_is_rcols(x)) return(unclass(x)$sql)
-    if (is.logical(x) && length(x) == 1L && !is.na(x)) return(if (x) "TRUE" else "FALSE")
+    if (length(x) == 1L && is.na(x)) return("CAST(NULL AS DOUBLE)")
+    if (is.logical(x) && length(x) == 1L) return(if (x) "TRUE" else "FALSE")
     if (is.numeric(x) && length(x) == 1L) return(dm_sql_double(x))
     stop("Remote columns combine only with numbers and other remote columns.", call. = FALSE)
 }
