@@ -1056,38 +1056,50 @@ dm_fe_na_action <- function(na_act, rows, nall) {
     dropped
 }
 
-## The design_lm object of an FE fit.
-dm_fe_finish <- function(est, cn, pf, lv, clv, nsingle, nall) {
+## The fields of a fit with FE shared by design_lm() and design_glm(), from
+## a fit of dm_fe_core() (`est`), the column names of the design (cn), the
+## parsed formula (pf) and the FE levels (lv): the coefficients named by
+## the columns but the intercept, their unscaled covariance, the FE values
+## named by level, the FE sizes and degrees of freedom (`fields`); the
+## clustered covariance with dimnames (`vcov_cluster`, NULL without
+## clusters) and the fields that describe it (`inference`). Each caller
+## finishes its own inference fields: a clustered LM stores the clustered
+## covariance as fit$vcov, a GLM as fit$vcov_cluster. `named`: dimnames
+## for a covariance of the coefficients.
+dm_fe_fields <- function(est, cn, pf, lv, clv) {
     nm <- cn[est$xcols]
+    named <- function(V) {
+        dimnames(V) <- list(nm, nm)
+        V
+    }
     b <- est$b
     names(b) <- nm
-    sigma2 <- est$rss / est$df.residual
-    V <- est$bread * sigma2
-    dimnames(V) <- list(nm, nm)
-    cu <- est$bread
-    dimnames(cu) <- list(nm, nm)
     fe <- est$fe
     names(fe) <- names(pf$fe)
     names(lv) <- names(pf$fe)
     for (k in seq_along(fe)) names(fe[[k]]) <- dm_fe_labels(lv[[k]])
     G <- est$G
     names(G) <- names(pf$fe)
-    fit <- list(coefficients = b, vcov = V, vcov_type = "iid",
-                sigma = sqrt(sigma2), rss = est$rss, df.residual = est$df.residual,
-                nobs = est$nobs, rank = est$rank, fixef = fe, fe_levels = lv,
-                fe_vars = pf$fe, fe_sizes = G, fe_dof = est$fe_dof,
-                fe_dof_exact = est$fe_dof_exact, nsingletons = nsingle,
-                cov.unscaled = cu, tss = est$tss, tss_within = est$tss_within,
-                compressed = FALSE, patterns = est$nobs, rows = nall, fe_info = est$info,
-                intercept = TRUE)
-    if (!is.null(clv)) {
-        Vc <- est$vcov_cluster
-        dimnames(Vc) <- list(nm, nm)
-        fit$vcov <- Vc
-        fit$vcov_type <- "cluster"
-        fit$cluster <- clv
-        fit$G_cluster <- est$G_cluster
-    }
+    fields <- list(coefficients = b, cov.unscaled = named(est$bread), rank = est$rank, fixef = fe,
+                   fe_levels = lv, fe_vars = pf$fe, fe_sizes = G, fe_dof = est$fe_dof,
+                   fe_dof_exact = est$fe_dof_exact, fe_info = est$info)
+    inference <- if (is.null(clv)) list(vcov_type = "iid")
+                 else list(vcov_type = "cluster", cluster = clv, G_cluster = est$G_cluster)
+    list(fields = fields, named = named, inference = inference,
+         vcov_cluster = if (!is.null(clv)) named(est$vcov_cluster))
+}
+
+## The design_lm object of an FE fit.
+dm_fe_finish <- function(est, cn, pf, lv, clv, nsingle, nall) {
+    sh <- dm_fe_fields(est, cn, pf, lv, clv)
+    sigma2 <- est$rss / est$df.residual
+    fit <- c(sh$fields, list(vcov = sh$named(est$bread * sigma2), sigma = sqrt(sigma2), rss = est$rss,
+                             df.residual = est$df.residual, nobs = est$nobs, nsingletons = nsingle,
+                             tss = est$tss, tss_within = est$tss_within, compressed = FALSE,
+                             patterns = est$nobs, rows = nall, intercept = TRUE))
+    fit[names(sh$inference)] <- sh$inference
+    ## clustered: the covariance of the fit is the clustered one
+    if (!is.null(clv)) fit$vcov <- sh$vcov_cluster
     class(fit) <- c("design_lm_fe", "design_lm")
     fit
 }

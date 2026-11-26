@@ -104,42 +104,16 @@ dm_fe_glm <- function(call, env, formula, family, data, start, control, contrast
     fit <- res$fit
     est <- res$est
     x <- prob$x
-    nm <- colnames(x)[est$xcols]
-    b <- est$b
-    names(b) <- nm
-    fe <- est$fe
-    names(fe) <- names(pf$fe)
-    lv <- prob$levels
-    names(lv) <- names(pf$fe)
-    for (j in seq_along(fe)) names(fe[[j]]) <- dm_fe_labels(lv[[j]])
-    G <- est$G
-    names(G) <- names(pf$fe)
-    cu <- est$bread
-    dimnames(cu) <- list(nm, nm)
-    fit$coefficients <- b
-    fit$rank <- est$rank
-    fit$cov.unscaled <- cu
+    sh <- dm_fe_fields(est, colnames(x), pf, prob$levels, clv)
+    fit[names(sh$fields)] <- sh$fields
     fit$pivot <- fit$R <- NULL
-    fit$fixef <- fe
-    fit$fe_levels <- lv
-    fit$fe_vars <- pf$fe
-    fit$fe_sizes <- G
-    fit$fe_dof <- est$fe_dof
-    fit$fe_dof_exact <- est$fe_dof_exact
     fit$nsingletons <- prob$nsingle
     fit$nperfect <- prob$nperfect
     fit$fixef.rm <- fixef.rm
-    fit$fe_info <- est$info
     fit$fe_iter <- res$fe_iter
-    fit$vcov_type <- "iid"
-    if (!is.null(clv)) {
-        Vc <- est$vcov_cluster
-        dimnames(Vc) <- list(nm, nm)
-        fit$vcov_cluster <- Vc
-        fit$vcov_type <- "cluster"
-        fit$cluster <- clv
-        fit$G_cluster <- est$G_cluster
-    }
+    fit[names(sh$inference)] <- sh$inference
+    ## clustered: kept beside the iid covariance (vcov() chooses)
+    if (!is.null(clv)) fit$vcov_cluster <- sh$vcov_cluster
     ## the rows of the fit: the design (not centered) and its columns
     fit$data <- list(design = x, y = cols$y, weights = cols$w, offset = cols$off, codes = prob$cols$codes)
     fit$solver_fit <- NULL
