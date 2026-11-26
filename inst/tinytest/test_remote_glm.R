@@ -62,6 +62,12 @@ for (eng in c("sql", "chunked")) {
 }
 expect_identical(glm_warnings(design_glm(yb ~ xd + f, binomial, con, table = "d", control = list(maxit = 2)))$warnings,
                  glm_warnings(glm(yb ~ xd + f, binomial, dd, control = list(maxit = 2)))$warnings)
+b1 <- suppressWarnings(glm(yg ~ xd + f, Gamma, dd, control = list(maxit = 1)))
+for (eng in c("sql", "chunked")) for (cp in list("auto", FALSE)) {
+    a1 <- suppressWarnings(design_glm(yg ~ xd + f, Gamma, con, table = "d", engine = eng, compress = cp,
+                                      control = list(maxit = 1)))
+    glm_same(a1, b1, paste("maxit 1", eng, cp))
+}
 expect_error(design_glm(yp ~ x, Gamma, con, sql = "SELECT x, yp - 3 AS yp FROM d"), "non-positive values")
 expect_warning(design_glm(prop ~ xd, binomial, con, sql = "SELECT xd, prop * 0.9 AS prop, five FROM d",
                           weights = "five"), "non-integer")

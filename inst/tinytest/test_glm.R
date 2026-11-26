@@ -40,6 +40,10 @@ w2 <- glm_warnings(glm(yb ~ x + f, binomial, d, control = list(maxit = 2)))$warn
 r2 <- glm_warnings(design_glm(yb ~ x + f, binomial, d, control = list(maxit = 2)))
 expect_identical(r2$warnings, w2)
 expect_false(r2$value$converged)
+# one iteration only: the dispersion uses the working weights of the rows
+b1 <- suppressWarnings(glm(yg ~ xd + f, Gamma, d, control = list(maxit = 1)))
+a1 <- suppressWarnings(design_glm(yg ~ xd + f, Gamma, d, control = list(maxit = 1)))
+glm_same(a1, b1, "maxit 1")
 # initialize's checks and warnings
 expect_error(design_glm(yg - 3 ~ x, Gamma, d), "non-positive values")
 expect_error(design_glm(yp - 1 ~ x, poisson, d), "negative values")

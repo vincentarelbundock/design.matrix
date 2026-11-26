@@ -563,6 +563,9 @@ dmglm_remote_patterns <- function(D, cx, start, control, tol, intercept, mode, f
     if (k$aic == "poisson") aggs <- c(aggs, sprintf("SUM(%s * lgamma(%s + 1)) AS __dm_l", W, Y))
     if (row_start) {
         aggs <- c(aggs, "SUM(__dm_wk) AS __dm_w1", "SUM(__dm_wk * __dm_z) AS __dm_wz1",
+                  ## for the dispersion when only the first iteration runs
+                  sprintf("SUM(__dm_wk * %s) AS __dm_w1y", Y), sprintf("SUM(__dm_wk * %s * %s) AS __dm_w1yy", Y, Y),
+                  "SUM(CASE WHEN __dm_wk = 0 THEN 1 ELSE 0 END) AS __dm_w1zero",
                   sub(" AS dev$", " AS __dm_dev0", dmglm_sql_eval_items(cx)[1L]),
                   sprintf("SUM(CASE WHEN %s AND %s THEN 0 ELSE 1 END) AS __dm_bad0", sf$validmu("__dm_mu"), sf$valideta("__dm_eta")),
                   "SUM(CASE WHEN __dm_w > 0 AND (__dm_var IS NULL OR isnan(__dm_var)) THEN 1 ELSE 0 END) AS __dm_navar",
@@ -654,8 +657,12 @@ dmglm_remote_patterns <- function(D, cx, start, control, tol, intercept, mode, f
     aic <- dmglm_aic(k, cx$ck, r$dev, sums)
     ## dispersion
     pear <- if (identical(st$last, "rows")) {
-        ## (only the first iteration ran: working weights per pattern)
-        list(pearson = NA_real_, zero = FALSE)
+        ## only the first iteration ran: its working weights vary within
+        ## patterns, sum_i w_i (y_i - mu)^2 from their sums
+        me <- family$mu.eta(st$eta)
+        W1 <- num(res$`__dm_w1`)[kp]
+        s <- (num(res$`__dm_w1yy`)[kp] - 2 * mu * num(res$`__dm_w1y`)[kp] + mu^2 * W1) / me^2
+        list(pearson = sum(s[W1 > 0]), zero = sum(num(res$`__dm_w1zero`)) > 0)
     } else {
         me <- family$mu.eta(st$eta)
         w2 <- st$w2

@@ -49,7 +49,14 @@ glm_cases <- list(
     list("inverse.gaussian", yg ~ xd + f, inverse.gaussian()),
     list("quasibinomial", yb ~ x + f, quasibinomial()),
     list("quasipoisson", yp ~ xd + g, quasipoisson()),
-    list("aliased", yb ~ xd + f + xd2, binomial()))
+    list("aliased", yb ~ xd + f + xd2, binomial()),
+    list("poisson sqrt", yp ~ xd + g, poisson("sqrt")),
+    list("poisson identity", yp ~ xd + g, poisson("identity")),
+    list("gaussian inverse", yg ~ xd + g, gaussian("inverse")),
+    list("quasi mu^2 log", yg ~ x + f, quasi(link = "log", variance = "mu^2")),
+    list("quasi mu(1-mu) logit", prop ~ xd + g, quasi(link = "logit", variance = "mu(1-mu)")),
+    list("quasi mu^3 1/mu^2", yg ~ xd + f, quasi(link = "1/mu^2", variance = "mu^3")),
+    list("quasi constant", yg ~ xd + g, quasi()))
 
 glm_ref <- function(cs, d) {
     eval(bquote(glm(.(cs[[2]]), family = .(cs[[3]]), data = d,
