@@ -359,12 +359,7 @@ dmglm_cf <- function(k) {
     dev <- switch(k$dev,
         gaussian = function(y, m, w) w * ((y - m)^2),
         binomial = dmc_binomial_dev,
-        poisson = function(y, m, w) {
-            ## (in memory one pass in C)
-            if (dmglm_mem_working(list(y, m, w), max(length(y), length(m), length(w))))
-                return(.Call(C_dm_poisson_dev, y, m, w))
-            dmc_ifelse(y > 0, 2 * w * (y * log(y / m) - (y - m)), 2 * m * w)
-        },
+        poisson = dmc_poisson_dev,
         gamma = function(y, m, w) -2 * w * (log(dmc_ifelse(y == 0, 1, y / m)) - (y - m) / m),
         qgamma = function(y, m, w) dmc_pmax(-2 * w * (log(dmc_ifelse(y == 0, 1, y) / m) - (y - m) / m), 0),
         invgauss = function(y, m, w) w * ((y - m)^2) / (y * m^2))
@@ -394,9 +389,9 @@ dmglm_cf <- function(k) {
 }
 
 ## d mu / d eta at eta, mu = linkinv(eta): for the log link mu itself (the
-## same expression; in memory, no second pass).
+## same expression, not computed twice).
 dmglm_mu_eta <- function(cf, eta, mu) {
-    if (isTRUE(cf$me_is_mu) && !dm_is_rcols(eta) && !dm_is_rcols(mu)) return(mu)
+    if (isTRUE(cf$me_is_mu)) return(mu)
     cf$mu.eta(eta)
 }
 
@@ -641,27 +636,9 @@ dmglm_working <- function(u, eta, mu, cf) {
     W <- u$W
     v <- cf$variance(mu)
     me <- dmglm_mu_eta(cf, eta, mu)
-    if (dmglm_mem_working(list(W, eta, mu, u$y, u$off, v, me), length(eta))) {
-        ## in memory: the same values and counts in one pass (C)
-        r <- .Call(C_dm_glm_working, W, eta, mu, u$y, u$off, v, me)
-        return(dmglm_working_checks(r[[3L]], r[[1L]], r[[2L]]))
-    }
-    good <- (W > 0) & (me != 0)
-    wz <- dmc_freeze(dmc_cbind(dmc_ifelse(good, W * me * me / v, 0),
-                                 dmc_ifelse(good, (eta - u$off) + (u$y - mu) / me, 0)),
-                     table = isTRUE(u$materialize))
-    w2 <- dmc_col(wz, 1L)
-    z <- dmc_col(wz, 2L)
-    s <- dmc_sums(dmc_count((W > 0) & !dmc_notnan(v)), dmc_count((W > 0) & v == 0),
-                               dmc_count((W > 0) & !dmc_notnan(me)), dmc_count(good),
-                               dmc_count(dmc_is_finite(w2) & dmc_is_finite(z), negate = TRUE))
-    dmglm_working_checks(s, w2, z)
-}
-
-## Can the working columns be computed by the kernel (in memory, plain
-## double vectors of length 1 or n)?
-dmglm_mem_working <- function(cols, n) {
-    all(vapply(cols, function(v) is.double(v) && is.null(dim(v)) && length(v) %in% c(1L, n), NA)) && n > 0L
+    ## (primitives_fused.R: in memory one pass in C)
+    r <- dmc_irls_working(W, eta, mu, u$y, u$off, v, me, table = isTRUE(u$materialize))
+    dmglm_working_checks(r[[3L]], r[[1L]], r[[2L]])
 }
 
 ## The checks of dmglm_working() from its counts s.
@@ -702,8 +679,8 @@ dmglm_units <- function(u, cf, k, first = NULL, eta = NULL, mu = NULL) {
         },
         eval = function(beta) {
             eta <- u$lin(beta)
-            ## (in memory, no pass to add a zero offset)
-            if (dm_is_rcols(eta) || !identical(u$off, 0)) eta <- eta + u$off
+            ## (no pass to add a zero offset)
+            if (!identical(u$off, 0)) eta <- eta + u$off
             mu <- dmc_freeze(cf$linkinv(eta))
             v <- cf$valid(eta, mu)
             ext <- if (k$family == "binomial") dmc_count(mu > 1 - eps | mu < eps)
@@ -823,15 +800,10 @@ dmglm_final <- function(lin, cols, cf, k, ck, beta, old, eta0, dev, intercept) {
         eta <- dmc_col(P, 1L) + off
         eta_old <- dmc_col(P, 2L) + off
     }
-    ## (frozen together: columns of one frame; in memory, no need)
-    if (dm_is_rcols(eta)) {
-        mm <- dmc_freeze(dmc_cbind(cf$linkinv(eta), cf$linkinv(eta_old)))
-        mu <- dmc_col(mm, 1L)
-        mu0 <- dmc_col(mm, 2L)
-    } else {
-        mu <- cf$linkinv(eta)
-        mu0 <- cf$linkinv(eta_old)
-    }
+    ## (frozen together: columns of one frame)
+    mm <- dmc_freeze_all(cf$linkinv(eta), cf$linkinv(eta_old))
+    mu <- mm[[1L]]
+    mu0 <- mm[[2L]]
     me <- dmglm_mu_eta(cf, eta, mu)
     me0 <- dmglm_mu_eta(cf, eta_old, mu0)
     good0 <- (w > 0) & (me0 != 0)
@@ -841,16 +813,7 @@ dmglm_final <- function(lin, cols, cf, k, ck, beta, old, eta0, dev, intercept) {
     ll <- switch(k$aic,
         binomial = {
             m <- if (ck$maxn > 0) cols$n else w
-            if (dmglm_mem_working(list(m, y, w, mu), max(length(m), length(y), length(w), length(mu)))) {
-                ## (in memory one pass in C)
-                .Call(C_dm_binomial_ll, m, y, w, mu)
-            } else {
-                kk <- dmc_round(m * y)
-                mm <- dmc_round(m)
-                dmc_ifelse(m > 0, w / m, 0) *
-                    (dmc_lgamma(mm + 1) - dmc_lgamma(kk + 1) - dmc_lgamma(mm - kk + 1) +
-                     dmc_ifelse(kk > 0, kk * log(mu), 0) + dmc_ifelse(mm - kk > 0, (mm - kk) * log(1 - mu), 0))
-            }
+            dmc_binomial_ll(m, y, w, mu)
         },
         poisson = w * dmc_ifelse(y == 0, -mu, y * log(mu) - mu - dmc_lgamma(y + 1)),
         Gamma = {
