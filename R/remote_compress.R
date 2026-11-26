@@ -72,7 +72,12 @@ dm_compress_worth <- function(D, keys, n) {
 
 ## Input columns of the design (not those of the response alone).
 dm_compress_keys <- function(D) {
-    pv <- dm_terms_vars(D$plan$terms)$names
+    tt <- D$plan$terms
+    pv <- dm_terms_vars(tt)$names
+    ## offset() terms are not in the design (the fit subtracts them from
+    ## the response)
+    off <- attr(tt, "offset")
+    if (length(off)) pv <- pv[-off]
     unique(unlist(lapply(D$vars[pv], function(v) v$inputs)))
 }
 
@@ -172,6 +177,14 @@ dm_match_rows <- function(a, b) {
 dm_pattern_design <- function(D, P) {
     plan <- D$plan
     if (!ncol(P)) P <- structure(list(), row.names = c(NA_integer_, -max(1L, nrow(P))), class = "data.frame")
+    ## inputs of offset() terms, which are not keys: the design does not
+    ## use their values
+    tt <- plan$terms
+    off <- attr(tt, "offset")
+    if (length(off)) {
+        for (v in D$vars[dm_terms_vars(tt)$names[off]])
+            for (col in setdiff(v$inputs, names(P))) P[[col]] <- 0
+    }
     mf <- design_frame(plan$terms, P, xlev = plan$xlevels, na.action = stats::na.omit)
     if (!is.null(plan$data_classes)) stats::.checkMFClasses(plan$data_classes, mf)
     design <- design_matrix(plan$terms, mf, contrasts.arg = plan$contrasts)

@@ -78,11 +78,13 @@
 #'   With a design matrix, `weights` and `offset` are numeric vectors with one
 #'   value per row, and `data`, `subset`, `na.action` and `contrasts` do not
 #'   apply. `data` can also be remote (a DuckDB connection with `table` or
-#'   `sql`, or Parquet paths; see [design_remote]); `weights` then names a
-#'   column, as with a remote design.
+#'   `sql`, or Parquet paths; see [design_remote]); `weights`, `offset` and
+#'   `subset` are then columns, `DBI::SQL()` or R expressions with a SQL
+#'   translation, as `y`, `weights` and `offset` with a remote design.
 #' @param y With a design matrix as first argument, the numeric response,
-#'   one value per row. With a remote design (see [design_remote]), the name
-#'   of the response column (default: the response of its formula).
+#'   one value per row. With a remote design (see [design_remote]), a
+#'   column, `DBI::SQL()` or R expression over its data (default: the
+#'   response of its formula).
 #' @param compress `"auto"`, `TRUE` or `FALSE`: fit on the sufficient
 #'   statistics of rows that share a design pattern (see Details).
 #' @param tol In `design_lm()`, the tolerance for
@@ -127,16 +129,14 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
         if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
         w <- if (missing(weights)) NULL else weights
         if (inherits(formula, "dm_remote")) {
-            ## a remote design (see remote_lm.R): `y` and `weights` name columns
-            if (!missing(offset)) stop("Offsets are not supported for remote data.", call. = FALSE)
+            ## a remote design (see remote_lm.R): `y`, `weights` and `offset`
+            ## are columns, DBI::SQL() or R expressions over the columns
             if (!is.null(formula$scale))
                 stop("Fit an unscaled remote design, with `weights` naming a column.", call. = FALSE)
-            if (!is.null(w)) dm_remote_column(formula, w, "weights")
-            yy <- dm_remote_y(formula, y)
-            if (is.null(yy) || length(yy$cols) != 1L)
-                stop("With a remote design, give `y`, the name of one column (or use a design with a response).",
-                     call. = FALSE)
-            fit <- dm_remote_lm_fit(formula, yy, w, compress, tol)
+            dmfit_check_compress(compress)
+            fit <- dm_remote_lm_design(formula, substitute(y), if (missing(weights)) NULL else substitute(weights),
+                                       if (missing(offset)) NULL else substitute(offset), compress, tol,
+                                       parent.frame())
         } else {
             fit <- dmfit_design(formula, y, w, if (missing(offset)) NULL else offset, compress, tol)
         }
@@ -150,15 +150,12 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
     cl <- match.call()
     ## remote data (see remote_lm.R)
     if (!missing(data) && dm_is_remote_source(data)) {
-        if (!missing(subset)) stop("`subset` is not supported for remote data.", call. = FALSE)
-        if (!missing(offset)) stop("Offsets are not supported for remote data.", call. = FALSE)
-        if (!missing(na.action) && dm_remote_na(na.action) != "omit")
-            stop("For remote data, `na.action` must be na.omit.", call. = FALSE)
-        w <- if (missing(weights)) NULL else substitute(weights)
-        if (is.name(w)) w <- as.character(w)
-        if (!is.null(w) && !checkmate::test_string(w))
-            stop("For remote data, `weights` must name a column.", call. = FALSE)
-        return(dm_remote_lm(formula, data, w, contrasts, compress, tol, cl, list(...)))
+        return(dm_remote_lm(formula, data,
+                            weights = if (missing(weights)) NULL else substitute(weights),
+                            offset = if (missing(offset)) NULL else substitute(offset),
+                            subset = if (missing(subset)) NULL else substitute(subset),
+                            na.action = if (missing(na.action)) NULL else na.action,
+                            contrasts, compress, tol, cl, list(...), parent.frame()))
     }
     if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
     ## the model frame, as lm() builds it
@@ -499,7 +496,8 @@ model.frame.design_lm <- function(formula, ...) {
 residuals.design_lm <- function(object, ...) {
     ## a remote fit: the remote design with .fitted and .resid columns
     if (isTRUE(object$remote))
-        return(dm_remote_residuals(object$remote_design, dmfit_beta(object), object$remote_y))
+        return(dm_remote_residuals(object$remote_design, dmfit_beta(object), z = object$remote_z,
+                                   off = object$remote_offset))
     dat <- dmfit_data(object, "residuals()")
     D <- dat$design
     ## (y - offset) - X b, in the order of the fit
@@ -511,6 +509,8 @@ residuals.design_lm <- function(object, ...) {
 
 #' @export
 fitted.design_lm <- function(object, ...) {
+    ## a remote fit: a table with .fitted and .resid
+    if (isTRUE(object$remote)) return(dm_remote_lm_table(object, resid = TRUE))
     dat <- dmfit_data(object, "fitted()")
     D <- dat$design
     f <- dmfit_linpred(object, D)
@@ -541,17 +541,19 @@ predict.design_lm <- function(object, newdata, se.fit = FALSE,
     checkmate::assert_flag(se.fit)
     checkmate::assert_number(level, lower = 0, upper = 1)
     no_data <- missing(newdata) || is.null(newdata)
+    ## a remote fit: a table of predictions on its rows
+    if (no_data && isTRUE(object$remote))
+        return(dm_remote_lm_table(object, se.fit = se.fit, interval = interval, level = level))
     if (no_data) {
         dat <- dmfit_data(object, "predict() without `newdata`")
         D <- dat$design
         off <- dat$offset
         na_act <- object$na.action
     } else {
-        if (dm_is_remote_source(newdata)) {
-            if (se.fit || interval != "none")
-                stop("For remote data, predict() gives the fit only (no `se.fit` or intervals).", call. = FALSE)
-            return(dm_remote_lm_predict(object, newdata, na.action, list(...)))
-        }
+        if (dm_is_remote_source(newdata))
+            return(dm_remote_lm_table(object, newdata, na.action, list(...), se.fit = se.fit,
+                                      interval = interval, level = level, rankdeficient = rankdeficient,
+                                      tol = tol))
         if (is.null(object$spec))
             stop("This design cannot be applied to new data.", call. = FALSE)
         D <- design_matrix(object$spec, newdata, na.action = na.action)

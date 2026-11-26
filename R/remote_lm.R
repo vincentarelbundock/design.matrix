@@ -23,23 +23,37 @@
 
 #' @name design_remote
 #' @section Linear models:
-#' [design_lm()] accepts remote data like [design_matrix()]:
-#' `design_lm(y ~ x + f, con, table = "flights", weights = "w")`, with
-#' `weights` the name of a column (a string, or a bare name), and a remote
-#' design: `design_lm(D, y = "col", weights = "w")`. With few design
-#' patterns, the fit is compressed (see *Compression*): coefficients,
-#' covariance, residual standard error and degrees of freedom are those of
-#' [lm()] on the same rows, up to rounding. Otherwise it is computed from
-#' `X'WX`, `X'Wy` and `y'Wy` with [lm()]'s column selection; numeric
-#' variables are centered when that is an exact transform of the design,
-#' and the accuracy is that of the normal equations on the centered design.
-#' The response must have a SQL translation; `subset` and offsets are not
-#' supported. `predict(fit, newdata = con, table = ...)` returns the name of
-#' a temporary view or table of predictions, as `D %*% beta`; standard
-#' errors and intervals are not available there. `residuals(fit)` returns
-#' the remote design with two more columns, `.fitted` and `.resid`, which
-#' can scale its rows: for heteroskedasticity-consistent and clustered
-#' standard errors,
+#' [design_lm()] works on remote data as on a data frame:
+#' `design_lm(y ~ x + f, con, table = "flights", weights = w, subset = year > 2000)`,
+#' or on a remote design: `design_lm(D, y = "col", weights = "w")`.
+#' `weights`, `offset`, `subset` and `y` are column names (strings or bare
+#' names), `DBI::SQL()` expressions, or R expressions with a SQL
+#' translation (arithmetic as for the SQL engine; for `subset`, also
+#' comparisons, `&`, `|`, `!`, `%in%` with constants and `is.na()`).
+#' `offset()` terms in the formula are supported as well. `na.action` can
+#' be [na.omit()] (default), [na.exclude()], [na.fail()] or [na.pass()],
+#' with the results or errors of [lm()].
+#'
+#' With few design patterns, the fit is compressed (see *Compression*);
+#' otherwise it is computed from `X'WX`, `X'Wy` and `y'Wy` with [lm()]'s
+#' column selection, numeric variables centered when that is an exact
+#' transform of the design. Coefficients, covariance, residual standard
+#' error, degrees of freedom, `logLik()`, `AIC()`, `BIC()` and `summary()`
+#' are those of [lm()] on the same rows, up to rounding.
+#'
+#' Results that have one value per row are tables in the database (names of
+#' temporary views, of class `dm_remote_table`, with all the columns of the
+#' remote data): `fitted(fit)` (columns `.fitted` and `.resid`; with
+#' `na.exclude`, the rows with missing values too, with `NULL`), and
+#' `predict(fit)` or `predict(fit, newdata = con, table = ...)` (column
+#' `.fitted`; with `se.fit = TRUE`, `.se.fit`, and the attributes `df` and
+#' `residual.scale`; with intervals, `.lwr` and `.upr`; for a rank-deficient
+#' fit, `.nonestim`, the non-estimable cases flagged by `rankdeficient` as in
+#' [stats::predict.lm()], with its warnings). Standard errors, intervals and
+#' non-estimability are computed in batches of rows; the fit alone in SQL.
+#' `residuals(fit)` returns the remote design of the fit with two more
+#' columns, `.fitted` and `.resid`, which can scale its rows: for
+#' heteroskedasticity-consistent and clustered standard errors,
 #' ```
 #' R <- residuals(fit)
 #' meat_hc1 <- crossprod(R, DBI::SQL('".resid" * ".resid"') * R)
@@ -47,16 +61,72 @@
 #' meat_cl <- crossprod(scores)
 #' ```
 #' (with `bread <- vcov(fit) / sigma(fit)^2`, the HC1 covariance is
-#' `n / (n - k) * bread %*% meat_hc1 %*% bread`).
+#' `n / (n - k) * bread %*% meat_hc1 %*% bread`). The response, offsets,
+#' weights and subset must have a SQL translation; `model.frame()` is not
+#' available for a remote fit (`model` is ignored).
 NULL
 
-## design_lm(formula, <remote>, ...): `weights` is a column name or NULL.
-dm_remote_lm <- function(formula, source, weights, contrasts, compress, tol, call, dots) {
-    if (length(attr(stats::terms(formula), "offset")))
-        stop("Offsets are not supported for remote data.", call. = FALSE)
-    D <- dm_remote(formula, source, contrasts, NULL, dots, weights = weights, drop_unused = TRUE)
+## na.action of a remote fit: "omit", "exclude", "fail" or "pass".
+dm_remote_lm_na <- function(na.action) {
+    if (is.null(na.action)) return("omit")
+    if (is.character(na.action)) na.action <- get(na.action, mode = "function")
+    for (nm in c("omit", "exclude", "fail", "pass"))
+        if (identical(na.action, get(paste0("na.", nm), envir = asNamespace("stats")))) return(nm)
+    stop("For remote data, `na.action` must be na.omit, na.exclude, na.fail or na.pass.", call. = FALSE)
+}
+
+## SQL of the offsets of a remote design: offset() terms of its plan, and
+## the `offset` argument (the "(offset)" variable). NULL without offsets.
+dm_remote_offset_sql <- function(D) {
+    tt <- D$plan$terms
+    nms <- dm_terms_vars(tt)$names[attr(tt, "offset")]
+    nms <- c(nms, intersect("(offset)", names(D$vars)))
+    if (!length(nms)) return(NULL)
+    sqls <- vapply(D$vars[nms], function(v) {
+        if (v$kind != "numeric")
+            stop(sprintf("The offset `%s` has no SQL translation.", v$name), call. = FALSE)
+        v$sql
+    }, "")
+    paste(sprintf("(%s)", sqls), collapse = " + ")
+}
+
+## design_lm(formula, <remote data>, ...). `weights`, `offset` and `subset`
+## are unevaluated arguments (see dm_resolve_arg()), resolved in `env`.
+dm_remote_lm <- function(formula, source, weights, offset, subset, na.action, contrasts,
+                         compress, tol, call, dots, env) {
+    na <- dm_remote_lm_na(na.action)
+    D <- dm_remote(formula, source, contrasts, NULL, dots, weights = weights, drop_unused = TRUE,
+                   subset = subset, offset = offset, env = env)
     if (is.null(D$response)) stop("The formula has no response.", call. = FALSE)
-    fit <- dm_remote_lm_fit(D, list(cols = D$response, response = TRUE), weights, compress, tol)
+    ## rows dropped for missing values: na.fail and na.pass refuse them
+    if (na %in% c("fail", "pass")) {
+        total <- as.numeric(dm_query(D, sprintf("SELECT COUNT(*) AS n FROM (%s) AS s", D$src$select))$n)
+        if (total > D$n) {
+            if (na == "fail") stop("missing values in object", call. = FALSE)
+            ## na.pass: the error of the fit on rows with missing values
+            bad <- function(v) {
+                if (is.null(v) || v$kind != "numeric") return(FALSE)
+                as.numeric(dm_query(D, sprintf("SELECT COUNT(*) AS n FROM (%s) AS s WHERE NOT COALESCE(%s, FALSE)",
+                                               D$src$select, dm_remote_var_ok(D, v)))$n) > 0
+            }
+            offs <- dm_terms_vars(D$plan$terms)$names[attr(D$plan$terms, "offset")]
+            if (bad(D$vars[[D$response]]) || any(vapply(D$vars[c(offs, intersect("(offset)", names(D$vars)))], bad, NA)))
+                stop("NA/NaN/Inf in 'y'", call. = FALSE)
+            if (bad(D$vars[["(weights)"]])) stop("missing or negative weights not allowed", call. = FALSE)
+            stop("NA/NaN/Inf in 'x'", call. = FALSE)
+        }
+    }
+    v <- D$vars[[D$response]]
+    if (v$kind != "numeric")
+        stop("The response of a remote fit must be a numeric variable with a SQL translation.", call. = FALSE)
+    off <- dm_remote_offset_sql(D)
+    z <- if (is.null(off)) v$sql else sprintf("(%s) - (%s)", v$sql, off)
+    w <- D$vars[["(weights)"]]$sql
+    fit <- dm_remote_lm_fit(D, z, w, compress, tol)
+    fit$remote_na <- na
+    fit$remote_offset <- off
+    fit$remote_offset_arg <- offset
+    fit$remote_env <- env
     fit$call <- call
     fit$terms <- D$terms_full
     fit$contrasts <- D$plan$contrasts
@@ -64,19 +134,40 @@ dm_remote_lm <- function(formula, source, weights, contrasts, compress, tol, cal
     fit
 }
 
-## The fit of a remote design, response yy (dm_remote_y()) and weights (a
-## column name or NULL).
-dm_remote_lm_fit <- function(D, yy, weights, compress = "auto", tol = 1e-07) {
+## design_lm(<remote design>, y = , weights = , offset = ): unevaluated
+## arguments resolved in `env` against the columns of the design's data.
+dm_remote_lm_design <- function(D, y, weights, offset, compress, tol, env) {
+    types <- D$src$types
+    con <- dm_con(D)
+    if (is.null(y)) {
+        if (is.null(D$response))
+            stop("With a remote design, give `y`, the name of one column (or use a design with a response).",
+                 call. = FALSE)
+        v <- D$vars[[D$response]]
+        if (v$kind != "numeric")
+            stop("The response of a remote fit must be a numeric variable with a SQL translation.", call. = FALSE)
+        ysql <- v$sql
+    } else {
+        ysql <- dm_resolve_arg(y, env, types, con, "y")$sql
+    }
+    o <- dm_resolve_arg(offset, env, types, con, "offset")
+    w <- dm_resolve_arg(weights, env, types, con, "weights")
+    z <- if (is.null(o)) ysql else sprintf("(%s) - (%s)", ysql, o$sql)
+    fit <- dm_remote_lm_fit(D, z, w$sql, compress, tol)
+    fit$remote_na <- "omit"
+    fit$remote_offset <- o$sql
+    fit
+}
+
+## The fit of a remote design on z (the response minus offsets, SQL over
+## `s`) with weights w (SQL over `s`, or NULL).
+dm_remote_lm_fit <- function(D, z, w, compress = "auto", tol = 1e-07) {
     dmfit_check_compress(compress)
-    ys <- dm_compress_ys(D, yy)
-    if (is.null(ys) || length(ys) != 1L)
-        stop("The response of a remote fit must be one numeric variable with a SQL translation.", call. = FALSE)
-    w <- if (is.null(weights)) NULL else sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, weights))
     intercept <- attr(D$plan$terms, "intercept") > 0L
 
     ## lm()'s checks, in SQL
     items <- c("COUNT(*) AS n",
-               sprintf("SUM(CASE WHEN (%s) IS NULL OR isnan(%s) OR isinf(%s) THEN 1 ELSE 0 END) AS bad_y", ys, ys, ys))
+               sprintf("SUM(CASE WHEN (%s) IS NULL OR isnan(%s) OR isinf(%s) THEN 1 ELSE 0 END) AS bad_y", z, z, z))
     if (!is.null(w)) {
         items <- c(items,
                    sprintf("SUM(CASE WHEN (%s) IS NULL OR isnan(%s) OR %s < 0 THEN 1 ELSE 0 END) AS bad_w", w, w, w),
@@ -96,7 +187,7 @@ dm_remote_lm_fit <- function(D, yy, weights, compress = "auto", tol = 1e-07) {
     }
 
     mode <- if (isTRUE(compress)) TRUE else if (isFALSE(compress)) FALSE else dm_compress_mode()
-    pt <- dm_remote_patterns(D, ys, w, within = TRUE, mode = mode)
+    pt <- dm_remote_patterns(D, z, w, within = TRUE, mode = mode)
     if (!is.null(pt)) {
         pd <- dm_pattern_design(D, pt$P[dm_compress_keys(D)])
         k <- pd$keep
@@ -114,7 +205,9 @@ dm_remote_lm_fit <- function(D, yy, weights, compress = "auto", tol = 1e-07) {
         out$patterns <- length(pos)
         out$method <- "patterns"
     } else {
-        out <- dm_remote_lm_moments(D, yy, weights, tol, intercept)
+        De <- dm_remote_extend(D, c(`__dm_z` = z, if (!is.null(w)) c(`__dm_w` = w)), "y")
+        out <- dm_remote_lm_moments(De, list(cols = "__dm_z", response = FALSE),
+                                    if (is.null(w)) NULL else "__dm_w", tol, intercept)
         rows <- out$n
         nobs <- if (is.null(w)) rows else as.numeric(ck$nz)
         sumlogw <- if (is.null(w)) 0 else as.numeric(ck$slw)
@@ -133,7 +226,8 @@ dm_remote_lm_fit <- function(D, yy, weights, compress = "auto", tol = 1e-07) {
     out$spec <- D$plan
     out$remote <- TRUE
     out$remote_design <- D
-    out$remote_y <- if (yy$response) NULL else yy$cols
+    out$remote_z <- z
+    out$remote_w <- w
     D$cache$n <- rows
     class(out) <- "design_lm"
     out
@@ -344,15 +438,134 @@ dm_uncenter <- function(fit, Tm) {
     fit
 }
 
-## predict(fit, newdata = <remote>, ...): the linear predictor written to the
-## database. `...` holds the source arguments (table, sql, engine,
-## chunk_size).
-dm_remote_lm_predict <- function(object, newdata, na.action, dots) {
-    if (is.null(object$spec)) stop("This design cannot be applied to new data.", call. = FALSE)
-    if (!is.null(object$offset_call) || length(attr(object$terms, "offset")))
-        stop("Offsets are not supported for remote data.", call. = FALSE)
-    D <- do.call(design_matrix, c(list(object$spec, newdata, na.action = na.action), dots))
-    if (object$rank < length(object$coefficients))
+## The offsets of new remote data D for a remote or in-memory fit: offset()
+## terms of the plan and the `offset` argument of the fit, resolved
+## against the columns of D (SQL), or NULL.
+dm_remote_new_offset <- function(object, D) {
+    off <- tryCatch(dm_remote_offset_sql(D), error = function(e) stop(conditionMessage(e), call. = FALSE))
+    arg <- if (isTRUE(object$remote)) object$remote_offset_arg else object$offset_call
+    if (!is.null(arg)) {
+        env <- if (isTRUE(object$remote)) object$remote_env else environment(object$terms)
+        a <- dm_resolve_arg(arg, env %||% globalenv(), D$src$types, dm_con(D), "offset")
+        off <- if (is.null(off)) a$sql else sprintf("%s + (%s)", off, a$sql)
+    }
+    off
+}
+
+## Fitted values and residuals of a remote fit, or predictions on remote
+## data, as a table: the columns of the remote data, `.fitted` (with the
+## offset), and `.resid` (training rows, with `resid = TRUE`), `.se.fit`,
+## `.lwr`, `.upr` and `.nonestim` when asked. With na.exclude, the training
+## rows with missing values are kept, with NULL. Standard errors, intervals
+## and non-estimability are computed in batches (the chunked engine's
+## reader), the rest in SQL when the design's engine is SQL.
+dm_remote_lm_table <- function(object, newdata = NULL, na.action = stats::na.pass, dots = list(),
+                               resid = FALSE, se.fit = FALSE, interval = "none", level = 0.95,
+                               rankdeficient = "warnif", tol = 1e-06) {
+    beta <- dmfit_beta(object)
+    training <- is.null(newdata)
+    if (training) {
+        if (!isTRUE(object$remote)) stop("This fit was not computed on remote data.", call. = FALSE)
+        D <- object$remote_design
+        off <- object$remote_offset
+        z <- object$remote_z
+        w <- object$remote_w
+    } else {
+        if (is.null(object$spec)) stop("This design cannot be applied to new data.", call. = FALSE)
+        D <- do.call(design_matrix, c(list(object$spec, newdata, na.action = na.action), dots))
+        off <- dm_remote_new_offset(object, D)
+        z <- w <- NULL
+    }
+    D <- dm_remote_unscaled(D)
+    srccols <- names(D$src$types)
+    helpers <- c(`__dm_off` = off, `__dm_z` = z, `__dm_w` = w)
+    if (length(helpers)) D <- dm_remote_extend(D, helpers, "offset")
+    rankdef <- !training && object$rank < length(object$coefficients)
+    if (rankdef && rankdeficient == "simple")
         warning("prediction from rank-deficient fit; consider predict(., rankdeficient=\"NA\")", call. = FALSE)
-    dm_remote_predict(D, dmfit_beta(object))
+    batch <- se.fit || interval != "none" || (rankdef && rankdeficient != "simple")
+    has <- function(h) h %in% names(helpers)
+    if (!batch) {
+        v <- dm_remote_predict(D, beta)
+        items <- c(sprintf("%s AS \".fitted\"", if (has("__dm_off")) "\".fitted\" + \"__dm_off\"" else "\".fitted\""),
+                   if (resid) "\"__dm_z\" - \".fitted\" AS \".resid\"")
+        sel <- sprintf("SELECT %s FROM %s", paste(c(dm_qi(D, srccols), items), collapse = ", "), dm_qi(D, unclass(v)[1L]))
+    } else {
+        res_var <- object$sigma^2
+        V <- dmfit_vcov(object, 1)
+        V[is.na(V)] <- 0
+        tq <- stats::qt((1 - level) / 2, object$df.residual)
+        nonest_n <- 0
+        if (interval == "prediction") {
+            if (training) {
+                warning("predictions on current data refer to _future_ responses\n", call. = FALSE)
+                if (!is.null(w))
+                    warning("assuming prediction variance inversely proportional to weights used for fitting\n",
+                            call. = FALSE)
+            } else if (object$weighted) {
+                warning("Assuming constant prediction variance even though model fit is weighted\n", call. = FALSE)
+            }
+        }
+        out <- dm_tmp_name("dm_pred")
+        created <- FALSE
+        con <- dm_con(D)
+        dm_chunks(D, unique(c(srccols, names(helpers), dm_remote_inputs(D))), function(chunk) {
+            cd <- dm_chunk_design(D, chunk)
+            X <- cd$design
+            k <- cd$keep
+            xb <- dmfit_linpred(object, X)
+            fit <- if (has("__dm_off")) xb + chunk$`__dm_off`[k] else xb
+            res <- chunk[k, srccols, drop = FALSE]
+            if (rankdef && rankdeficient != "simple") {
+                ne <- seq_along(k) %in% dmfit_nonestimable(object, X, tol)
+                nonest_n <<- nonest_n + sum(ne)
+                if (startsWith(rankdeficient, "NA")) fit[ne] <- NA else res$.nonestim <- ne
+            }
+            res$.fitted <- fit
+            if (resid) res$.resid <- chunk$`__dm_z`[k] - xb
+            if (se.fit || interval != "none") {
+                se <- sqrt((if (ncol(X)) quadratic_diagonal(X, V) else rep(0, length(k))) * res_var)
+                if (se.fit) res$.se.fit <- se
+                if (interval != "none") {
+                    pv <- if (interval == "prediction" && training && !is.null(w)) res_var / chunk$`__dm_w`[k] else res_var
+                    hw <- tq * if (interval == "confidence") se else sqrt(se^2 + pv)
+                    res$.lwr <- fit + hw
+                    res$.upr <- fit - hw
+                }
+            }
+            attr(res, "row.names") <- c(NA_integer_, -length(k))
+            if (!created) {
+                DBI::dbWriteTable(con, out, res, temporary = TRUE)
+                created <<- TRUE
+            } else {
+                DBI::dbAppendTable(con, out, res)
+            }
+        })
+        if (!created) {
+            res <- D$src$proto[srccols]
+            res$.fitted <- numeric()
+            DBI::dbWriteTable(con, out, res, temporary = TRUE)
+        }
+        if (rankdef && nonest_n > 0) {
+            if (rankdeficient == "warnif")
+                warning("prediction from rank-deficient fit; attr(*, \"non-estim\") has doubtful cases", call. = FALSE)
+            if (rankdeficient == "NAwarn")
+                warning("prediction from rank-deficient fit: NAs produced for non-estimable cases", call. = FALSE)
+        }
+        sel <- sprintf("SELECT * FROM %s", dm_qi(D, out))
+    }
+    ## na.exclude: the training rows with missing values, with NULL
+    if (training && identical(object$remote_na, "exclude")) {
+        D0 <- object$remote_design
+        sel <- sprintf("%s UNION ALL BY NAME SELECT s.* FROM (%s) AS s WHERE NOT COALESCE(%s, FALSE)",
+                       sel, D0$src$select, D0$filter)
+    }
+    name <- dm_tmp_name("dm_pred")
+    dm_execute(D, sprintf("CREATE TEMPORARY VIEW %s AS %s", dm_qi(D, name), sel))
+    out <- structure(name, class = "dm_remote_table", connection = dm_con(D), holder = D$src$holder)
+    if (se.fit) {
+        attr(out, "df") <- object$df.residual
+        attr(out, "residual.scale") <- object$sigma
+    }
+    out
 }

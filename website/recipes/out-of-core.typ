@@ -95,7 +95,13 @@ fit_z <- design_lm(y ~ factor(z) * f, con, table = "d")
 fit_z
 ```
 
-`predict(fit, newdata = con, table = )` scores in the database and returns the name of a view, as `%*%`.
+`weights`, `offset` and `subset` are columns, `DBI::SQL()` expressions or R expressions with a SQL translation, `offset()` terms work, and `na.action` can be `na.omit`, `na.exclude`, `na.fail` or `na.pass`, as for `lm()`. Results with one value per row are tables in the database: `fitted(fit)` (with `.fitted` and `.resid`), and `predict(fit, newdata = con, table = )`, with `se.fit`, confidence and prediction intervals, and the non-estimable cases of a rank-deficient fit, as `predict.lm()`.
+
+```r
+fit_s <- design_lm(y ~ x + f, con, table = "d", subset = z > 2, offset = log(w))
+p <- predict(fit_s, newdata = con, table = "d", interval = "confidence")
+head(as.data.frame(p))
+```
 
 = Robust standard errors
 
