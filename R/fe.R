@@ -225,36 +225,41 @@ dm_fe_components <- function(Nt) {
 ## Conjugate gradients for R Z = B, preconditioned by IC(0) of the block
 ## diagonal of R (blocks: the FEs; the whole of R with two FE), or by its
 ## diagonal when IC(0) breaks down or with precond = "jacobi".
-dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "ichol") {
-    A <- methods::as(methods::as(R, "generalMatrix"), "CsparseMatrix")
-    Lp <- Li <- Lx <- NULL
-    if (precond == "ichol") {
-        P <- Matrix::tril(A)
-        if (length(unique(block)) > 1L) {
-            Ts <- Matrix::summary(P)
-            same <- block[Ts$i] == block[Ts$j]
-            P <- Matrix::sparseMatrix(i = Ts$i[same], j = Ts$j[same], x = Ts$x[same],
-                                      dims = dim(P), repr = "C")
-        }
-        P <- methods::as(methods::as(P, "generalMatrix"), "CsparseMatrix")
-        Lx <- .Call(C_dm_fe_ichol, P@p, P@i, P@x, nrow(P))
-        if (!is.null(Lx)) {
-            Lp <- P@p
-            Li <- P@i
-        } else {
-            precond <- "jacobi"
+dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "ichol", cache = new.env()) {
+    if (is.null(cache$A)) {
+        cache$A <- methods::as(methods::as(R, "generalMatrix"), "CsparseMatrix")
+        cache$precond <- precond
+        if (precond == "ichol") {
+            P <- Matrix::tril(cache$A)
+            if (length(unique(block)) > 1L) {
+                Ts <- Matrix::summary(P)
+                same <- block[Ts$i] == block[Ts$j]
+                P <- Matrix::sparseMatrix(i = Ts$i[same], j = Ts$j[same], x = Ts$x[same],
+                                          dims = dim(P), repr = "C")
+            }
+            P <- methods::as(methods::as(P, "generalMatrix"), "CsparseMatrix")
+            ## plain IC(0): the modified factor (MIC, omega > 0) took 2.5 to 5
+            ## times as many iterations on worker x firm graphs
+            Lx <- .Call(C_dm_fe_ichol, P@p, P@i, P@x, nrow(P), 0)
+            if (!is.null(Lx)) {
+                cache$L <- list(p = P@p, i = P@i, x = Lx)
+            } else {
+                cache$precond <- "jacobi"
+            }
         }
     }
+    A <- cache$A
+    L <- cache$L
     storage.mode(B) <- "double"
-    r <- .Call(C_dm_fe_pcg, A@p, A@i, A@x, Lp, Li, Lx, B, as.double(tol), as.integer(maxit))
+    r <- .Call(C_dm_fe_pcg, A@p, A@i, A@x, L$p, L$i, L$x, B, as.double(tol), as.integer(maxit))
     list(x = r[[1L]], iter = r[[2L]], resid = r[[3L]], converged = r[[3L]] <= tol,
-         precond = precond)
+         precond = cache$precond)
 }
 
 ## Solve the reduced system R Z = B (R symmetric positive definite after the
 ## reference levels are removed, or semidefinite with a consistent
 ## right-hand side). Returns Z and solver details.
-dm_fe_solve <- function(R, B, opts, block, dense_max = 3000L) {
+dm_fe_solve <- function(R, B, opts, block, cache = new.env(), dense_max = 3000L) {
     m <- nrow(R)
     if (m == 0L) return(list(z = B, solver = "none"))
     solver <- opts$solver
@@ -277,7 +282,7 @@ dm_fe_solve <- function(R, B, opts, block, dense_max = 3000L) {
         }
         solver <- "pcg"
     }
-    sol <- dm_fe_pcg(R, B, opts$pcg_tol, opts$pcg_maxit, block, opts$precond)
+    sol <- dm_fe_pcg(R, B, opts$pcg_tol, opts$pcg_maxit, block, opts$precond, cache)
     if (!sol$converged)
         warning(sprintf("Conjugate gradients did not converge in %d iterations (relative residual %.2g).",
                         sol$iter, sol$resid), call. = FALSE)
@@ -321,6 +326,7 @@ dm_fe_system <- function(G, nk, crosstab, opts) {
     R <- R - Matrix::tcrossprod(sys$Ntr %*% Matrix::Diagonal(x = 1 / sqrt(sys$D1)))
     R <- Matrix::forceSymmetric(methods::as(R, "CsparseMatrix"), uplo = "U")
     sys$keep <- setdiff(seq_len(m), ref)
+    sys$cache <- new.env(parent = emptyenv()) # the preconditioner, built once
     sys$R <- R[sys$keep, sys$keep]
     sys$block <- rep(seq_along(rest), sys$Gr)[sys$keep]
     sys$m <- m
@@ -341,7 +347,7 @@ dm_fe_apply <- function(sys, B) {
     }
     rest <- sys$rest
     Brr <- do.call(rbind, B[rest]) - as.matrix(sys$Ntr %*% A1p)
-    sol <- dm_fe_solve(sys$R, Brr[sys$keep, , drop = FALSE], sys$opts, sys$block)
+    sol <- dm_fe_solve(sys$R, Brr[sys$keep, , drop = FALSE], sys$opts, sys$block, sys$cache)
     Z <- matrix(0, sys$m, ncol(Brr))
     Z[sys$keep, ] <- sol$z
     sol$z <- NULL
@@ -501,10 +507,7 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE) {
         U <- dm_fe_groupsums(x, r$we, NULL, list(cl), Gc)[[1L]]$S[, xcols, drop = FALSE]
         ## an FE is nested in the clusters when each of its levels is in one
         ## cluster; otherwise its scores need a correction
-        nested <- vapply(seq_len(nfe), function(k) {
-            ct <- dm_fe_crosstab(cl, codes[[k]], NULL, Gc, G[k]) # G_k x Gc
-            all(diff(ct@p) == 1L)
-        }, NA)
+        nested <- vapply(seq_len(nfe), function(k) dm_fe_nested(cl, codes[[k]], Gc, G[k]), NA)
         for (k in which(!nested)) {
             E <- dm_fe_crosstab(cl, codes[[k]], r$we, Gc, G[k])
             U <- U - as.matrix(Matrix::crossprod(E, ab$A[[k]][, seq_len(px), drop = FALSE]))
@@ -605,6 +608,14 @@ dm_fe_crosstab <- function(a, b, w, Ga, Gb) {
     Matrix::sparseMatrix(i = ib, j = ia, x = st$x, dims = c(as.integer(Gb), as.integer(Ga)), repr = "C")
 }
 
+## Is code b nested in code a (each level of b in one level of a)?
+dm_fe_nested <- function(a, b, Ga, Gb) {
+    if (identical(a, b)) return(TRUE)
+    if (!dm_is_rcols(a) && !dm_is_rcols(b)) return(.Call(C_dm_fe_nested, a, b, as.integer(Gb)))
+    ct <- dm_fe_crosstab(a, b, NULL, Ga, Gb) # G_b x G_a
+    all(tabulate(ct@i + 1L, nbins = Gb) == 1L)
+}
+
 ## Rows of grouped sums labelled by codes 1..G, in code order.
 dm_fe_place <- function(S, G) {
     out <- matrix(0, G, ncol(S))
@@ -688,11 +699,15 @@ dm_fe_center <- function(mt, mf, contrasts, w = NULL) {
     cand <- setdiff(intersect(tv, names(mf)), resp)
     num <- cand[vapply(cand, function(nm) identical(stats::.MFclass(mf[[nm]]), "numeric"), NA)]
     if (!length(num)) return(NULL)
+    ## the decision and the shift from a systematic sample of rows (any
+    ## shift is exact; a shift near the mean keeps the sums accurate)
+    nr <- nrow(mf)
+    idx <- if (nr > 1e5) unique(round(seq(1, nr, length.out = 1e5))) else seq_len(nr)
     mu <- vapply(num, function(nm) {
-        x <- mf[[nm]]
-        if (is.null(w)) mean(x) else sum(w * x) / sum(w)
+        x <- mf[[nm]][idx]
+        if (is.null(w)) mean(x) else sum(w[idx] * x) / sum(w[idx])
     }, 0)
-    sdv <- vapply(num, function(nm) stats::sd(mf[[nm]]), 0)
+    sdv <- vapply(num, function(nm) stats::sd(mf[[nm]][idx]), 0)
     sdv[!is.finite(sdv)] <- 0
     big <- is.finite(mu) & abs(mu) > sdv
     if (!any(big)) return(NULL)

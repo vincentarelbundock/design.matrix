@@ -26,9 +26,8 @@ dmc_lookup <- function(values, key, levels = NULL, along = list()) {
     values <- as.double(values)
     if (!dm_is_rcols(key)) {
         if (is.null(levels)) {
-            k <- as.integer(key)
-            k[k < 1L | k > length(values)] <- NA_integer_
-            return(values[k])
+            if (!is.integer(key)) key <- as.integer(key)
+            return(.Call(C_dm_fe_lookup, values, key))
         }
         kd <- if (is.data.frame(key) || is.list(key)) as.data.frame(key, stringsAsFactors = FALSE)
               else data.frame(key, stringsAsFactors = FALSE)

@@ -18,6 +18,7 @@
  */
 
 #include <string.h>
+#include <stdlib.h>
 #include <math.h>
 #include <limits.h>
 #include <R.h>
@@ -47,59 +48,125 @@ SEXP dm_fe_gsum(SEXP codes_, SEXP G_, SEXP W)
 
 /* Crosstab of codes a (1..Ga) and b (1..Gb) with weights w (NULL for 1):
    list(p, j, x), the compressed rows (by a) of the Ga x Gb matrix, j
-   0-based and sorted within rows.  Two stable counting sorts (by b, then by
-   a) order the pairs; equal pairs are then adjacent. */
+   0-based and sorted within rows.  The rows are taken in order of a (as
+   they come when a is sorted, as in panel data, otherwise after a counting
+   sort); within a level of a, a marker array over b finds each pair's
+   entry, and the level's entries are then sorted by b. */
+typedef struct { int j; double x; } ct_entry;
+
+static int ct_cmp(const void *u, const void *v)
+{
+    int a = ((const ct_entry *) u)->j, b = ((const ct_entry *) v)->j;
+    return (a > b) - (a < b);
+}
+
 SEXP dm_fe_crosstab(SEXP a_, SEXP b_, SEXP w_, SEXP Ga_, SEXP Gb_)
 {
     R_xlen_t n = XLENGTH(a_);
     int Ga = asInteger(Ga_), Gb = asInteger(Gb_);
     const int *a = INTEGER(a_), *b = INTEGER(b_);
     const double *w = isNull(w_) ? NULL : REAL(w_);
-    R_xlen_t *cnt = (R_xlen_t *) R_alloc((size_t)(Gb > Ga ? Gb : Ga) + 1, sizeof(R_xlen_t));
-    int *ord1 = (int *) R_alloc((size_t)n, sizeof(int));
-    int *ord2 = (int *) R_alloc((size_t)n, sizeof(int));
-    /* sort by b */
-    memset(cnt, 0, sizeof(R_xlen_t) * ((size_t)Gb + 1));
-    for (R_xlen_t i = 0; i < n; i++) cnt[b[i]]++;
-    for (int g = 1; g <= Gb; g++) cnt[g] += cnt[g - 1];
-    for (R_xlen_t i = 0; i < n; i++) ord1[cnt[b[i] - 1]++] = (int) i;
-    /* stable sort by a */
-    memset(cnt, 0, sizeof(R_xlen_t) * ((size_t)Ga + 1));
-    for (R_xlen_t i = 0; i < n; i++) cnt[a[i]]++;
-    for (int g = 1; g <= Ga; g++) cnt[g] += cnt[g - 1];
-    for (R_xlen_t t = 0; t < n; t++) {
-	int i = ord1[t];
-	ord2[cnt[a[i] - 1]++] = i;
+    int sorted = 1;
+    for (R_xlen_t i = 1; i < n; i++) if (a[i] < a[i - 1]) { sorted = 0; break; }
+    int *ord = NULL;
+    if (!sorted) {
+	R_xlen_t *cnt = (R_xlen_t *) R_alloc((size_t) Ga + 1, sizeof(R_xlen_t));
+	ord = (int *) R_alloc((size_t) n, sizeof(int));
+	memset(cnt, 0, sizeof(R_xlen_t) * ((size_t) Ga + 1));
+	for (R_xlen_t i = 0; i < n; i++) cnt[a[i]]++;
+	for (int g = 1; g <= Ga; g++) cnt[g] += cnt[g - 1];
+	for (R_xlen_t i = 0; i < n; i++) ord[cnt[a[i] - 1]++] = (int) i;
     }
-    /* count unique pairs */
+#define ROW(t) (sorted ? (t) : (R_xlen_t) ord[t])
+    int *mark = (int *) R_alloc((size_t) Gb + 1, sizeof(int));
+    for (int g = 0; g <= Gb; g++) mark[g] = 0;
+    /* count the pairs */
     R_xlen_t nnz = 0;
     for (R_xlen_t t = 0; t < n; t++) {
-	int i = ord2[t];
-	if (t == 0 || a[i] != a[ord2[t - 1]] || b[i] != b[ord2[t - 1]]) nnz++;
+	R_xlen_t i = ROW(t);
+	if (mark[b[i]] != a[i]) { mark[b[i]] = a[i]; nnz++; }
     }
-    SEXP p = PROTECT(allocVector(INTSXP, (R_xlen_t)Ga + 1));
+    SEXP p = PROTECT(allocVector(INTSXP, (R_xlen_t) Ga + 1));
     SEXP j = PROTECT(allocVector(INTSXP, nnz));
     SEXP x = PROTECT(allocVector(REALSXP, nnz));
     int *pp = INTEGER(p), *jj = INTEGER(j);
     double *xx = REAL(x);
-    memset(pp, 0, sizeof(int) * ((size_t)Ga + 1));
-    R_xlen_t q = -1;
-    for (R_xlen_t t = 0; t < n; t++) {
-	int i = ord2[t];
-	if (t == 0 || a[i] != a[ord2[t - 1]] || b[i] != b[ord2[t - 1]]) {
-	    q++;
-	    jj[q] = b[i] - 1;
-	    xx[q] = 0.0;
-	    pp[a[i]]++;
+    memset(pp, 0, sizeof(int) * ((size_t) Ga + 1));
+    for (int g = 0; g <= Gb; g++) mark[g] = 0;
+    R_xlen_t *pos = (R_xlen_t *) R_alloc((size_t) Gb + 1, sizeof(R_xlen_t));
+    R_xlen_t q = 0, start = 0;
+    ct_entry *tmp = NULL;
+    size_t tmpn = 0;
+    for (R_xlen_t t = 0; t <= n; t++) {
+	R_xlen_t i = t < n ? ROW(t) : 0;
+	int ai = t < n ? a[i] : -1;
+	if (t > 0 && (t == n || ai != a[ROW(t - 1)])) {
+	    /* close the level of the previous row: sort its entries by b */
+	    R_xlen_t m = q - start;
+	    int sortedb = 1;
+	    for (R_xlen_t e = start + 1; e < q; e++) if (jj[e] < jj[e - 1]) { sortedb = 0; break; }
+	    if (!sortedb) {
+		if ((size_t) m > tmpn) {
+		    tmpn = (size_t) m;
+		    tmp = (ct_entry *) R_alloc(tmpn, sizeof(ct_entry));
+		}
+		for (R_xlen_t e = 0; e < m; e++) { tmp[e].j = jj[start + e]; tmp[e].x = xx[start + e]; }
+		qsort(tmp, (size_t) m, sizeof(ct_entry), ct_cmp);
+		for (R_xlen_t e = 0; e < m; e++) { jj[start + e] = tmp[e].j; xx[start + e] = tmp[e].x; }
+	    }
+	    pp[a[ROW(t - 1)]] = (int) m;
+	    start = q;
 	}
-	xx[q] += w ? w[i] : 1.0;
+	if (t == n) break;
+	int bi = b[i];
+	if (mark[bi] != ai) {
+	    mark[bi] = ai;
+	    pos[bi] = q;
+	    jj[q] = bi - 1;
+	    xx[q] = 0.0;
+	    q++;
+	}
+	xx[pos[bi]] += w ? w[i] : 1.0;
     }
+#undef ROW
     for (int g = 1; g <= Ga; g++) pp[g] += pp[g - 1];
     SEXP out = PROTECT(allocVector(VECSXP, 3));
     SET_VECTOR_ELT(out, 0, p);
     SET_VECTOR_ELT(out, 1, j);
     SET_VECTOR_ELT(out, 2, x);
     UNPROTECT(4);
+    return out;
+}
+
+/* Is code b nested in code a (each level of b in one level of a)? */
+SEXP dm_fe_nested(SEXP a_, SEXP b_, SEXP Gb_)
+{
+    R_xlen_t n = XLENGTH(a_);
+    int Gb = asInteger(Gb_);
+    const int *a = INTEGER(a_), *b = INTEGER(b_);
+    int *first = (int *) R_alloc((size_t) Gb + 1, sizeof(int));
+    for (int g = 0; g <= Gb; g++) first[g] = 0;
+    for (R_xlen_t i = 0; i < n; i++) {
+	int *f = first + b[i];
+	if (!*f) *f = a[i];
+	else if (*f != a[i]) return ScalarLogical(0);
+    }
+    return ScalarLogical(1);
+}
+
+/* values[codes], NA for codes out of 1..length(values) or NA. */
+SEXP dm_fe_lookup(SEXP values_, SEXP codes_)
+{
+    R_xlen_t n = XLENGTH(codes_), G = XLENGTH(values_);
+    const double *v = REAL(values_);
+    const int *c = INTEGER(codes_);
+    SEXP out = PROTECT(allocVector(REALSXP, n));
+    double *o = REAL(out);
+    for (R_xlen_t i = 0; i < n; i++) {
+	int k = c[i];
+	o[i] = (k == NA_INTEGER || k < 1 || k > G) ? NA_REAL : v[k - 1];
+    }
+    UNPROTECT(1);
     return out;
 }
 
@@ -337,7 +404,10 @@ SEXP dm_fe_singletons(SEXP codes_, SEXP G_)
 
    dm_fe_ichol(): incomplete Cholesky factor with no fill, IC(0), of a
    symmetric matrix given by its lower triangle in compressed columns
-   (p, i, x; row indices sorted within columns, diagonal first).  The
+   (p, i, x; row indices sorted within columns, diagonal first); with
+   omega > 0, the modified factor MIC(0) (relaxed by omega): fill that the
+   pattern drops is subtracted from the two diagonals, which keeps the row
+   sums of L L' those of the matrix.  The
    reduced systems are (block diagonals of) weighted graph Laplacians with
    reference levels removed, which are M-matrices: IC(0) exists for them.
    Returns the factor's values (same pattern), or NULL on a breakdown
@@ -350,9 +420,10 @@ SEXP dm_fe_singletons(SEXP codes_, SEXP G_)
    tol.  Returns list(X, iterations, max relative residual).
    ------------------------------------------------------------------------ */
 
-SEXP dm_fe_ichol(SEXP p_, SEXP i_, SEXP x_, SEXP n_)
+SEXP dm_fe_ichol(SEXP p_, SEXP i_, SEXP x_, SEXP n_, SEXP omega_)
 {
     int n = asInteger(n_);
+    double omega = asReal(omega_);
     const int *cp = INTEGER(p_), *ri = INTEGER(i_);
     SEXP out = PROTECT(duplicate(x_));
     double *L = REAL(out);
@@ -374,6 +445,12 @@ SEXP dm_fe_ichol(SEXP p_, SEXP i_, SEXP x_, SEXP n_)
 	    for (int s = q; s < cp[k + 1]; s++) {
 		int t = pos[ri[s]];
 		if (t >= 0) L[t] -= L[s] * ljk;
+		else if (omega != 0.0) {
+		    /* modified IC: the dropped fill goes to both diagonals */
+		    double f = omega * L[s] * ljk;
+		    L[cp[ri[s]]] -= f;
+		    L[cp[j]] -= f;
+		}
 	    }
 	    for (int t = cp[j]; t < cp[j + 1]; t++) pos[ri[t]] = -1;
 	}
