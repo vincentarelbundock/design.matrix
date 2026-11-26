@@ -254,7 +254,7 @@ dm_mult <- function(x, beta) {
     if (!is.matrix(B)) B <- matrix(B, ncol = 1L)
     storage.mode(B) <- "double"
     out <- NULL
-    if (!is.null(st <- dm_struct_single(J))) {
+    if (!is.null(st <- dm_struct_single(J)) && dm_in_range(B, 1e-100, 1e100)) {
         out <- dm_struct_mult(st$design, B)
         if (!is.null(st$scale)) out <- st$scale * out
         ## the scale is applied after the product: if that order overflows,
@@ -288,14 +288,11 @@ dm_crossprod <- function(x, w) {
     storage.mode(W) <- "double"
     st <- dm_struct_single(J)
     out <- NULL
-    if (!is.null(st) && dm_all_finite(W)) {
+    if (!is.null(st) && dm_in_range(W, 1e-100, 1e100)) {
+        ## the scale moves to the weights (safe within the bounds)
         sW <- if (is.null(st$scale)) W else st$scale * W
-        ## the scale moves to the weights: if that order overflows, use the
-        ## row kernel on the scaled design
-        if (dm_all_finite(sW)) {
-            out <- dm_struct_xty(st$design, sW)
-            if (!dm_all_finite(out)) out <- NULL
-        }
+        out <- dm_struct_xty(st$design, sW)
+        if (!dm_all_finite(out)) out <- NULL
     }
     out <- if (!is.null(out)) {
         out
@@ -584,6 +581,8 @@ dm_gram <- function(x, y = NULL) {
     if (!is.null(y) && nrow(y) != n)
         stop("The design matrices must have the same number of rows.", call. = FALSE)
     nm <- list(colnames(x), colnames(if (is.null(y)) x else y))
+    x0 <- x
+    y0 <- y
     w <- NULL
     tx <- dm_terms(x)
     if (is.null(y)) {
@@ -607,8 +606,11 @@ dm_gram <- function(x, y = NULL) {
             dimnames(out) <- nm
             return(out)
         }
-        ## an overflow in the structured sums: the row kernel reproduces
-        ## the dense result
+        ## an overflow in the structured sums: the row kernel on the
+        ## original operands reproduces the dense result
+        x <- x0
+        y <- y0
+        w <- NULL
     }
     A <- as_jac(x)
     B <- if (is.null(y)) NULL else as_jac(y)
@@ -652,8 +654,18 @@ dm_struct_single <- function(J) {
 ## that the product in its original order would not have? NULL is 1.
 dm_safe_scale <- function(s) {
     if (is.null(s)) return(TRUE)
-    a <- abs(s)
-    all(is.finite(s)) && all(a <= 1e100) && all(a == 0 | a >= 1e-100)
+    dm_in_range(s, 1e-50, 1e50)
+}
+
+## Are all values finite, with non-zero absolute values within [lo, hi]?
+## The structured kernels regroup products; with inputs within the bounds
+## that dm_struct_ok() enforces (1e-50 to 1e50 per factor), row scales
+## within dm_safe_scale() and the other operand of a product within
+## [1e-100, 1e100], no intermediate leaves 1e+-300, so regrouping cannot
+## overflow or underflow.
+dm_in_range <- function(x, lo, hi) {
+    if (!is.double(x)) storage.mode(x) <- "double"
+    .Call(C_dm_in_range, x, lo, hi)
 }
 
 ## Are all values of a numeric vector or matrix finite? (No allocation.)

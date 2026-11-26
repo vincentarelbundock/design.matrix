@@ -867,7 +867,9 @@ SEXP dm_chol_pivot(SEXP G_, SEXP tol_, SEXP susp_, SEXP n_, SEXP dres_)
 	if (!ISNAN(dres[j])) {
 	    /* judged from the data by the caller */
 	    d = dres[j];
-	    take = gjj > 0.0 && d > tol2 * gjj;
+	    /* as dqrdc2: a column is moved when its residual norm is below
+	       tol times its norm, so a tie keeps it; a zero residual never */
+	    take = gjj > 0.0 && d > 0.0 && d >= tol2 * gjj;
 	} else if (gjj > 0.0 && d > susp * gjj) {
 	    take = 1;
 	} else {

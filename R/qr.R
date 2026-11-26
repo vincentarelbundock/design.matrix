@@ -136,10 +136,11 @@ dmqr_chol <- function(x, G, tol) {
         if (length(new) == 0L) return(ch)
         v <- dmqr_resid2(x, G, ch, new)
         if (any(v$nonzero & !(dg[new] > 0))) return(NULL)
-        ## the C code takes a column when dres > tol^2 * G[j, j], that is,
-        ## when its residual norm is above tol times its norm
+        ## the C code takes a column when dres >= tol^2 * G[j, j], that is,
+        ## when its residual norm is at least tol times its norm
         dres[new] <- ifelse(v$nonzero, v$ratio^2 * dg[new], 0)
-        taken <- new[v$nonzero & v$ratio > tol]
+        ## as dqrdc2, a tie with tol keeps the column
+        taken <- new[v$nonzero & v$ratio > 0 & v$ratio >= tol]
         if (length(taken) == 0L) return(ch)
         ## a suspect turned out to be independent: every later column,
         ## suspects included, was judged without it
@@ -314,6 +315,8 @@ dmqr_out <- function(out, yy, rows = yy$rows) {
 
 dmqr_fitted <- function(qr, y) {
     yy <- dmqr_y(y, nrow(qr$design))
+    if (!is.null(qr$dense))
+        return(list(fit = unname(base::qr.fitted(qr$dense, yy$Y)), yy = yy))
     b <- dmqr_coef(qr, yy$Y)
     list(fit = unname(qr$design %*% dmqr_full(qr, b)), yy = yy)
 }
@@ -374,6 +377,11 @@ setMethod("qr.qty", "design_qr", function(qr, y) {
 setMethod("qr.qy", "design_qr", function(qr, y) {
     k <- qr$rank
     yy <- dmqr_y(y, k)
+    if (!is.null(qr$dense)) {
+        Z <- matrix(0, nrow(qr$design), ncol(yy$Y))
+        Z[seq_len(k), ] <- yy$Y
+        return(dmqr_out(unname(base::qr.qy(qr$dense, Z)), yy, NULL))
+    }
     b <- dmqr_bs(dmqr_R11(qr), yy$Y)
     out <- unname(qr$design %*% dmqr_full(qr, b))
     dmqr_out(out, yy, NULL)
@@ -387,6 +395,7 @@ setMethod("qr.Q", "design_qr", function(qr, complete = FALSE, Dvec) {
     if (!missing(Dvec))
         stop("`Dvec` is not supported for design matrices.", call. = FALSE)
     k <- qr$rank
+    if (!is.null(qr$dense)) return(unname(base::qr.Q(qr$dense)[, seq_len(k), drop = FALSE]))
     unname(qr$design %*% dmqr_full(qr, dmqr_bs(dmqr_R11(qr), diag(1, k))))
 })
 

@@ -39,8 +39,15 @@ if [ $failed -ne 0 ] || [ "$got" -ne "$expected" ]; then
   echo "incomplete: $got of $expected measurements; results.csv not updated (raw files in $out)" >&2
   exit 1
 fi
+# A method that stops with an error is a result (recorded with its message);
+# a row without timing and without a message is a harness failure.
 Rscript -e 'args <- commandArgs(TRUE); f <- list.files(args[1], "^(formula|prebuilt).*csv$", full.names = TRUE)
-  d <- do.call(rbind, lapply(f, read.csv)); d <- d[order(d$mode, d$p, d$ms), ]
+  d <- do.call(rbind, lapply(f, read.csv))
+  bad <- is.na(d$ms) & (is.na(d$note) | d$note == "")
+  if (any(bad)) { print(d[bad, ]); quit(status = 1) }
+  err <- is.na(d$ms)
+  if (any(err)) { message("methods that stopped with an error:"); print(d[err, c("mode", "design", "method", "note")]) }
+  d <- d[order(d$mode, d$p, d$ms), ]
   write.csv(d, args[2], row.names = FALSE)' "$out" "$here/results.csv" || exit 1
 Rscript -e 'si <- sessionInfo(); writeLines(c(R.version.string, paste("BLAS:", basename(si$BLAS)), paste("CPU:", system("lscpu | grep \"Model name\" | sed \"s/.*: *//\"", intern = TRUE))), commandArgs(TRUE)[1])' "$here/machine.txt"
 rm -rf "$out"

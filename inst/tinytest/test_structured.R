@@ -107,12 +107,41 @@ expect_equal(unname(crossprod(1e160 * D45, 1e160 * D45)), unname(crossprod(1e160
 expect_equal(unname(drop((1e160 * D45) %*% 1e160)), unname(drop((1e160 * X45) %*% 1e160)))
 expect_true(is.finite(crossprod(1e160 * D45)))
 
-# 7. Combined factor levels beyond int range: the structured kernels decline
-lv <- as.character(1:1100)
+# 7. Combined factor levels beyond int range (1300^3 > 2^31): the structured
+#    kernels decline instead of overflowing
+lv <- as.character(1:1300) # 1300^3 combined levels > 2^31
 d7 <- data.frame(f1 = factor(c("1", "2", "3"), levels = lv), f2 = factor(c("3", "1", "2"), levels = lv),
                  f3 = factor(c("2", "3", "1"), levels = lv))
-cm <- matrix(seq_len(1100) / 1100, ncol = 1)
+cm <- matrix(seq_len(1300) / 1300, ncol = 1)
 D7 <- design_matrix(~ f1 * f2 * f3, d7, contrasts.arg = list(f1 = cm, f2 = cm, f3 = cm))
 expect_false(design.matrix:::dm_struct_ok(D7))
 X7 <- as.matrix(D7)
 expect_equal(unname(crossprod(D7)), unname(crossprod(X7)))
+
+# Roborev 1272 regressions -------------------------------------------------
+
+# 1. When structured sums are not finite, the fallback uses the original
+#    scaled operands
+D1 <- design_matrix(~ 0 + z + x, data.frame(z = 1e150, x = 1e-150))
+X1 <- as.matrix(D1)
+expect_equal(unname(crossprod(1e100 * D1)), unname(crossprod(1e100 * X1)))
+expect_true(is.finite(crossprod(1e100 * D1)[1, 2])) # the diagonal overflows densely too
+
+# 2. No underflow from moving scales or regrouping products
+D2 <- design_matrix(~ 0 + x, data.frame(x = 1e-150))
+X2 <- as.matrix(D2)
+expect_equal(unname(drop((1e100 * D2) %*% 1e-200)), unname(drop((1e100 * X2) %*% 1e-200)))
+expect_true(drop((1e100 * D2) %*% 1e-200) != 0)
+D2b <- design_matrix(~ 0 + x, data.frame(x = 1e150))
+X2b <- as.matrix(D2b)
+expect_equal(unname(crossprod(1e-100 * D2b, 1e-250)), unname(crossprod(1e-100 * X2b, 1e-250)))
+expect_true(crossprod(1e-100 * D2b, 1e-250) != 0)
+
+# 3. Tiny numerics times large contrasts: the structured kernels decline,
+#    so X'X keeps entries whose squares would underflow if regrouped
+d3 <- data.frame(y = rnorm(4), x = c(1, 2, 3, 4) * 1e-200, f = factor(c("a", "b", "a", "b")))
+cm3 <- matrix(c(-1e100, 1e100), ncol = 1)
+D3 <- design_matrix(y ~ x:f, d3, contrasts.arg = list(f = cm3))
+expect_false(design.matrix:::dm_struct_ok(D3))
+X3 <- as.matrix(D3)
+expect_equal(qr(D3)$rank, qr(X3)$rank)

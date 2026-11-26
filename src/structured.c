@@ -174,8 +174,30 @@ static tblock *alloc_blocks(const sctx *S)
 }
 
 /* Can the structured kernels handle this design?  All factor codes
-   present, all numerics finite, products bounded, moments of a size that
-   fits (`cap` doubles in all). */
+   present, all inputs finite, moments of a size that fits (`cap` doubles
+   in all), and magnitudes bounded so that regrouping products cannot
+   overflow or underflow: in every term, the non-zero products of its
+   numeric inputs and of its contrast entries lie within [1e-50, 1e50]
+   (bounds from each component's smallest and largest non-zero absolute
+   value).  An entry of X'X is then a sum of products of four such factors,
+   within [1e-200, 1e200], and the callers bound row scales and the other
+   operand of a product so that every intermediate stays within 1e+-300. */
+#define MAG_LO 1e-50
+#define MAG_HI 1e50
+static void range_of(const double *v, R_xlen_t len, double *lo, double *hi, int *finite)
+{
+    double mn = R_PosInf, mx = 0.0;
+    for (R_xlen_t e = 0; e < len; e++) {
+	double x = v[e];
+	if (!R_FINITE(x)) { *finite = 0; return; }
+	double a = fabs(x);
+	if (a > mx) mx = a;
+	if (a > 0.0 && a < mn) mn = a;
+    }
+    *lo = R_FINITE(mn) ? mn : 1.0;
+    *hi = mx > 0.0 ? mx : 1.0;
+}
+
 SEXP dm_struct_ok(SEXP setup, SEXP vars, SEXP cap_)
 {
     sctx S;
@@ -186,31 +208,22 @@ SEXP dm_struct_ok(SEXP setup, SEXP vars, SEXP cap_)
 	if (S.t[t].L < 0) ok = 0;
     for (int t = 0; t < S.nt && ok; t++) {
 	const sterm *T = &S.t[t];
-	double bound = 1.0;
+	double clo = 1.0, chi = 1.0, nlo = 1.0, nhi = 1.0;
 	for (int c = 0; c < T->nf && ok; c++) {
 	    const int *code = T->code[c];
 	    int lo = 1 - T->adj[c], hi = T->nrc[c] - T->adj[c];
 	    for (R_xlen_t i = 0; i < S.n; i++)
 		if (code[i] == NA_INTEGER || code[i] < lo || code[i] > hi) { ok = 0; break; }
-	    double mx = 0.0;
-	    for (R_xlen_t e = 0; e < (R_xlen_t) T->nrc[c] * T->fnc[c]; e++) {
-		double x = T->cm[c][e];
-		if (!R_FINITE(x)) { ok = 0; break; }
-		if (fabs(x) > mx) mx = fabs(x);
-	    }
-	    bound *= mx > 1.0 ? mx : 1.0;
+	    double a, b;
+	    range_of(T->cm[c], (R_xlen_t) T->nrc[c] * T->fnc[c], &a, &b, &ok);
+	    clo *= a; chi *= b;
 	}
 	for (int c = 0; c < T->nn && ok; c++) {
-	    double mx = 0.0;
-	    const double *v = T->num[c];
-	    for (R_xlen_t e = 0; e < S.n * T->nnc[c]; e++) {
-		if (!R_FINITE(v[e])) { ok = 0; break; }
-		if (fabs(v[e]) > mx) mx = fabs(v[e]);
-	    }
-	    bound *= mx > 1.0 ? mx : 1.0;
+	    double a, b;
+	    range_of(T->num[c], S.n * T->nnc[c], &a, &b, &ok);
+	    nlo *= a; nhi *= b;
 	}
-	/* squares of entries appear in X'X */
-	if (!(bound < sqrt(SAFE))) ok = 0;
+	if (!(clo >= MAG_LO && chi <= MAG_HI && nlo >= MAG_LO && nhi <= MAG_HI)) ok = 0;
 	for (int s = 0; s <= t; s++) {
 	    const sterm *U = &S.t[s];
 	    total += (s == t) ? (double) T->L * T->ns * T->ns
@@ -510,4 +523,18 @@ SEXP dm_col_norms(SEXP x)
     }
     UNPROTECT(1);
     return out;
+}
+
+/* Are all values finite, with non-zero absolute values within [lo, hi]?
+   (No allocation.) */
+SEXP dm_in_range(SEXP x, SEXP lo_, SEXP hi_)
+{
+    const double *v = REAL(x);
+    double lo = asReal(lo_), hi = asReal(hi_);
+    R_xlen_t n = XLENGTH(x);
+    for (R_xlen_t i = 0; i < n; i++) {
+	double a = fabs(v[i]);
+	if (!R_FINITE(v[i]) || a > hi || (a != 0.0 && a < lo)) return ScalarLogical(0);
+    }
+    return ScalarLogical(1);
 }

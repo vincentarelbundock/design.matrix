@@ -153,3 +153,21 @@ expect_equal(sol, solve.qr(qr(as.matrix(Dw)), dw$y), check.attributes = FALSE)
 # 9. The methods dispatch through the package namespace
 q9 <- qr(D1)
 expect_equal(design.matrix::qr.coef(q9, d1$y), qr.coef(q9, d1$y))
+
+# Roborev 1272 regressions -------------------------------------------------
+
+# 4. The dense fallback computes Q products and fitted values from the
+#    stored QR, without overflowing intermediates
+D4 <- design_matrix(~ 0 + x, data.frame(x = 1e-200))
+q4 <- qr(D4)
+expect_false(is.null(q4$dense))
+expect_true(is.finite(qr.qy(q4, 1e200)))
+expect_equal(abs(qr.qy(q4, 1e200)), abs(drop(base::qr.qy(qr(as.matrix(D4)), 1e200))))
+expect_equal(qr.fitted(q4, 3), 3)
+expect_equal(qr.resid(q4, 3), 0)
+expect_equal(abs(qr.Q(q4)), abs(base::qr.Q(qr(as.matrix(D4)))))
+
+# 5. A residual ratio equal to tol keeps the column, as in qr()
+D5 <- design_matrix(~ 0 + x, data.frame(x = c(1, 0, 0)))
+expect_equal(qr(D5, tol = 1)$rank, qr(as.matrix(D5), tol = 1)$rank)
+expect_equal(qr(D5, tol = 1)$rank, 1L)
