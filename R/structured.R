@@ -53,13 +53,13 @@ dm_kron_modes <- function(X, mats) {
 ## the union of each pair of terms' factors and are contracted with the
 ## factors' contrasts one at a time, in C (gram_block() in src/structured.c).
 dm_struct_gram <- function(d, w = NULL) {
-    .Call(C_dm_struct_gram, d$setup, d$vars, if (is.null(w)) NULL else as.double(w))
+    .Call(C_dm_struct_gram, d$setup, d$vars, if (is.null(w)) NULL else as.double(w), design_threads())
 }
 
 ## t(X) %*% Y, Y an n x K finite matrix.
 dm_struct_xty <- function(d, Y) {
     info <- dm_struct_info(d)
-    mom <- .Call(C_dm_struct_xty, d$setup, d$vars, Y)
+    mom <- .Call(C_dm_struct_xty, d$setup, d$vars, Y, design_threads())
     K <- ncol(Y)
     out <- matrix(0, ncol(d), K)
     for (t in seq_along(info)) {
@@ -97,5 +97,5 @@ dm_struct_mult <- function(d, B) {
         dim(A) <- c(ns * K, Tt$L)
         t(A)
     })
-    .Call(C_dm_struct_mult, d$setup, d$vars, P, K)
+    .Call(C_dm_struct_mult, d$setup, d$vars, P, K, design_threads())
 }

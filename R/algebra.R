@@ -315,7 +315,7 @@ dm_crossprod_kernel <- function(J, W, codes = NULL, G = 1L) {
         if (!is.null(codes)) codes <- codes[first]
     }
     do.call(.Call, c(list(C_dm_jac_crossprod), jac_args(J),
-                     list(W, codes, G, first)))
+                     list(W, codes, G, first, design_threads())))
 }
 
 #' @rdname design_algebra
@@ -603,7 +603,7 @@ dm_gram <- function(x, y = NULL) {
     }
     if (!is.null(w)) w <- as.double(w)
     Bargs <- if (is.null(B)) rep(list(NULL), 6L) else jac_args(B)
-    out <- do.call(.Call, c(list(C_dm_jac_gram), jac_args(A), Bargs, list(w, first)))
+    out <- do.call(.Call, c(list(C_dm_jac_gram), jac_args(A), Bargs, list(w, first, design_threads())))
     dimnames(out) <- nm
     out
 }
