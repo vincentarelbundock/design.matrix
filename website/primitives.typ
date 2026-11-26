@@ -35,7 +35,7 @@ Remote examples need the DBI and duckdb packages.
 The same data, as a data frame and as a DuckDB table: an outcome `y` with a few gross outliers, a numeric and a categorical regressor, and 40 clusters.
 
 ```r
-library(design.matrix)
+library(xtx)
 set.seed(48)
 n <- 5000
 d <- data.frame(

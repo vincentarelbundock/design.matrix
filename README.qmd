@@ -11,17 +11,17 @@ knitr:
     collapse: true
 ---
 
-# design.matrix
+# xtx
 
-The `design.matrix` package builds model matrices that are identical, bit for bit, to those returned by `stats::model.matrix()`. Its main benefit comes when the dense model matrix is only an intermediate input to something else: least squares coefficients need `X'X` and `X'y`, predictions multiply it by a vector of coefficients, their standard errors need a quadratic form, and cluster-robust variances need weighted sums of its rows by group. `design.matrix` computes these results directly from the factor codes and numeric variables, without materializing the dense matrix, which often saves an order of magnitude or more in both time and memory.
+The `xtx` package builds model matrices that are identical, bit for bit, to those returned by `stats::model.matrix()`. Its main benefit comes when the dense model matrix is only an intermediate input to something else: least squares coefficients need `X'X` and `X'y`, predictions multiply it by a vector of coefficients, their standard errors need a quadratic form, and cluster-robust variances need weighted sums of its rows by group. `xtx` computes these results directly from the factor codes and numeric variables, without materializing the dense matrix, which often saves an order of magnitude or more in both time and memory.
 
-**Documentation, benchmarks and recipes: <https://vincentarelbundock.github.io/design.matrix>**
+**Documentation, benchmarks and recipes: <https://vincentarelbundock.github.io/xtx>**
 
 ## Installation
 
 ```r
 # install.packages("remotes")
-remotes::install_github("vincentarelbundock/design.matrix")
+remotes::install_github("vincentarelbundock/xtx")
 ```
 
 ## Example
@@ -29,7 +29,7 @@ remotes::install_github("vincentarelbundock/design.matrix")
 Build a design with an intercept, a numeric predictor, and a two-level factor. Multiplying it by a coefficient vector gives one linear prediction per row, and the same design applies to new data.
 
 ```{r}
-library(design.matrix)
+library(xtx)
 
 d <- data.frame(x = c(1, 2, 3), group = factor(c("a", "b", "a")))
 D <- design_matrix(~ x + group, d)

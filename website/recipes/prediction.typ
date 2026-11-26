@@ -19,7 +19,7 @@ options(width = 200)
 These recipes compute predictions from a fitted model and their standard errors. Both build the design for the new data from the model's own encoding, so they rely on #link("../operations.html#reusing-a-design-on-new-data")[reusing a design on new data]. Each one checks a small example against base R, then times both on 200,000 rows and 119 columns, on one thread.
 
 ```r
-library(design.matrix)
+library(xtx)
 d <- data.frame(
     y = c(0.3, -1.2, 0.8, 1.5, -0.4, 0.9, -2.1, 0.2),
     x = c(-1.5, 0.2, 1.1, -0.3, 2.0, 0.7, -0.9, 1.4),

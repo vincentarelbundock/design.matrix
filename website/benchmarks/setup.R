@@ -1,8 +1,8 @@
-library(design.matrix)
+library(xtx)
 design_threads(1)
 # Build the model frame exactly as model.matrix() does, so that comparisons
 # with functions that call it are fair, and compute every row.
-options(design.matrix.skip_na_copy = FALSE, design.matrix.dedup = FALSE)
+options(xtx.skip_na_copy = FALSE, xtx.dedup = FALSE)
 
 # BENCH_SIZE=quick (make bench-quick) checks the scripts on fewer rows and
 # at most 3 iterations; run.R then saves the results outside results/.

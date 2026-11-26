@@ -1,4 +1,4 @@
-"Task","Base R","design.matrix"
+"Task","Base R","xtx"
 "Predictions on new data","203ms, NA","6.57ms, NA"
 "Standard errors of predictions","1.21s, NA","35.4ms, NA"
 "Grouped weighted sums (cluster-robust variance)","239ms, NA","55ms, NA"

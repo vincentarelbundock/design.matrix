@@ -17,7 +17,7 @@
 # Data: each (design, n) dataset is simulated once (fixed_effects/simulate.R,
 # with the data generating process of fixed_effects/dgp.R and the same seed
 # for every cell) and saved as Parquet in a cache folder, FE_BENCH_CACHE
-# (default tools::R_user_dir("design.matrix", "cache")/fixed_effects). The
+# (default tools::R_user_dir("xtx", "cache")/fixed_effects). The
 # file name holds the design, n, the numbers of regressors and a hash of
 # dgp.R and simulate.R: editing either makes new files (delete the folder
 # to reclaim the space). One file holds the responses for every k (y_<k>),
@@ -97,7 +97,7 @@ scale_provisional <- quick || !setequal(scale_sizes, scale$n)
 stopifnot(all(grids %in% c("main", "scale")), all(packages %in% full$package),
           !anyNA(c(sizes, ks, scale_sizes)))
 
-cache <- Sys.getenv("FE_BENCH_CACHE", file.path(tools::R_user_dir("design.matrix", "cache"), "fixed_effects"))
+cache <- Sys.getenv("FE_BENCH_CACHE", file.path(tools::R_user_dir("xtx", "cache"), "fixed_effects"))
 dir.create(cache, showWarnings = FALSE, recursive = TRUE)
 cache <- normalizePath(cache)
 # A short hash of some files: part of the cache keys
@@ -215,7 +215,7 @@ coef_diff <- function(b, r) {
     signif(max(abs(split_num(b) - split_num(r))), 3)
 }
 
-deps <- list("design_lm" = "design.matrix", "design_lm (DuckDB)" = c("design.matrix", "duckdb"),
+deps <- list("design_lm" = "xtx", "design_lm (DuckDB)" = c("xtx", "duckdb"),
              "feols" = "fixest", "dbreg (DuckDB)" = c("dbreg", "duckdb"))
 cpu <- tryCatch(trimws(sub(".*:", "", grep("^model name", readLines("/proc/cpuinfo"), value = TRUE)[1])),
                 error = function(e) "unknown")

@@ -19,7 +19,7 @@ options(width = 200)
 These recipes fit a linear model and compute the quantities that follow from its design matrix: coefficients, leverage, and cluster-robust standard errors. Each one checks a small example against base R, then times both on 200,000 rows and 119 columns, on one thread.
 
 ```r
-library(design.matrix)
+library(xtx)
 d <- data.frame(
     y = c(0.3, -1.2, 0.8, 1.5, -0.4, 0.9, -2.1, 0.2),
     x = c(-1.5, 0.2, 1.1, -0.3, 2.0, 0.7, -0.9, 1.4),
@@ -49,7 +49,7 @@ all.equal(coef(design_lm(D, y = d$y)), coef(fit))
 
 = Fixed effects
 
-A formula `y ~ x | fe1 + fe2` absorbs fixed effects, as `fixest::feols()` does: each fixed effect is a variable, or an interaction `a^b`. The fit never builds the dummies and never demeans the rows. It solves the normal equations from sums over rows: products with the design, sums within the levels of each fixed effect, and crosstabs of the fixed effects. The largest fixed effect is eliminated exactly, and the others are solved densely (up to 1,000 levels) or by conjugate gradients. When the reduced system is sparse (low mobility, such as workers who rarely change firms), it is formed and preconditioned by an incomplete Cholesky factor; when it would be near dense (high mobility), it is applied without being formed, with a Jacobi preconditioner. `options(design.matrix.fe_precond = "jacobi")` or `"ichol"` forces a preconditioner, and `design.matrix.fe_form_max` (`0` never forms the system, `Inf` always) moves the threshold. Singletons are dropped as `feols()` drops them, and `vcov = ~cl` clusters the standard errors with `feols()`'s small sample corrections. The same code fits remote data (a DuckDB table or Parquet files; see #link("out-of-core.html")[out-of-core data]).
+A formula `y ~ x | fe1 + fe2` absorbs fixed effects, as `fixest::feols()` does: each fixed effect is a variable, or an interaction `a^b`. The fit never builds the dummies and never demeans the rows. It solves the normal equations from sums over rows: products with the design, sums within the levels of each fixed effect, and crosstabs of the fixed effects. The largest fixed effect is eliminated exactly, and the others are solved densely (up to 1,000 levels) or by conjugate gradients. When the reduced system is sparse (low mobility, such as workers who rarely change firms), it is formed and preconditioned by an incomplete Cholesky factor; when it would be near dense (high mobility), it is applied without being formed, with a Jacobi preconditioner. `options(xtx.fe_precond = "jacobi")` or `"ichol"` forces a preconditioner, and `xtx.fe_form_max` (`0` never forms the system, `Inf` always) moves the threshold. Singletons are dropped as `feols()` drops them, and `vcov = ~cl` clusters the standard errors with `feols()`'s small sample corrections. The same code fits remote data (a DuckDB table or Parquet files; see #link("out-of-core.html")[out-of-core data]).
 
 ```r
 set.seed(3)
@@ -126,7 +126,7 @@ all.equal(coef(fit), qr.coef(qr(D), d$y))
 #calepin.chunk(echo: false, results: "typst")[
 ```r
 ## (the number of rows, from the results: the run sets it, OLS_BENCH_N)
-ols_n <- unique(read.csv(file.path(normalizePath(file.path(Sys.getenv("DESIGN_MATRIX_ROOT", "../.."), "bench", "ols")),
+ols_n <- unique(read.csv(file.path(normalizePath(file.path(Sys.getenv("XTX_ROOT", "../.."), "bench", "ols")),
                                    "results.csv"))$n)[1]
 cat("The benchmark below compares `qr()` on a design matrix with eight other implementations of least squares, on ",
     format(ols_n, big.mark = ",", scientific = FALSE),
@@ -135,13 +135,13 @@ cat("The benchmark below compares `qr()` on a design matrix with eight other imp
 ]
 
 - Two comparisons. _From formula_: every method starts from the formula and the data, as a user would. _Prebuilt_: the model matrix (or design matrix) is built before timing, and only the fit is timed.
-- One thread everywhere, including the BLAS. The model frame is built exactly as `model.matrix()` builds it (option `design.matrix.skip_na_copy = FALSE`).
+- One thread everywhere, including the BLAS. The model frame is built exactly as `model.matrix()` builds it (option `xtx.skip_na_copy = FALSE`).
 - Memory is the peak resident memory of the first call in a fresh process, so it counts every allocation, including those made in C++.
 - Every result is compared with the coefficients of `lm()`, including which columns are aliased (`NA`). A method that gives a different answer is marked "no".
 
 #calepin.chunk(echo: false, results: "hide")[
 ```r
-bench_dir <- normalizePath(file.path(Sys.getenv("DESIGN_MATRIX_ROOT", "../.."), "bench", "ols"))
+bench_dir <- normalizePath(file.path(Sys.getenv("XTX_ROOT", "../.."), "bench", "ols"))
 res <- read.csv(file.path(bench_dir, "results.csv"))
 res$p <- as.integer(res$p)
 ols_table <- function(mode) {
@@ -151,7 +151,7 @@ ols_table <- function(mode) {
                              x$MB, ifelse(x$matches_lm %in% TRUE, "", " (no)")))
     tab <- reshape(x[, c("method", "p", "cell")], idvar = "method", timevar = "p", direction = "wide")
     names(tab) <- c("Method", paste(sort(unique(x$p)), "columns"))
-    tab <- tab[order(tab$Method != "design.matrix qr()", tab$Method), ]
+    tab <- tab[order(tab$Method != "xtx qr()", tab$Method), ]
     tinytable::tt(tab)
 }
 ```

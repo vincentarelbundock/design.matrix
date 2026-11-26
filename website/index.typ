@@ -1,7 +1,7 @@
 #import "/.calepin/calepin.typ" as calepin
 #show: calepin.document
 
-#set document(title: [design.matrix])
+#set document(title: [xtx])
 #metadata((title: "Introduction")) <website-metadata>
 
 #import "/benchmarks/bench.typ": bench-table
@@ -17,16 +17,16 @@ options(width = 200)
 
 #title()
 
-The `design.matrix` package builds model matrices that are identical, bit for bit, to those returned by `stats::model.matrix()`. Its main benefit comes when the dense model matrix is only an intermediate input to something else: least squares coefficients need `X'X` and `X'y`, predictions multiply it by a vector of coefficients, their standard errors need a quadratic form, and cluster-robust variances need weighted sums of its rows by group. `design.matrix` computes these results directly from the factor codes and numeric variables, without materializing the dense matrix, which often saves an order of magnitude or more in both time and memory. When the dense matrix itself is what you need, there is no step to skip, and the gains are much smaller.
+The `xtx` package builds model matrices that are identical, bit for bit, to those returned by `stats::model.matrix()`. Its main benefit comes when the dense model matrix is only an intermediate input to something else: least squares coefficients need `X'X` and `X'y`, predictions multiply it by a vector of coefficients, their standard errors need a quadratic form, and cluster-robust variances need weighted sums of its rows by group. `xtx` computes these results directly from the factor codes and numeric variables, without materializing the dense matrix, which often saves an order of magnitude or more in both time and memory. When the dense matrix itself is what you need, there is no step to skip, and the gains are much smaller.
 
-Use `design.matrix` when you have a formula (or fitted model) and data, and you need the model matrix only on the way to something else, so that allocating, filling, and storing it would be wasted work. If you already have the dense matrix `X`, use it directly.
+Use `xtx` when you have a formula (or fitted model) and data, and you need the model matrix only on the way to something else, so that allocating, filling, and storing it would be wasted work. If you already have the dense matrix `X`, use it directly.
 
 = Installation
 
 ```r
 #| eval: false
 # install.packages("remotes")
-remotes::install_github("vincentarelbundock/design.matrix")
+remotes::install_github("vincentarelbundock/xtx")
 ```
 
 = Performance
@@ -60,7 +60,7 @@ The plot measures only time, and only for predictions. The savings extend to mem
 
 #bench-table("summary", code-column: false)
 
-Each of these tasks uses the model matrix only as an intermediate input, so `design.matrix` never forms it. When you do need the dense matrix, `design.matrix` returns the identical matrix at about the same speed on one thread and about twice as fast on four threads, but it takes the same memory. The #link("operations.html")[Operations] page gives the details.
+Each of these tasks uses the model matrix only as an intermediate input, so `xtx` never forms it. When you do need the dense matrix, `xtx` returns the identical matrix at about the same speed on one thread and about twice as fast on four threads, but it takes the same memory. The #link("operations.html")[Operations] page gives the details.
 
 = Promises
 
@@ -80,7 +80,7 @@ Under the hood, a design matrix stores only the factor codes, the numeric variab
 Build a design with an intercept, a numeric predictor, and a two-level factor. Multiplying it by a coefficient vector gives one linear prediction per row.
 
 ```r
-library(design.matrix)
+library(xtx)
 
 d <- data.frame(x = c(1, 2, 3), group = factor(c("a", "b", "a")))
 D <- design_matrix(~ x + group, d)

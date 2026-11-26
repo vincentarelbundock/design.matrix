@@ -9,7 +9,7 @@ reference: ## Convert man/*.Rd to website/reference/*.typ
 # Benchmarks never run when the site builds: the pages read saved results.
 # BENCH_SIZE=full (default) saves the published results; BENCH_SIZE=quick
 # runs small grids and saves them in $BENCH_OUT/website and $BENCH_OUT/ols
-# (default BENCH_OUT: $TMPDIR/design.matrix-bench-quick), never over the
+# (default BENCH_OUT: $TMPDIR/xtx-bench-quick), never over the
 # published ones. The fixed-effects data cache is outside the repository too
 # (FE_BENCH_CACHE, see website/benchmarks/fixed_effects.R).
 BENCH_SIZE ?= full

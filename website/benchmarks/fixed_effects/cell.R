@@ -46,7 +46,7 @@ if (remote) {
 suppressPackageStartupMessages(switch(package,
     "design_lm" = ,
     "design_lm (DuckDB)" = {
-        library(design.matrix)
+        library(xtx)
         design_threads(1)
     },
     "feols" = {

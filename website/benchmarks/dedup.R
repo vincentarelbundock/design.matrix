@@ -6,7 +6,7 @@ pd <- design_matrix(~ f1 * f3 + f2, dup, contrasts.arg = list(f1 = "contr.sum", 
 Vd <- diag(ncol(design_matrix(pd, dup[1:2, ])))
 
 quad <- function(mode, D = design_matrix(pd, dup)) {
-    op <- options(design.matrix.dedup = mode)
+    op <- options(xtx.dedup = mode)
     on.exit(options(op))
     quadratic_diagonal(D, Vd)
 }

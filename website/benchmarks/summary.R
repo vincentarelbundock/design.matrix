@@ -27,5 +27,5 @@ cell <- function(m, i) paste0(format(m$median[i]), ", ", format(m$mem_alloc[i]))
 data.frame(
     Task = names(marks),
     "Base R" = sapply(marks, cell, i = 1),
-    "design.matrix" = sapply(marks, cell, i = 2),
+    "xtx" = sapply(marks, cell, i = 2),
     check.names = FALSE)

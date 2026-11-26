@@ -1,12 +1,12 @@
-title = "design.matrix"
+title = "xtx"
 description = "Exact and fast model matrices for R."
-base-url = "https://vincentarelbundock.github.io/design.matrix"
+base-url = "https://vincentarelbundock.github.io/xtx"
 search = "pagefind"
 
 [menus]
 
   [[menus.social]]
-  target = "https://github.com/vincentarelbundock/design.matrix"
+  target = "https://github.com/vincentarelbundock/xtx"
   label = "{icon:github}"
   aria-label = "GitHub"
 

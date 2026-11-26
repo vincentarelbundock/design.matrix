@@ -17,7 +17,7 @@ options(width = 200)
 When the data do not fit in memory, `design_matrix()`, `design_lm()` and `design_glm()` take a DuckDB connection and a table (or a `sql` query), or the path of Parquet files, instead of a data frame. The rows stay in the database: products with the design run there as `GROUP BY` aggregates, or in batches, and only small results come back to R. These designs need the DBI and duckdb packages.
 
 ```r
-library(design.matrix)
+library(xtx)
 con <- DBI::dbConnect(duckdb::duckdb())
 set.seed(1)
 n <- 10000
@@ -115,7 +115,7 @@ all.equal(crossprod("w" * D, "y"), crossprod(X, d$w * d$y), check.attributes = F
 all.equal(colSums(D, group = "cl"), rowsum(X, d$cl), check.attributes = FALSE)
 ```
 
-When the rows have few distinct design patterns (factors and discrete numeric variables), these products and `design_lm()` run one `GROUP BY` over the input columns of the design, and compute the result from the design of the patterns, in memory. The option `design.matrix.remote_compress` controls this.
+When the rows have few distinct design patterns (factors and discrete numeric variables), these products and `design_lm()` run one `GROUP BY` over the input columns of the design, and compute the result from the design of the patterns, in memory. The option `xtx.remote_compress` controls this.
 
 = Columns and predictions
 

@@ -14,7 +14,7 @@ for f in "$out"/*.typ; do
     {
         printf '#import "/.calepin/calepin.typ" as calepin\n#show: calepin.document\n\n'
         sed -e "s/^#metadata((\$/#metadata((\n  title: \"${alias}\",/" \
-            -e 's/^))<rd2qmd>$/)) <website-metadata>\n\n#calepin.setup(echo: true, eval: true, results: "verbatim", warning: false, message: false)\n\n#calepin.chunk(echo: false, results: "hide")[\n```r\nlibrary(design.matrix)\n```\n]/' \
+            -e 's/^))<rd2qmd>$/)) <website-metadata>\n\n#calepin.setup(echo: true, eval: true, results: "verbatim", warning: false, message: false)\n\n#calepin.chunk(echo: false, results: "hide")[\n```r\nlibrary(xtx)\n```\n]/' \
             "$f"
     } > "$f.tmp"
     mv "$f.tmp" "$f"

@@ -3,7 +3,7 @@
 #
 #   Rscript worker.R <lib> <case> <n> <reps> <threads> <limit> <fixest 0|1> <out.rds> <fixest_limit>
 #
-# Loads design.matrix from <lib>, simulates the case's data, runs fit() once
+# Loads xtx from <lib>, simulates the case's data, runs fit() once
 # (warmup; queries counted for remote cases) and then <reps> timed times
 # (only the warmup when it took more than <limit> seconds). With fixest = 1,
 # also times the fixest call (warmup alone when slower than <fixest_limit>)
@@ -21,7 +21,7 @@ fixest_limit <- as.numeric(args[9])
 
 .libPaths(c(lib, .libPaths()))
 suppressPackageStartupMessages({
-    library(design.matrix, lib.loc = lib)
+    library(xtx, lib.loc = lib)
     library(fixest)
 })
 design_threads(threads)
@@ -41,7 +41,7 @@ if (grepl("remote", case) || grepl("remote", case_group[[case]])) {
 cs <- cases[[case]](n)
 if (!is.null(cs$setup)) cs$setup()
 
-# Count DBI queries (the generics design.matrix calls) during one fit
+# Count DBI queries (the generics xtx calls) during one fit
 queries <- new.env()
 queries$n <- 0L
 count_on <- function() {
@@ -76,7 +76,7 @@ res <- timed(cs$fit, count = isTRUE(cs$remote))
 
 row <- list(
     case = case, group = case_group[[case]], n = n,
-    version = as.character(packageVersion("design.matrix", lib.loc = lib)),
+    version = as.character(packageVersion("xtx", lib.loc = lib)),
     seconds = res$seconds, reps = res$reps, mem = res$mem, gc = res$gc,
     queries = if (isTRUE(cs$remote)) queries$n else NA_integer_,
     coef = res$value, ref_name = cs$ref_name %||% NA_character_)

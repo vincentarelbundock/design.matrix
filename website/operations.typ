@@ -23,7 +23,7 @@ Each section shows a small example, checked with `identical()` when the result i
 The small examples use this data frame:
 
 ```r
-library(design.matrix)
+library(xtx)
 d <- data.frame(
     y = c(0.3, -1.2, 0.8, 1.5, -0.4, 0.9, -2.1, 0.2),
     x = c(-1.5, 0.2, 1.1, -0.3, 2.0, 0.7, -0.9, 1.4),
@@ -31,11 +31,11 @@ d <- data.frame(
     cl = c(1, 1, 2, 2, 3, 3, 4, 4))
 ```
 
-The benchmarks use this one, with one thread unless stated otherwise. `X` and `DX` are prebuilt dense and design matrices, and `same()` and `close()` are the checks for exact and approximate results. Each benchmark runs in a fresh R process on top of this setup; the results shown were saved by `make bench` (see #link("https://github.com/vincentarelbundock/design.matrix/tree/main/website/benchmarks")[`website/benchmarks`]).
+The benchmarks use this one, with one thread unless stated otherwise. `X` and `DX` are prebuilt dense and design matrices, and `same()` and `close()` are the checks for exact and approximate results. Each benchmark runs in a fresh R process on top of this setup; the results shown were saved by `make bench` (see #link("https://github.com/vincentarelbundock/xtx/tree/main/website/benchmarks")[`website/benchmarks`]).
 
 #bench-code("setup")
 
-The benchmark tables report minimum and median elapsed time and `mem_alloc`, the total bytes allocated on the R heap during one evaluation. Reproducing the memory column requires an R build with `capabilities("profmem")` enabled. For fair comparisons with functions that call `model.matrix()`, the benchmarks set `options(design.matrix.skip_na_copy = FALSE)`, so that the model frame is built in exactly the same way (by default, `design.matrix` skips a copy of the frame that `na.omit()` makes even when no row has a missing value).
+The benchmark tables report minimum and median elapsed time and `mem_alloc`, the total bytes allocated on the R heap during one evaluation. Reproducing the memory column requires an R build with `capabilities("profmem")` enabled. For fair comparisons with functions that call `model.matrix()`, the benchmarks set `options(xtx.skip_na_copy = FALSE)`, so that the model frame is built in exactly the same way (by default, `xtx` skips a copy of the frame that `na.omit()` makes even when no row has a missing value).
 
 = Building designs
 
@@ -201,7 +201,7 @@ identical(a, b)
 
 = Repeated rows
 
-When rows have identical predictor values, `design.matrix` can compute the result once per distinct row and reuse it for every matching row. Row-wise results stay identical bit for bit. The option `design.matrix.dedup` controls this: `"auto"` (default), `TRUE` (always) or `FALSE` (never).
+When rows have identical predictor values, `xtx` can compute the result once per distinct row and reuse it for every matching row. Row-wise results stay identical bit for bit. The option `xtx.dedup` controls this: `"auto"` (default), `TRUE` (always) or `FALSE` (never).
 
 Repeated rows are found once per design matrix and remembered, so the first call pays for the search. The first two timings include design construction. The cached timing reuses both the design and its groups. Here, 5,000 patterns repeat over 200,000 rows.
 

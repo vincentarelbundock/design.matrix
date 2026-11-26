@@ -1,7 +1,7 @@
-# Development benchmark: before/after between two versions of design.matrix
+# Development benchmark: before/after between two versions of xtx
 # =========================================================================
 #
-# Compare two installed libraries (each containing design.matrix):
+# Compare two installed libraries (each containing xtx):
 #
 #   Rscript website/benchmarks/dev/compare.R --base <libpath> --new <libpath>
 #
@@ -24,11 +24,11 @@
 #   --limit 60          seconds: a warmup slower than this is reported alone
 #   --fixest-limit 5    same for the fixest timing (difficult 3FE: 30-50 s/call)
 #   --no-fixest         skip fixest timing and references (d_ref then empty)
-#   --threads 1         threads for design.matrix, fixest, data.table, DuckDB,
+#   --threads 1         threads for xtx, fixest, data.table, DuckDB,
 #                       OpenMP and BLAS [1]
 #   --core 2            taskset CPU list ("2", "2-5"); "none" to not pin [2]
-#   --csv path          CSV output [~/.cache/design.matrix-bench/results/<time>.csv]
-#   --cache dir         where refs are built [~/.cache/design.matrix-bench]
+#   --csv path          CSV output [~/.cache/xtx-bench/results/<time>.csv]
+#   --cache dir         where refs are built [~/.cache/xtx-bench]
 #   --list              list the cases and exit
 #
 # Each case runs in a fresh R process per library (worker.R): simulate data,
@@ -63,7 +63,7 @@
 args <- commandArgs(trailingOnly = TRUE)
 # an environment, not a list: `$` must not partially match (--n vs --new)
 opt <- list2env(list(cases = "all", preset = "quick", threads = "1", core = "2", limit = "60", fixest_limit = "5",
-                     cache = file.path(Sys.getenv("HOME"), ".cache", "design.matrix-bench")))
+                     cache = file.path(Sys.getenv("HOME"), ".cache", "xtx-bench")))
 i <- 1
 while (i <= length(args)) {
     a <- args[i]
@@ -113,7 +113,7 @@ build_lib <- function(ref) {
     repo <- system2("git", c("-C", here, "rev-parse", "--show-toplevel"), stdout = TRUE)
     sha <- system2("git", c("-C", repo, "rev-parse", "--verify", paste0(ref, "^{commit}")), stdout = TRUE)
     lib <- file.path(opt$cache, "libs", substr(sha, 1, 12))
-    if (file.exists(file.path(lib, "design.matrix", "DESCRIPTION"))) {
+    if (file.exists(file.path(lib, "xtx", "DESCRIPTION"))) {
         message("using cached build of ", ref, " (", substr(sha, 1, 12), "): ", lib)
         return(lib)
     }
@@ -137,8 +137,8 @@ base <- if (!is.null(opt$base_ref)) build_lib(opt$base_ref) else opt$base
 new <- if (!is.null(opt$new_ref)) build_lib(opt$new_ref) else opt$new
 if (is.null(base)) stop("give --base <lib> or --base-ref <ref>")
 for (l in c(base, new))
-    if (!file.exists(file.path(l, "design.matrix", "DESCRIPTION")))
-        stop("no design.matrix in library ", l)
+    if (!file.exists(file.path(l, "xtx", "DESCRIPTION")))
+        stop("no xtx in library ", l)
 base <- normalizePath(base)
 if (!is.null(new)) new <- normalizePath(new)
 

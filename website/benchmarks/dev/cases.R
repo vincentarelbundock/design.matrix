@@ -2,7 +2,7 @@
 #
 # Each case is a function of the number of rows `n` that simulates its data
 # and returns a list:
-#   fit     function(): the design.matrix call that is timed; returns a
+#   fit     function(): the xtx call that is timed; returns a
 #           numeric vector (coefficients, or the flattened product), named
 #           when the reference has names.
 #   fixest  function() (optional): the fixest call that is timed (default
@@ -96,8 +96,8 @@ case_fe_ols <- function(type, nfe, remote = FALSE) {
     f <- fe_formula("y", nfe)
     tab <- if (remote) remote_table(d)
     list(
-        fit = if (remote) function() coef(design.matrix::design_lm(f, con, table = tab))["x1"]
-              else function() coef(design.matrix::design_lm(f, d))["x1"],
+        fit = if (remote) function() coef(xtx::design_lm(f, con, table = tab))["x1"]
+              else function() coef(xtx::design_lm(f, d))["x1"],
         fixest = function() fixest::feols(f, d, vcov = "iid", notes = FALSE),
         ref = function() coef(fixest::feols(f, d, vcov = "iid", notes = FALSE,
                                             fixef.tol = 1e-11, fixef.iter = 1e5))["x1"],
@@ -118,8 +118,8 @@ case_fe_glm <- function(family, type, nfe, remote = FALSE) {
         else fixest::feglm(f, d, family = "logit", vcov = "iid", notes = FALSE, ...)
     }
     list(
-        fit = if (remote) function() coef(design.matrix::design_glm(f, fam, con, table = tab))["x1"]
-              else function() coef(design.matrix::design_glm(f, fam, d))["x1"],
+        fit = if (remote) function() coef(xtx::design_glm(f, fam, con, table = tab))["x1"]
+              else function() coef(xtx::design_glm(f, fam, d))["x1"],
         fixest = function() fx(),
         ref = function() coef(fx(fixef.tol = 1e-11, fixef.iter = 1e5, glm.tol = 1e-11, glm.iter = 100))["x1"],
         ref_name = "fixest", remote = remote)
@@ -134,9 +134,9 @@ case_lm_nofe <- function(remote = FALSE, compress = "auto", formula = f_nofe) fu
     d <- factor_dgp(n)
     tab <- if (remote) remote_table(d)
     list(
-        setup = function() if (remote) options(design.matrix.remote_compress = compress),
-        fit = if (remote) function() coef(design.matrix::design_lm(formula, con, table = tab))
-              else function() coef(design.matrix::design_lm(formula, d, compress = compress)),
+        setup = function() if (remote) options(xtx.remote_compress = compress),
+        fit = if (remote) function() coef(xtx::design_lm(formula, con, table = tab))
+              else function() coef(xtx::design_lm(formula, d, compress = compress)),
         fixest = function() fixest::feols(formula, d, vcov = "iid", notes = FALSE),
         ref = function() coef(stats::lm(formula, d)),
         ref_name = "lm", remote = remote)
@@ -146,8 +146,8 @@ case_glm_nofe <- function(remote = FALSE) function(n) {
     d <- factor_dgp(n)
     tab <- if (remote) remote_table(d)
     list(
-        fit = if (remote) function() coef(design.matrix::design_glm(f_nofe_bin, stats::binomial(), con, table = tab))
-              else function() coef(design.matrix::design_glm(f_nofe_bin, stats::binomial(), d)),
+        fit = if (remote) function() coef(xtx::design_glm(f_nofe_bin, stats::binomial(), con, table = tab))
+              else function() coef(xtx::design_glm(f_nofe_bin, stats::binomial(), d)),
         fixest = function() fixest::feglm(f_nofe_bin, d, family = "logit", vcov = "iid", notes = FALSE),
         ref = function() coef(stats::glm(f_nofe_bin, stats::binomial(), d,
                                          control = list(epsilon = 1e-12, maxit = 100))),
@@ -159,8 +159,8 @@ case_crossprod <- function(remote = FALSE) function(n) {
     d <- factor_dgp(n)
     tab <- if (remote) remote_table(d)
     list(
-        fit = if (remote) function() c(crossprod(design.matrix::design_matrix(f_nofe, con, table = tab)))
-              else function() c(crossprod(design.matrix::design_matrix(f_nofe, d))),
+        fit = if (remote) function() c(crossprod(xtx::design_matrix(f_nofe, con, table = tab)))
+              else function() c(crossprod(xtx::design_matrix(f_nofe, d))),
         ref = function() c(crossprod(stats::model.matrix(f_nofe, d))),
         ref_name = "dense", remote = remote)
 }
@@ -169,8 +169,8 @@ case_colsums <- function(remote = FALSE) function(n) {
     d <- factor_dgp(n)
     tab <- if (remote) remote_table(d)
     list(
-        fit = if (remote) function() c(colSums("x" * design.matrix::design_matrix(f_nofe, con, table = tab), group = "f3"))
-              else function() c(colSums(d$x * design.matrix::design_matrix(f_nofe, d), group = d$f3)),
+        fit = if (remote) function() c(colSums("x" * xtx::design_matrix(f_nofe, con, table = tab), group = "f3"))
+              else function() c(colSums(d$x * xtx::design_matrix(f_nofe, d), group = d$f3)),
         ref = function() c(rowsum(d$x * stats::model.matrix(f_nofe, d), d$f3)),
         ref_name = "dense", remote = remote)
 }

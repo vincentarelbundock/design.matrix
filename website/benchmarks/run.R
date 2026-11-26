@@ -14,7 +14,7 @@
 # (make bench-quick): fewer rows and iterations (setup.R) and a small
 # fixed-effects grid (fixed_effects.R), to check that the scripts run. Quick
 # results never go to results/: they go to $BENCH_OUT/website (default
-# $TMPDIR/design.matrix-bench-quick, or /tmp/...), printed at the end. The
+# $TMPDIR/xtx-bench-quick, or /tmp/...), printed at the end. The
 # workers get the folder as BENCH_RESULTS.
 #
 # The BLAS runs on one thread (OMP_NUM_THREADS=1, since OpenBLAS built with
@@ -66,7 +66,7 @@ if (length(wanted) > 0) {
 results <- if (bench_size == "full") file.path(here, "results") else {
     tmp <- Sys.getenv("TMPDIR")
     out <- Sys.getenv("BENCH_OUT")
-    if (!nzchar(out)) out <- file.path(if (nzchar(tmp)) tmp else "/tmp", "design.matrix-bench-quick")
+    if (!nzchar(out)) out <- file.path(if (nzchar(tmp)) tmp else "/tmp", "xtx-bench-quick")
     file.path(out, "website")
 }
 dir.create(results, showWarnings = FALSE, recursive = TRUE)
