@@ -982,7 +982,7 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     fit$cols <- prob$cols
     fit$cols$off <- prob$more$off
     fit$offset_call <- call$offset
-    fit$env <- env
+    fit$env <- base$env
     fit$terms <- base$terms
     fit$contrasts <- base$contrasts
     fit$xlevels <- base$xlevels

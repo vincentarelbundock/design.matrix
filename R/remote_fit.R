@@ -142,12 +142,15 @@ dm_fe_na_kind <- function(na.action) {
 ##     the cluster variable (or NULL): the design is that of the main terms,
 ##     rows with a missing FE or cluster value are dropped, and `keys` holds
 ##     their values (dm_fe_keys()).
-## Messages are those of lm() for a linear model without FE, of glm()
-## otherwise. Returns list(x (the design), y (the response), w, off (or
-## NULL), cols (GLM), resp (remotely: the columns of a two-column
-## response), keys, frame (the model frame in memory), na.action, exclude
-## (remotely, na.exclude), rows, nall, terms, formula, contrasts, xlevels,
-## env).
+## The response, weights, offset and subset are evaluated in the data and
+## the formula's environment (as model.frame() does), na.action in env.
+## Messages are the same in memory and remotely: for the offset length,
+## those of lm() for a linear model without FE, of glm() otherwise.
+## Returns list(x (the design), y (the response), w, off (or NULL), cols
+## (GLM), resp (remotely: the columns of a two-column response), keys,
+## frame (the model frame in memory), na.action, exclude (remotely,
+## na.exclude), rows, nall, terms, formula, contrasts, xlevels, env (the
+## formula's environment)).
 design_problem <- function(call, env, formula, data, contrasts, dots, family = NULL, fe = NULL, clv = NULL) {
     P <- if (!is.null(data) && dm_is_remote_source(data)) {
         dm_problem_remote(call, env, formula, data, contrasts, dots, family, fe, clv)
@@ -253,6 +256,9 @@ dm_problem_remote <- function(call, env, formula, source, contrasts, dots, famil
     dm_need_duckdb()
     src <- dm_remote_source(source, dots$table, dots$sql)
     if (!is.null(fe)) formula <- fe$main
+    ## (the response, weights, offset and subset are evaluated in the
+    ## formula's environment, as model.frame() does in memory)
+    fenv <- environment(formula) %||% env
     tt <- stats::terms(formula, data = src$proto)
     if (attr(tt, "response") == 0L) stop("The formula has no response.", call. = FALSE)
     lhs <- attr(tt, "variables")[[attr(tt, "response") + 1L]]
@@ -264,7 +270,7 @@ dm_problem_remote <- function(call, env, formula, source, contrasts, dots, famil
     if (!is.null(mresp) && is.call(lhs) && identical(lhs[[1L]], as.name("cbind")) && length(lhs) > 2L)
         stop(mresp, call. = FALSE)
     args <- c(resp$args, list(weights = call$weights, offset = call$offset, subset = if (is.null(family)) call$subset))
-    r <- dm_remote_fit(formula, src, args, env, dots, contrasts, logical = "subset",
+    r <- dm_remote_fit(formula, src, args, fenv, dots, contrasts, logical = "subset",
                        present = unique(c(unlist(fe$fe, use.names = FALSE), clv, resp$present)), na = na,
                        mresp = mresp)
     D <- r$x
@@ -275,7 +281,7 @@ dm_problem_remote <- function(call, env, formula, source, contrasts, dots, famil
     list(x = D, y = y, w = r$cols$weights, off = r$off, resp = list(a = r$cols$a, b = r$cols$b, cbind = resp$cbind),
          na.action = if (na == "exclude") dm_remote_exclude(D), exclude = na == "exclude", rows = NULL, nall = D$n,
          terms = tt, formula = formula, contrasts = D$plan$contrasts,
-         xlevels = D$plan$xlevels, env = env)
+         xlevels = D$plan$xlevels, env = fenv)
 }
 
 ## The remote design of a fit and the columns of its arguments (one code

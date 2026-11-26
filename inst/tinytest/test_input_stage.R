@@ -1,11 +1,15 @@
 # The input stage of the formula fits (design_lm(), design_glm(), fixed
 # effects; in memory and on a DuckDB table): every error and warning
 # message, exactly (fixed = TRUE), and the error reported when a call has
-# two problems (validation order). These pin current behaviour, including
-# differences between paths that are not decided yet:
+# two problems (validation order). The behaviour is the same in memory and
+# remotely; where lm() and glm() differ, the model kind decides, as in base R:
 # * offsets: lm() says "is %d, should equal", glm() and FE "is %d should equal";
 # * weights: LM "missing or negative weights not allowed", GLM "negative
-#   weights not allowed";
+#   weights not allowed".
+# Differences left between the modes: non-numeric weights, offsets and
+# responses (remotely, "has no SQL translation"), and the na.action
+# functions that remote data cannot apply (other than na.omit, na.exclude,
+# na.fail, na.pass) in linear models without FE.
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
 library(design.matrix)
@@ -569,3 +573,28 @@ kb <- design.matrix:::dmglm_kind(binomial())
 expect_false(design.matrix:::dmglm_mem_cols(c(1, 2, 3), NULL, NULL, kp)$weighted)
 expect_true(design.matrix:::dmglm_mem_cols(c(1, 2, 3), c(1, 1, 2), NULL, kp)$weighted)
 expect_true(design.matrix:::dmglm_mem_cols(cbind(c(1, 2), c(0, 1)), NULL, NULL, kb)$weighted)
+
+# fit$env: the formula's environment on every path; the arguments are
+# evaluated there (and in the data), as model.frame() does
+mkf <- function(fo) {
+    wloc <- d$w
+    force(fo)
+    environment(fo) <- environment()
+    fo
+}
+fo_lm <- mkf(y ~ x)
+fo_fe <- mkf(y ~ x | id)
+fo_glm <- mkf(k ~ x)
+fo_feglm <- mkf(k ~ x | id)
+expect_identical(design_lm(fo_lm, d)$env, environment(fo_lm))
+expect_identical(design_lm(fo_lm, con, table = "d")$env, environment(fo_lm))
+expect_identical(design_glm(fo_glm, poisson, d)$env, environment(fo_glm))
+expect_identical(design_glm(fo_glm, poisson, con, table = "d")$env, environment(fo_glm))
+expect_identical(design_lm(fo_fe, d)$env, environment(fo_fe))
+expect_identical(design_lm(fo_fe, con, table = "d")$env, environment(fo_fe))
+expect_identical(design_glm(fo_feglm, poisson, d)$env, environment(fo_feglm))
+expect_identical(design_glm(fo_feglm, poisson, con, table = "d")$env, environment(fo_feglm))
+fw_m <- design_lm(fo_lm, d, weights = wloc * 2)
+fw_r <- suppressMessages(design_lm(fo_lm, con, table = "d", weights = wloc * 2))
+expect_equal(coef(fw_m), coef(fw_r))
+expect_equal(coef(fw_m), coef(lm(y ~ x, d, weights = w)))

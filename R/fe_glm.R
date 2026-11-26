@@ -154,7 +154,7 @@ dm_fe_glm <- function(call, env, formula, family, data, start, control, contrast
     fit$xlevels <- base$xlevels
     fit$spec <- dmfit_spec(base$x)
     fit$offset_call <- call$offset
-    fit$env <- env
+    fit$env <- base$env
     fit$rows <- base$nall
     ## (remotely, na.exclude pads the results with every row not used)
     fit$na.action <- if (base$exclude) dm_remote_exclude(prob$x_rows)
