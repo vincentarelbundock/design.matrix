@@ -659,8 +659,9 @@ dm_fe_suspects <- function(x, cols, A, xcols, M, scale, dxx, tol) {
     thr <- tol * scale
     band <- list(lo = ifelse(ok, thr - width, Inf), hi = ifelse(ok, thr + width, -Inf))
     px <- length(xcols)
-    z0 <- dmc_const(cols$z, 0)
     recheck <- function(ch, sus) {
+        ## (a zero column, made only when there are suspects)
+        z0 <- dmc_const(cols$z, 0)
         acc <- ch$pivot[seq_len(ch$rank)]
         d <- vapply(sus, function(j) {
             K <- acc[acc < j]
