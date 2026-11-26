@@ -4,7 +4,7 @@ if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quie
 source("helpers.R")
 library(design.matrix)
 
-con <- DBI::dbConnect(duckdb::duckdb())
+con <- test_con()
 scratch <- tempfile("dm_remote")
 dir.create(scratch)
 
@@ -302,5 +302,5 @@ expect_error(design_matrix(y ~ x1, con), "exactly one of")
 expect_error(design_matrix(y ~ nope, con, table = "d"))
 expect_error(crossprod(design_matrix(y ~ x1, con, table = "d"), "nope"), "no column")
 
-DBI::dbDisconnect(con)
+test_con_done(con)
 unlink(scratch, recursive = TRUE)

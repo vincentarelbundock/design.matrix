@@ -7,7 +7,7 @@ if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quie
 source("helpers.R")
 library(design.matrix)
 
-con <- DBI::dbConnect(duckdb::duckdb())
+con <- test_con()
 same <- function(a, b, tol = 1e-8) isTRUE(all.equal(unname(a), unname(b), tolerance = tol, check.attributes = FALSE))
 set.seed(11)
 n <- 400
@@ -146,5 +146,5 @@ for (fname in names(formulas)) for (src in names(sources)) {
                 info = paste(info, "qr.fitted matrix"))
 }
 
-DBI::dbDisconnect(con)
+test_con_done(con)
 unlink(pq)

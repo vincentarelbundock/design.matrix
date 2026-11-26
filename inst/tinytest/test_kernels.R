@@ -129,3 +129,4 @@ ref <- unname(stats::model.matrix(~ f * x, nd, contrasts.arg = list(f = "contr.s
 expect_identical(D %*% beta, ref)
 D$setup$contrast_rows <- NULL
 expect_identical(D %*% beta, ref)
+design_threads(old)

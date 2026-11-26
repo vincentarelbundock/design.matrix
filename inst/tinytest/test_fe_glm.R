@@ -29,7 +29,7 @@ plain <- function(V) {
 }
 
 if (remote) {
-    con <- DBI::dbConnect(duckdb::duckdb())
+    con <- test_con()
     pq_dir <- tempfile("feglm_pq")
     dir.create(pq_dir)
 }
@@ -268,4 +268,4 @@ if (remote && full_tests) {
     expect_true(max(qlen) < 2e4)
     expect_equal(coef(fp), coef(design_glm(yb ~ x1 + x2 | a + b + c, binomial("probit"), d)), tolerance = TOL)
 }
-if (remote) DBI::dbDisconnect(con)
+if (remote) test_con_done(con)
