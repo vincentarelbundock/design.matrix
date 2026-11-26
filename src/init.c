@@ -33,6 +33,9 @@ static const R_CallMethodDef CallEntries[] = {
     {"dm_struct_gram", (DL_FUNC) &dm_struct_gram, 3},
     {"dm_struct_xty", (DL_FUNC) &dm_struct_xty, 3},
     {"dm_struct_mult", (DL_FUNC) &dm_struct_mult, 4},
+    {"dm_min_nonzero", (DL_FUNC) &dm_min_nonzero, 2},
+    {"dm_all_finite", (DL_FUNC) &dm_all_finite, 1},
+    {"dm_col_norms", (DL_FUNC) &dm_col_norms, 1},
     {"dm_omp_max_threads", (DL_FUNC) &dm_omp_max_threads, 0},
     {NULL, NULL, 0}
 };

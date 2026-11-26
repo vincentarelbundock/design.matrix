@@ -105,3 +105,51 @@ expect_error(solve(q), "only square")
 expect_error(qr(D, LAPACK = TRUE), "LAPACK")
 dd <- data.frame(y = rnorm(6), x = rnorm(6)); dd$h <- 2 * dd$x
 expect_error(solve(qr(design_matrix(y ~ x + h, dd)), dd$y), "singular")
+
+# Roborev 1271 regressions ----------------------------------------------
+
+same_qr <- function(D, y, tol = 1e-07) {
+    X <- as.matrix(D)
+    q <- qr(D, tol = tol); q0 <- qr(X, tol = tol)
+    identical(q$rank, q0$rank) && identical(q$pivot, q0$pivot) &&
+        isTRUE(all.equal(qr.coef(q, y), qr.coef(q0, y)))
+}
+
+# 1. After a suspect column is accepted, later suspects are judged again:
+#    with orthonormal a and z, a + 2e-5 z is a combination of a and a + 1e-5 z
+set.seed(1)
+Z <- qr.Q(qr(matrix(rnorm(300), 100)))
+a <- Z[, 1]; z <- Z[, 2]
+d1 <- data.frame(y = rnorm(100), x1 = a, x2 = a + 1e-5 * z, x3 = a + 2e-5 * z)
+D1 <- design_matrix(y ~ 0 + x1 + x2 + x3, d1)
+expect_equal(qr(D1)$rank, 2L)
+expect_true(same_qr(D1, d1$y))
+
+# 3. A column above the suspect cutoff but below `tol` is aliased
+d3 <- data.frame(y = rnorm(100), x1 = a, x2 = a + 5e-4 * z)
+D3 <- design_matrix(y ~ 0 + x1 + x2, d3)
+expect_equal(qr(D3, tol = 1e-3)$rank, 1L)
+expect_true(same_qr(D3, d3$y, tol = 1e-3))
+expect_equal(qr(D3)$rank, 2L)
+
+# 6. Columns whose squares overflow or underflow keep their rank (dense
+#    fallback), and zero columns are still aliased
+for (s in c(1e200, 1e-200, 1)) {
+    d6 <- data.frame(y = rnorm(20), x = s * rnorm(20), w = rnorm(20), z0 = 0)
+    D6 <- design_matrix(y ~ x + w + z0, d6)
+    expect_equal(qr(D6)$rank, 3L, info = s)
+    expect_true(same_qr(D6, d6$y), info = s)
+}
+
+# 8. solve() fills coefficients outside the basis with zero, as solve.qr()
+set.seed(2)
+dw <- data.frame(y = rnorm(3), x1 = rnorm(3), x2 = rnorm(3), x3 = rnorm(3), x4 = rnorm(3))
+Dw <- design_matrix(y ~ x1 + x2 + x3 + x4, dw)
+sol <- solve(qr(Dw), dw$y)
+expect_false(anyNA(sol))
+expect_equal(drop(Dw %*% sol), dw$y)
+expect_equal(sol, solve.qr(qr(as.matrix(Dw)), dw$y), check.attributes = FALSE)
+
+# 9. The methods dispatch through the package namespace
+q9 <- qr(D1)
+expect_equal(design.matrix::qr.coef(q9, d1$y), qr.coef(q9, d1$y))

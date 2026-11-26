@@ -101,6 +101,19 @@ supported.
 }
 
 Non-finite entries in \code{x} are an error, as in \code{\link[=qr]{qr()}}. \code{y} must be finite.
+When \verb{X'X} cannot represent the columns' scale (entries whose squares
+overflow or underflow, around \code{1e154} and \code{1e-154}), \code{qr()} falls back
+to the dense QR of \code{qr(as.matrix(x))}, kept in the object, and the
+methods give its results.
+
+\strong{Calling the methods.} \code{qr.coef()}, \code{qr.fitted()}, \code{qr.resid()},
+\code{qr.qty()}, \code{qr.qy()}, \code{qr.Q()} and \code{qr.R()} are S4 generics created by
+this package (as the Matrix package does for its decompositions): they
+dispatch when design.matrix is attached, or when called as
+\code{design.matrix::qr.coef()}. Calls to \code{base::qr.coef()} (for example from
+code in another package that imports base's function) do not dispatch,
+and stop because the object is not a base QR decomposition. \code{qr()} and
+\code{solve()} are S3 generics and always dispatch.
 }
 \examples{
 set.seed(1)

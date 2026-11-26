@@ -35,5 +35,8 @@ SEXP dm_struct_info(SEXP, SEXP);
 SEXP dm_struct_gram(SEXP, SEXP, SEXP);
 SEXP dm_struct_xty(SEXP, SEXP, SEXP);
 SEXP dm_struct_mult(SEXP, SEXP, SEXP, SEXP);
+SEXP dm_min_nonzero(SEXP, SEXP);
+SEXP dm_all_finite(SEXP);
+SEXP dm_col_norms(SEXP);
 SEXP dm_omp_max_threads(void);
 #endif

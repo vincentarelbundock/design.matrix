@@ -41,6 +41,19 @@
 #' * `qr.fitted()` only supports `k = q$rank`.
 #'
 #' Non-finite entries in `x` are an error, as in [qr()]. `y` must be finite.
+#' When `X'X` cannot represent the columns' scale (entries whose squares
+#' overflow or underflow, around `1e154` and `1e-154`), `qr()` falls back
+#' to the dense QR of `qr(as.matrix(x))`, kept in the object, and the
+#' methods give its results.
+#'
+#' **Calling the methods.** `qr.coef()`, `qr.fitted()`, `qr.resid()`,
+#' `qr.qty()`, `qr.qy()`, `qr.Q()` and `qr.R()` are S4 generics created by
+#' this package (as the Matrix package does for its decompositions): they
+#' dispatch when design.matrix is attached, or when called as
+#' `design.matrix::qr.coef()`. Calls to `base::qr.coef()` (for example from
+#' code in another package that imports base's function) do not dispatch,
+#' and stop because the object is not a base QR decomposition. `qr()` and
+#' `solve()` are S3 generics and always dispatch.
 #'
 #' @param x A `design_matrix`.
 #' @param tol The tolerance for detecting aliased columns, as in [qr()].
@@ -67,9 +80,17 @@ qr.design_matrix <- function(x, tol = 1e-07, ...) {
     if (isTRUE(dots$LAPACK))
         stop("`LAPACK = TRUE` is not supported for design matrices.", call. = FALSE)
     G <- crossprod(x)
-    if (!all(is.finite(G))) stop("NA/NaN/Inf in 'x'", call. = FALSE)
     storage.mode(G) <- "double"
+    if (!all(is.finite(G))) {
+        if (!all(finite_rows(x))) stop("NA/NaN/Inf in 'x'", call. = FALSE)
+        ## finite entries whose squares overflow
+        return(dmqr_dense(x, tol))
+    }
+    dg <- diag(G)
+    ## squares near the limits of double precision lose the column's scale
+    if (any(dg > 1e280 | (dg > 0 & dg < 1e-280))) return(dmqr_dense(x, tol))
     ch <- dmqr_chol(x, G, tol)
+    if (is.null(ch)) return(dmqr_dense(x, tol))
     R <- ch$R
     cn <- colnames(x)
     if (!is.null(cn)) colnames(R) <- cn[ch$pivot]
@@ -77,41 +98,72 @@ qr.design_matrix <- function(x, tol = 1e-07, ...) {
               class = "design_qr")
 }
 
+## A design whose X'X loses its scale: the dense QR of qr(), kept in the
+## object, so that every method gives the dense results.
+dmqr_dense <- function(x, tol) {
+    q <- base::qr(as.matrix(x), tol = tol)
+    p <- ncol(x)
+    R <- matrix(0, p, p)
+    Rd <- base::qr.R(q)
+    R[seq_len(nrow(Rd)), ] <- Rd
+    cn <- colnames(x)
+    if (!is.null(cn)) colnames(R) <- cn[q$pivot]
+    structure(list(design = x, R = R, rank = q$rank, pivot = q$pivot, tol = tol, dense = q),
+              class = "design_qr")
+}
+
 ## Pivoted Cholesky factor of G = X'X (see dm_chol_pivot() in kernels.c).
-## Columns whose residual norm is too small to judge from G are suspects;
-## their residual norms are computed from the data, and the factorization
-## is repeated until every suspect was judged against the columns actually
-## taken before it.
-dmqr_chol <- function(x, G, tol, susp = 1e-8) {
+## Columns whose residual norm is too small to judge from G, or whose norm
+## in G is zero, are suspects: their residual norms are computed from the
+## data, and the factorization is repeated until every suspect was judged
+## against the columns actually taken before it. Returns NULL when a column
+## with a zero norm in G is not zero in the data (its square underflowed).
+dmqr_chol <- function(x, G, tol) {
     p <- ncol(G)
+    ## columns taken from G alone are clearly above tol
+    susp <- max(1e-8, 100 * tol^2)
+    dg <- diag(G)
     dres <- rep(NA_real_, p)
+    ## A zero norm in G is a zero column unless the column's non-zero
+    ## entries can be so small that their squares underflow: when the
+    ## design's smallest possible non-zero entry rules that out, zero
+    ## columns need no check against the data.
+    if (any(dg == 0) && dmqr_min_nonzero(x)^2 > 1e-300) dres[dg == 0] <- 0
     repeat {
         ch <- .Call(C_dm_chol_pivot, G, tol, susp, as.double(nrow(x)), dres)
         names(ch) <- c("R", "rank", "pivot", "suspects")
         new <- ch$suspects[is.na(dres[ch$suspects])]
         if (length(new) == 0L) return(ch)
-        dres[new] <- dmqr_resid2(x, G, ch, new)
-        taken <- new[dres[new] > tol^2 * diag(G)[new]]
+        v <- dmqr_resid2(x, G, ch, new)
+        if (any(v$nonzero & !(dg[new] > 0))) return(NULL)
+        ## the C code takes a column when dres > tol^2 * G[j, j], that is,
+        ## when its residual norm is above tol times its norm
+        dres[new] <- ifelse(v$nonzero, v$ratio^2 * dg[new], 0)
+        taken <- new[v$nonzero & v$ratio > tol]
         if (length(taken) == 0L) return(ch)
-        ## a suspect turned out to be independent: later columns were
-        ## judged without it
-        later <- seq_len(p) > min(taken)
-        later[taken] <- FALSE
-        dres[later] <- NA_real_
+        ## a suspect turned out to be independent: every later column,
+        ## suspects included, was judged without it
+        dres[seq_len(p) > min(taken)] <- NA_real_
     }
 }
 
-## Squared residual norms of columns `cols` of x, after projection on the
-## columns taken before each of them, computed from the data (one
-## refinement step), in blocks of columns.
+## For columns `cols` of x: the norm of the residual after projection on
+## the columns taken before each of them, relative to the column's norm,
+## both computed from the data (one refinement step) and scaled so that
+## neither overflows nor underflows; and whether the column has a non-zero
+## entry. In blocks of columns.
 dmqr_resid2 <- function(x, G, ch, cols) {
     acc <- ch$pivot[seq_len(ch$rank)]
     R <- ch$R
-    out <- numeric(length(cols))
+    p <- ncol(G)
+    ratio <- numeric(length(cols))
+    nonzero <- logical(length(cols))
     for (blk in split(seq_along(cols), (seq_along(cols) - 1L) %/% 32L)) {
-        M <- matrix(0, ncol(G), length(blk))
-        A <- vector("list", length(blk))
-        for (u in seq_along(blk)) {
+        k <- length(blk)
+        M <- matrix(0, p, k)
+        E <- matrix(0, p, k)
+        A <- vector("list", k)
+        for (u in seq_len(k)) {
             j <- cols[blk[u]]
             a <- sum(acc < j)
             A[[u]] <- acc[seq_len(a)]
@@ -119,19 +171,50 @@ dmqr_resid2 <- function(x, G, ch, cols) {
             cf <- dmqr_bs(Ra, dmqr_bs(Ra, G[A[[u]], j, drop = FALSE], transpose = TRUE))
             M[j, u] <- 1
             M[A[[u]], u] <- -cf
+            E[j, u] <- 1
         }
         res <- x %*% M
         h <- crossprod(x, res)
-        for (u in seq_along(blk)) {
+        for (u in seq_len(k)) {
             a <- length(A[[u]])
             Ra <- R[seq_len(a), seq_len(a), drop = FALSE]
             M[A[[u]], u] <- M[A[[u]], u] -
                 dmqr_bs(Ra, dmqr_bs(Ra, h[A[[u]], u, drop = FALSE], transpose = TRUE))
         }
-        res <- x %*% M
-        out[blk] <- colSums(res^2)
+        ## a column's norm is sqrt(G[j, j]), accurate to rounding, unless
+        ## G[j, j] is zero (possibly underflow): then it comes from the data
+        dz <- diag(G)[cols[blk]] == 0
+        nrm <- .Call(C_dm_col_norms, x %*% cbind(M, E[, dz, drop = FALSE]))
+        res_n <- nrm[seq_len(k)]
+        col_n <- sqrt(diag(G)[cols[blk]])
+        col_n[dz] <- nrm[k + seq_len(sum(dz))]
+        nonzero[blk] <- col_n > 0
+        ratio[blk] <- ifelse(col_n > 0, res_n / col_n, 0)
     }
-    out
+    list(ratio = ratio, nonzero = nonzero)
+}
+
+## A lower bound on the absolute value of the non-zero entries of x (0 when
+## no bound is available).
+dmqr_min_nonzero <- function(x) {
+    terms <- dm_terms(x)
+    out <- Inf
+    for (t in terms) {
+        d <- t$design
+        b <- if (kernel_ok(d)) .Call(C_dm_min_nonzero, d$setup, d$vars) else {
+            X <- as.matrix(d)
+            a <- abs(X[X != 0 & is.finite(X)])
+            if (length(a)) min(a) else 1
+        }
+        s <- t$scale
+        if (!is.null(s)) {
+            a <- abs(s[s != 0 & is.finite(s)])
+            b <- b * (if (length(a)) min(a) else 1)
+        }
+        out <- min(out, b)
+    }
+    ## a sum of two designs can cancel to small values
+    if (length(terms) > 1L) 0 else out
 }
 
 #' @export
@@ -194,6 +277,8 @@ dmqr_coef <- function(qr, Y, steps = 3L) {
     k <- qr$rank
     D <- qr$design
     keep <- qr$pivot[seq_len(k)]
+    if (!is.null(qr$dense))
+        return(base::qr.coef(qr$dense, Y)[keep, , drop = FALSE])
     b <- dmqr_solve(qr, crossprod(D, Y)[keep, , drop = FALSE])
     if (k == 0L) return(b)
     ## The normal equations lose about kappa^2 * eps of accuracy, where
@@ -276,6 +361,9 @@ setMethod("qr.qty", "design_qr", function(qr, y) {
     yy <- dmqr_y(y, nrow(qr$design))
     k <- qr$rank
     keep <- qr$pivot[seq_len(k)]
+    if (!is.null(qr$dense))
+        return(dmqr_out(base::qr.qty(qr$dense, yy$Y)[seq_len(k), , drop = FALSE], yy,
+                        yy$rows[seq_len(k)]))
     out <- dmqr_bs(dmqr_R11(qr), crossprod(qr$design, yy$Y)[keep, , drop = FALSE],
                    transpose = TRUE)
     dmqr_out(out, yy, yy$rows[seq_len(k)])
@@ -321,5 +409,9 @@ solve.design_qr <- function(a, b, ...) {
         if (n != p) stop("only square matrices can be inverted", call. = FALSE)
         b <- diag(1, n)
     }
-    qr.coef(a, b)
+    ## as solve.qr(): coefficients outside the basis are zero, so that the
+    ## result solves the system
+    res <- qr.coef(a, b)
+    res[is.na(res)] <- 0
+    res
 }

@@ -84,3 +84,35 @@ for (naa in list("na.omit", "na.exclude", "na.fail", "na.pass", custom)) {
 }
 d3 <- d1; attr(d3, "na.action") <- "na.fail"
 expect_true(mm_same(y ~ x + f, d3))
+
+# Roborev 1271 regressions ----------------------------------------------
+
+# 2. The model frame is evaluated once, with or without missing values, and
+#    new levels on rows that na.omit() drops are not an error
+count <- 0
+tick <- function(x) { count <<- count + 1; x }
+dd <- data.frame(y = rnorm(6), x = c(1, NA, 3, 4, 5, 6))
+count <- 0; invisible(design_matrix(y ~ tick(x), dd)); expect_equal(count, 1)
+dd$x[2] <- 2
+count <- 0; invisible(design_matrix(y ~ tick(x), dd)); expect_equal(count, 1)
+dx <- data.frame(y = rnorm(4), x = c(1, NA, 3, 4), f = factor(c("a", "c", "b", "a")))
+expect_true(mm_same(y ~ x + f, dx, xlev = list(f = c("a", "b"))))
+
+# 4-5. Row scales are not combined or moved when that would overflow
+D45 <- design_matrix(~ 0 + x, data.frame(x = 1e-160))
+X45 <- as.matrix(D45)
+expect_equal(unname(crossprod(1e160 * D45)), unname(crossprod(1e160 * X45)))
+expect_equal(unname(crossprod(1e160 * D45, 1e160)), unname(crossprod(1e160 * X45, 1e160)))
+expect_equal(unname(crossprod(1e160 * D45, 1e160 * D45)), unname(crossprod(1e160 * X45)))
+expect_equal(unname(drop((1e160 * D45) %*% 1e160)), unname(drop((1e160 * X45) %*% 1e160)))
+expect_true(is.finite(crossprod(1e160 * D45)))
+
+# 7. Combined factor levels beyond int range: the structured kernels decline
+lv <- as.character(1:1100)
+d7 <- data.frame(f1 = factor(c("1", "2", "3"), levels = lv), f2 = factor(c("3", "1", "2"), levels = lv),
+                 f3 = factor(c("2", "3", "1"), levels = lv))
+cm <- matrix(seq_len(1100) / 1100, ncol = 1)
+D7 <- design_matrix(~ f1 * f2 * f3, d7, contrasts.arg = list(f1 = cm, f2 = cm, f3 = cm))
+expect_false(design.matrix:::dm_struct_ok(D7))
+X7 <- as.matrix(D7)
+expect_equal(unname(crossprod(D7)), unname(crossprod(X7)))

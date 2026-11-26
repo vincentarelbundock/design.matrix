@@ -253,9 +253,16 @@ dm_mult <- function(x, beta) {
     B <- beta
     if (!is.matrix(B)) B <- matrix(B, ncol = 1L)
     storage.mode(B) <- "double"
+    out <- NULL
     if (!is.null(st <- dm_struct_single(J))) {
         out <- dm_struct_mult(st$design, B)
         if (!is.null(st$scale)) out <- st$scale * out
+        ## the scale is applied after the product: if that order overflows,
+        ## use the row kernel on the scaled design
+        if (!dm_all_finite(out)) out <- NULL
+    }
+    if (!is.null(out)) {
+        ## done
     } else if (!jac_kernel_ok(J)) {
         out <- as.matrix(J) %*% B
     } else {
@@ -280,8 +287,18 @@ dm_crossprod <- function(x, w) {
     if (!is.matrix(W)) W <- matrix(W, ncol = 1L)
     storage.mode(W) <- "double"
     st <- dm_struct_single(J)
-    out <- if (!is.null(st) && all(is.finite(W))) {
-        dm_struct_xty(st$design, if (is.null(st$scale)) W else st$scale * W)
+    out <- NULL
+    if (!is.null(st) && dm_all_finite(W)) {
+        sW <- if (is.null(st$scale)) W else st$scale * W
+        ## the scale moves to the weights: if that order overflows, use the
+        ## row kernel on the scaled design
+        if (dm_all_finite(sW)) {
+            out <- dm_struct_xty(st$design, sW)
+            if (!dm_all_finite(out)) out <- NULL
+        }
+    }
+    out <- if (!is.null(out)) {
+        out
     } else if (jac_kernel_ok(J)) {
         dm_crossprod_kernel(J, W)
     } else {
@@ -570,14 +587,15 @@ dm_gram <- function(x, y = NULL) {
     w <- NULL
     tx <- dm_terms(x)
     if (is.null(y)) {
-        if (length(tx) == 1L && !is.null(tx[[1L]]$scale)) {
+        if (length(tx) == 1L && !is.null(tx[[1L]]$scale) && dm_safe_scale(tx[[1L]]$scale)) {
             w <- tx[[1L]]$scale^2
             x <- tx[[1L]]$design
         }
     } else {
         ty <- dm_terms(y)
         if (length(tx) == 1L && length(ty) == 1L &&
-            dm_same_design(tx[[1L]]$design, ty[[1L]]$design)) {
+            dm_same_design(tx[[1L]]$design, ty[[1L]]$design) &&
+            dm_safe_scale(tx[[1L]]$scale) && dm_safe_scale(ty[[1L]]$scale)) {
             w <- dm_times(tx[[1L]]$scale, if (is.null(ty[[1L]]$scale)) 1 else ty[[1L]]$scale)
             x <- tx[[1L]]$design
             y <- NULL
@@ -585,8 +603,12 @@ dm_gram <- function(x, y = NULL) {
     }
     if (is.null(y) && (is.null(w) || all(is.finite(w))) && dm_struct_ok(x)) {
         out <- dm_struct_gram(x, if (is.null(w)) NULL else rep_len(as.double(w), n))
-        dimnames(out) <- nm
-        return(out)
+        if (dm_all_finite(out)) {
+            dimnames(out) <- nm
+            return(out)
+        }
+        ## an overflow in the structured sums: the row kernel reproduces
+        ## the dense result
     }
     A <- as_jac(x)
     B <- if (is.null(y)) NULL else as_jac(y)
@@ -616,12 +638,28 @@ dm_gram <- function(x, y = NULL) {
     out
 }
 
-## A plain design with finite row scales that the structured kernels can
-## handle, as list(design, scale), or NULL.
+## A plain design with row scales that the structured kernels can handle
+## (moving the scale outside the product is safe), as list(design, scale),
+## or NULL.
 dm_struct_single <- function(J) {
     if (!is.null(J$design2) || !dm_struct_ok(J$design)) return(NULL)
-    if (!is.null(J$scale) && !all(is.finite(J$scale))) return(NULL)
+    if (!dm_safe_scale(J$scale)) return(NULL)
     list(design = J$design, scale = J$scale)
+}
+
+## Can row scales be combined or moved to the other factor of a product
+## (s^2 * x * x for (s * x) * (s * x), say) without overflow or underflow
+## that the product in its original order would not have? NULL is 1.
+dm_safe_scale <- function(s) {
+    if (is.null(s)) return(TRUE)
+    a <- abs(s)
+    all(is.finite(s)) && all(a <= 1e100) && all(a == 0 | a >= 1e-100)
+}
+
+## Are all values of a numeric vector or matrix finite? (No allocation.)
+dm_all_finite <- function(x) {
+    if (!is.double(x)) storage.mode(x) <- "double"
+    .Call(C_dm_all_finite, x)
 }
 
 ## Are two plain designs the same object (or equal)?

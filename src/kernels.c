@@ -817,11 +817,14 @@ SEXP dm_jac_gram(SEXP a1, SEXP av1, SEXP as1, SEXP a2, SEXP av2, SEXP as2,
 
    From G, a squared residual norm d is accurate to about eps * G[j, j]
    only, so a small d cannot tell an aliased column from one whose
-   residual is just above tol.  A column with d <= susp * G[j, j] is a
-   suspect: unless `dres[j]` (its squared residual norm, computed from the
-   data by the caller) is given, it is provisionally moved, and listed in
-   the result for the caller to check.  With `dres[j]`, the column is
-   taken when dres[j] > tol^2 * G[j, j], with R[j, j] = sqrt(dres[j]).
+   residual is just above tol.  A column with d <= susp * G[j, j] (the
+   caller passes susp >= 100 * tol^2, so that every column taken here is
+   clearly above tol), or with a zero norm in G (which can be underflow),
+   is a suspect: unless `dres[j]` (its squared residual norm, computed
+   from the data by the caller) is given, it is provisionally moved, and
+   listed in the result for the caller to check.  With `dres[j]`, the
+   column is taken when dres[j] > tol^2 * G[j, j], with
+   R[j, j] = sqrt(dres[j]).
 
    Returns list(R, rank, pivot, suspects): R is p x p upper triangular in
    pivoted order, with zeros in the block of the moved columns' residuals;
@@ -861,14 +864,15 @@ SEXP dm_chol_pivot(SEXP G_, SEXP tol_, SEXP susp_, SEXP n_, SEXP dres_)
 	}
 	double d = gjj - ss;
 	int take;
-	if (!(gjj > 0.0)) {
-	    take = 0;
-	} else if (d > susp * gjj) {
-	    take = 1;
-	} else if (!ISNAN(dres[j])) {
+	if (!ISNAN(dres[j])) {
+	    /* judged from the data by the caller */
 	    d = dres[j];
-	    take = d > tol2 * gjj;
+	    take = gjj > 0.0 && d > tol2 * gjj;
+	} else if (gjj > 0.0 && d > susp * gjj) {
+	    take = 1;
 	} else {
+	    /* a small residual, or a zero norm that may be underflow: the
+	       caller checks it against the data */
 	    take = 0;
 	    sus[nsus++] = j;
 	}

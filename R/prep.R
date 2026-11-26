@@ -57,14 +57,15 @@ dm_swap_model_frame <- function(e) {
 }
 
 ## model.frame(object, data, xlev = xlev), without the copy that na.omit()
-## and na.exclude() make of a frame with nothing to omit. The frame is
-## built with na.pass; when the na.action that model.frame() would use is
-## one of R's four (na.omit, na.exclude, na.fail, na.pass) and the frame
-## has no missing value where that function looks, applying it would
-## change nothing but the storage of the row names, so the frame is
-## returned as is. Otherwise model.frame() runs as usual. Option
-## `design.matrix.skip_na_copy = FALSE` turns this off (documented in
-## ?design_matrix).
+## and na.exclude() make of a frame with nothing to omit. model.frame()
+## runs once, with an na.action that receives the evaluated frame (before
+## the check of new factor levels, as usual): when the na.action that
+## model.frame() would use is one of R's four (na.omit, na.exclude,
+## na.fail, na.pass) and the frame has no missing value where that function
+## looks, applying it would change nothing but the storage of the row
+## names, so the frame is returned as is; otherwise the na.action is
+## applied. Option `design.matrix.skip_na_copy = FALSE` turns this off
+## (documented in ?design_matrix).
 dm_model_frame <- function(object, data, xlev = NULL) {
     if (!isTRUE(getOption("design.matrix.skip_na_copy", TRUE)))
         return(stats::model.frame(object, data, xlev = xlev))
@@ -72,15 +73,17 @@ dm_model_frame <- function(object, data, xlev = NULL) {
            else getOption("na.action") %||% stats::na.fail
     if (is.character(naa)) naa <- get0(naa, mode = "function")
     std <- list(stats::na.omit, stats::na.exclude, stats::na.fail, stats::na.pass)
-    if (is.function(naa) && any(vapply(std, identical, NA, naa))) {
-        mf <- stats::model.frame(object, data, xlev = xlev, na.action = stats::na.pass)
-        atomic <- vapply(mf, is.atomic, NA)
-        fail <- identical(naa, stats::na.fail)
+    if (!is.function(naa) || !any(vapply(std, identical, NA, naa)))
+        return(stats::model.frame(object, data, xlev = xlev))
+    fail <- identical(naa, stats::na.fail)
+    skip_copy <- function(frame) {
+        atomic <- vapply(frame, is.atomic, NA)
         if (!(fail && !all(atomic)) &&
-            !any(vapply(mf[atomic], anyNA, NA, recursive = FALSE)))
-            return(mf)
+            !any(vapply(frame[atomic], anyNA, NA, recursive = FALSE)))
+            return(frame)
+        naa(frame)
     }
-    stats::model.frame(object, data, xlev = xlev)
+    stats::model.frame(object, data, xlev = xlev, na.action = skip_copy)
 }
 
 strip_srcref <- function(e) {

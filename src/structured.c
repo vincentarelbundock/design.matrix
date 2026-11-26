@@ -25,6 +25,7 @@
 #include <string.h>
 #include <float.h>
 #include <math.h>
+#include <limits.h>
 #include <R.h>
 #include <Rinternals.h>
 #include "dm.h"
@@ -82,6 +83,8 @@ static void build_sctx(sctx *S, SEXP setup, SEXP vars)
 	T->count = count[k];
 	off += count[k];
 	int stride = 1, L = 1, ns = 1, kc = 1;
+	/* the same counts in double, to detect int overflow */
+	double Ld = 1.0, kcd = 1.0, nsd = 1.0;
 	for (int i = 0; i < nVar; i++) {
 	    int fik = fac[i + k * nVar];
 	    if (!fik || columns[i] == 0) continue;
@@ -97,19 +100,26 @@ static void build_sctx(sctx *S, SEXP setup, SEXP vars)
 		T->fnc[c] = ncols(cm);
 		T->lstride[c] = L;
 		T->fstride[c] = stride;
-		L *= nrows(cm);
-		kc *= ncols(cm);
+		Ld *= nrows(cm);
+		kcd *= ncols(cm);
+		L = Ld > INT_MAX / 2 ? 1 : (int) Ld;
+		kc = kcd > INT_MAX / 2 ? 1 : (int) kcd;
 		stride *= ncols(cm);
 	    } else {
 		int c = T->nn++;
 		T->num[c] = REAL(var_i);
 		T->nnc[c] = ncols(var_i);
 		T->nstride[c] = stride;
-		ns *= ncols(var_i);
+		nsd *= ncols(var_i);
+		ns = nsd > INT_MAX / 2 ? 1 : (int) nsd;
 		stride *= ncols(var_i);
 	    }
 	}
 	T->L = L; T->ns = ns; T->kc = kc;
+	if (Ld > INT_MAX / 2 || kcd > INT_MAX / 2 || nsd > INT_MAX / 2) {
+	    /* too large for the structured kernels (dm_struct_ok declines) */
+	    T->L = T->kc = T->ns = -1;
+	}
     }
 }
 
@@ -172,6 +182,8 @@ SEXP dm_struct_ok(SEXP setup, SEXP vars, SEXP cap_)
     build_sctx(&S, setup, vars);
     double cap = asReal(cap_), total = 0.0;
     int ok = 1;
+    for (int t = 0; t < S.nt; t++)
+	if (S.t[t].L < 0) ok = 0;
     for (int t = 0; t < S.nt && ok; t++) {
 	const sterm *T = &S.t[t];
 	double bound = 1.0;
@@ -423,5 +435,79 @@ SEXP dm_struct_mult(SEXP setup, SEXP vars, SEXP P, SEXP K_)
 	}
     }
     UNPROTECT(2);
+    return out;
+}
+
+/* A lower bound on the absolute value of every non-zero entry of the
+   dense matrix of a plain design: the minimum over terms of the product
+   of its components' smallest non-zero absolute values (input values or
+   contrast entries).  The intercept counts as 1.  Non-finite inputs are
+   ignored (the caller handles them). */
+SEXP dm_min_nonzero(SEXP setup, SEXP vars)
+{
+    sctx S;
+    build_sctx(&S, setup, vars);
+    double out = 1.0;
+    for (int t = 0; t < S.nt; t++) {
+	const sterm *T = &S.t[t];
+	double prod = 1.0;
+	for (int c = 0; c < T->nf; c++) {
+	    double mn = R_PosInf;
+	    R_xlen_t len = (R_xlen_t) T->nrc[c] * T->fnc[c];
+	    for (R_xlen_t e = 0; e < len; e++) {
+		double x = fabs(T->cm[c][e]);
+		if (x > 0.0 && x < mn) mn = x;
+	    }
+	    if (R_FINITE(mn)) prod *= mn;
+	}
+	for (int c = 0; c < T->nn; c++) {
+	    double mn = R_PosInf;
+	    const double *v = T->num[c];
+	    for (R_xlen_t e = 0; e < S.n * T->nnc[c]; e++) {
+		double x = fabs(v[e]);
+		if (x > 0.0 && x < mn) mn = x;
+	    }
+	    if (R_FINITE(mn)) prod *= mn;
+	}
+	if (prod < out) out = prod;
+    }
+    UNPROTECT(1);
+    return ScalarReal(out);
+}
+
+/* Are all values of a double vector or matrix finite?  (No allocation.) */
+SEXP dm_all_finite(SEXP x)
+{
+    const double *v = REAL(x);
+    R_xlen_t n = XLENGTH(x);
+    for (R_xlen_t i = 0; i < n; i++)
+	if (!R_FINITE(v[i])) return ScalarLogical(0);
+    return ScalarLogical(1);
+}
+
+/* Euclidean norms of the columns of a finite double matrix, scaled so
+   that they neither overflow nor underflow (as LAPACK's dnrm2). */
+SEXP dm_col_norms(SEXP x)
+{
+    int nr = nrows(x), nc = ncols(x);
+    const double *v = REAL(x);
+    SEXP out = PROTECT(allocVector(REALSXP, nc));
+    double *o = REAL(out);
+    for (int j = 0; j < nc; j++) {
+	const double *c = v + (R_xlen_t) j * nr;
+	double scale = 0.0, ssq = 1.0;
+	for (int i = 0; i < nr; i++) {
+	    double a = fabs(c[i]);
+	    if (a == 0.0) continue;
+	    if (scale < a) {
+		ssq = 1.0 + ssq * (scale / a) * (scale / a);
+		scale = a;
+	    } else {
+		ssq += (a / scale) * (a / scale);
+	    }
+	}
+	o[j] = scale * sqrt(ssq);
+    }
+    UNPROTECT(1);
     return out;
 }
