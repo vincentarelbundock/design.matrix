@@ -3,7 +3,7 @@
 warm_mark <- function(...) {
     exprs <- eval(substitute(alist(...)))
     for (e in exprs) invisible(eval(e, parent.frame()))
-    bench::mark(..., iterations = 5, check = FALSE)
+    bench::mark(..., iterations = iters(5), check = FALSE)
 }
 w <- rnorm(n)
 sfo <- y ~ x + f1 * f2

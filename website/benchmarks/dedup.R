@@ -16,4 +16,4 @@ bench::mark(
     "every row"              = quad(FALSE),
     "grouped, first call"    = quad("auto"),
     "grouped, groups cached" = quad("auto", D_cached),
-    iterations = 5, check = same)
+    iterations = iters(5), check = same)

@@ -12,4 +12,4 @@ e <- residuals(fit_big)
 bench::mark(
     base_cluster_vcov(X, e, big$cl, XtXi),
     fast_cluster_vcov(DX, e, big$cl, XtXi),
-    iterations = 5, check = close)
+    iterations = iters(5), check = close)
