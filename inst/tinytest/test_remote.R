@@ -67,15 +67,15 @@ dd <- DBI::dbReadTable(con, "d")
 dd <- dd[order(dd$id), ]
 rownames(dd) <- NULL
 
-## random formulas, both engines
-checked <- c(sql = 0, chunked = 0)
-for (i in 1:40) {
+## random formulas: computed in SQL, or with variables evaluated in R
+checked <- c(sql = 0, evaluated = 0)
+for (i in seq_len(if (full_tests) 40 else 30)) {
     fo <- fuzz_formula()
     ## (a remote design needs a plan, which refuses the response on the right)
     if ("m" %in% all.vars(fo) || "y" %in% all.vars(fo[[3L]])) next
     ctr <- fuzz_contrasts(dd)
     M <- capture(function() design_matrix(fo, dd, contrasts.arg = ctr))
-    for (engine in c("auto", "chunked")) {
+    for (engine in "auto") {
         info <- paste(deparse(fo), engine)
         Dr <- capture(function() suppressMessages(
             design_matrix(fo, con, table = "d", contrasts.arg = ctr, engine = engine, chunk_size = 37)))
@@ -88,7 +88,8 @@ for (i in 1:40) {
             next
         }
         Dr <- Dr$value
-        checked[Dr$engine] <- checked[Dr$engine] + 1
+        how <- if (is.null(Dr$evaluated)) "sql" else "evaluated"
+        checked[how] <- checked[how] + 1
         check_remote(Dr, M$value, dd, kept_rows(fo, dd), info)
         expect_true(same(crossprod(Dr, "y"), crossprod(M$value, dd$y[kept_rows(fo, dd)])),
                     info = paste(info, "X'y"))
@@ -97,7 +98,7 @@ for (i in 1:40) {
 expect_true(all(checked > 5))
 
 ## fit in R, score in the database: a specification from part of the data
-for (i in 1:25) {
+for (i in seq_len(if (full_tests) 25 else 10)) {
     fo <- fuzz_formula(response = FALSE)
     if ("m" %in% all.vars(fo)) next
     train <- dd[1:120, ]
@@ -109,7 +110,7 @@ for (i in 1:25) {
     for (na in c("na.pass", "na.omit")) {
         M <- capture(function() design_matrix(spec, dd, na.action = get(na)))
         rows <- if (na == "na.pass") seq_len(nrow(dd)) else kept_rows(NULL, dd, plan)
-        for (engine in c("auto", "chunked")) {
+        for (engine in "auto") {
             info <- paste("spec", deparse(fo), engine, na)
             Dr <- capture(function() suppressMessages(
                 design_matrix(spec, con, table = "d", engine = engine, chunk_size = 50, na.action = get(na))))
@@ -135,7 +136,7 @@ spec <- design_matrix(~ x + f + z, train)
 nd <- data.frame(x = c(1, NA, 3, NaN, 5), f = c("a", "b", NA, "a", "b"), z = 1:5, g = c(1, 1, 2, 2, 2))
 DBI::dbWriteTable(con, "nd", nd)
 M <- design_matrix(spec, nd)
-for (engine in c("auto", "chunked")) {
+for (engine in "auto") {
     Dr <- suppressMessages(design_matrix(spec, con, table = "nd", engine = engine))
     expect_equal(nrow(Dr), 5)
     expect_true(same(crossprod(Dr), crossprod(M)), info = engine)
@@ -156,7 +157,7 @@ DBI::dbWriteTable(con, "badtype", data.frame(x = as.character(1:200), f = "a"))
 bad <- DBI::dbReadTable(con, "badtype")
 msg <- tryCatch(design_matrix(spec, bad), error = conditionMessage)
 expect_true(grepl("fitted with type", msg))
-for (engine in c("auto", "sql", "chunked")) {
+for (engine in c("auto", "sql")) {
     expect_error(design_matrix(spec, con, table = "badtype", engine = engine), msg, fixed = TRUE)
 }
 ## a factor stored as text is fine (model.frame() converts it)
@@ -176,7 +177,6 @@ DBI::dbWriteTable(con, "newlev", data.frame(x = 1:4, ch = c("u", "w", "a", NA)))
 msg <- tryCatch(design_matrix(spec, DBI::dbReadTable(con, "newlev"), na.action = stats::na.omit),
                 error = conditionMessage)
 expect_error(design_matrix(spec, con, table = "newlev"), msg, fixed = TRUE)
-expect_error(design_matrix(spec, con, table = "newlev", engine = "chunked"), msg, fixed = TRUE)
 
 ## NaN and NA rows, transformations giving NaN
 na <- data.frame(y = c(1, 2, NA, 4, 5, 6, 7, 8), x = c(1, NaN, 3, 4, -1, 6, 7, 8),
@@ -199,12 +199,10 @@ expect_error(crossprod(Dr, suppressMessages(design_matrix(fo, con, table = "na")
 DBI::dbWriteTable(con, "na2", transform(na, w = c(1, 1, 1, 1, 1, NA, 1, 1)))
 Dr2 <- design_matrix(fo, con, table = "na2")
 expect_true(all(is.na(crossprod(Dr2, "w"))))
-expect_true(all(is.na(suppressMessages(design_matrix(fo, con, table = "na2", engine = "chunked"))
-                      |> crossprod(y = "w"))))
 
 ## engine choice
 expect_message(design_matrix(y ~ poly(z, 2) + f1, con, table = "d"),
-               "chunked engine: term `poly(z, 2)` cannot be translated", fixed = TRUE)
+               "Evaluated in R: term `poly(z, 2)` cannot be translated", fixed = TRUE)
 expect_error(design_matrix(y ~ poly(z, 2) + f1, con, table = "d", engine = "sql"),
              "SQL engine cannot compute this design", fixed = TRUE)
 expect_silent(D <- design_matrix(y ~ x1 * f1 + I(x2^2) + log(z, 10), con, table = "d"))
@@ -218,7 +216,7 @@ expect_identical(design.matrix:::dm_fmt_count(1e6), "1,000,000")
 Dc <- suppressMessages(design_matrix(y ~ poly(z, 2) + f1, con, table = "d"))
 out <- capture.output(print(Dc))
 expect_identical(sum(grepl("cannot be translated", out, fixed = TRUE)), 0L)
-expect_identical(sum(grepl("^engine: chunked.*poly\\(z, 2\\)", out)), 1L)
+expect_identical(sum(grepl("^engine: sql, on columns computed in R.*poly\\(z, 2\\)", out)), 1L)
 
 ## sql= source, as.matrix, reuse of a remote design
 D <- design_matrix(y ~ x1 + f1, con, sql = "SELECT * FROM d WHERE id <= 200")
@@ -249,7 +247,7 @@ expect_equal(unname(as.matrix(-D)), unname(as.matrix(-M)))
 fit <- lm(y ~ x1 + f1 + splines::ns(z, 2), dd)
 B <- cbind(a = coef(fit), b = -coef(fit))
 ref <- as.matrix(design_matrix(fit, newdata = dd)) %*% B
-for (engine in c("auto", "chunked")) {
+for (engine in "auto") {
     Df <- suppressMessages(design_matrix(fit, newdata = con, table = "d", engine = engine))
     p <- as.data.frame(Df %*% B)
     p <- p[order(p$id), ]
@@ -263,7 +261,7 @@ DBI::dbExecute(con, sprintf("COPY (SELECT * FROM d) TO '%s' (FORMAT PARQUET)", p
 dp <- DBI::dbGetQuery(con, sprintf("SELECT * FROM read_parquet('%s') ORDER BY id", pq))
 for (fo in list(y ~ x1 * f2 + ch + lg, y ~ splines::ns(z, 3) + f1)) {
     M <- design_matrix(fo, dp)
-    for (engine in c("auto", "chunked")) {
+    for (engine in "auto") {
         Dp <- suppressMessages(design_matrix(fo, pq, engine = engine, chunk_size = 64))
         check_remote(Dp, M, dp, kept_rows(fo, dp), paste("parquet", deparse(fo), engine))
     }
@@ -279,7 +277,7 @@ dk <- ds[!is.na(ds$y), ]
 X <- model.matrix(y ~ x * f, dk)
 fit <- lm(y ~ x * f, dk)
 e <- unname(residuals(fit))
-for (engine in c("sql", "chunked")) {
+for (engine in "sql") {
     D <- design_matrix(y ~ x * f, con, table = "ds", engine = engine, chunk_size = 64)
     sw <- DBI::SQL("1 + abs(x)")
     expect_true(same(crossprod(D, sw * D), crossprod(X, (1 + abs(dk$x)) * X)), info = engine)

@@ -130,7 +130,7 @@ error.
 or R expressions over the columns.
 The fit is the same code as in memory: its columns (response, weights,
 linear predictor, working weights) are SQL expressions, and its products
-with the design run in the database or in batches. See the section
+with the design run in the database. See the section
 \emph{GLMs} of \link{design_remote}.
 
 \strong{Fixed effects.} A formula \code{y ~ x | fe1 + fe2} absorbs fixed effects

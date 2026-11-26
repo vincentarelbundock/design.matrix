@@ -3,11 +3,12 @@
 # observations (rows removed: singletons and levels whose FE is infinite),
 # deviance, log-likelihood, predictions and residuals, with fixest's
 # default small sample corrections. Every case runs in memory and on
-# remote data (DuckDB table with the SQL and the chunked engines, and
-# Parquet). fixest demeans iteratively; tight glm.tol and fixef.tol make its
-# results exact enough for a 1e-8 comparison.
+# remote data (a DuckDB table, and Parquet in the full tier). fixest
+# demeans iteratively; tight glm.tol and fixef.tol make its results exact
+# enough for a 1e-8 comparison.
 
 if (!requireNamespace("fixest", quietly = TRUE)) exit_file("fixest not installed")
+source("helpers.R")
 library(design.matrix)
 remote <- requireNamespace("DBI", quietly = TRUE) && requireNamespace("duckdb", quietly = TRUE)
 
@@ -46,7 +47,7 @@ put <- function(d, name) {
 # Fits of the same model in memory and on remote data (`weights` and
 # `offset` name columns; `modes`: the remote modes).
 fe_fits <- function(fml, family, d, src, vcov = "iid", weights = NULL, offset = NULL,
-                    modes = c("sql", "chunked", "parquet"), ...) {
+                    modes = remote_modes, ...) {
     marg <- list(fml, family, d, vcov = vcov, control = CTRL, ...)
     if (!is.null(weights)) marg$weights <- d[[weights]]
     if (!is.null(offset)) marg$offset <- log(d[[offset]])
@@ -60,7 +61,6 @@ fe_fits <- function(fml, family, d, src, vcov = "iid", weights = NULL, offset = 
             suppressMessages(do.call(design_glm, a))
         }
         if ("sql" %in% modes) fits$sql <- rfit(con, table = src$table, ...)
-        if ("chunked" %in% modes) fits$chunked <- rfit(con, table = src$table, engine = "chunked", chunk_size = 700, ...)
         if ("parquet" %in% modes) fits$parquet <- rfit(src$parquet, ...)
     }
     fits
@@ -70,7 +70,7 @@ fe_fits <- function(fml, family, d, src, vcov = "iid", weights = NULL, offset = 
 # (ll = FALSE: fixest's log-likelihood of families with a dispersion
 # differs from glm()'s, which design_glm() follows)
 check_fe <- function(fml, family, d, src, cluster = NULL, weights = NULL, offset = NULL, ...,
-                     modes = c("sql", "chunked", "parquet"), ll = TRUE, info = "") {
+                     modes = remote_modes, ll = TRUE, info = "") {
     vc <- if (is.null(cluster)) "iid" else cluster
     fits <- fe_fits(fml, family, d, src, vc, weights, offset, modes = modes, ...)
     b <- fx_fit(fml, d, family, weights = weights, offset = if (!is.null(offset)) sprintf("log(%s)", offset))
@@ -104,6 +104,13 @@ check_fe <- function(fml, family, d, src, cluster = NULL, weights = NULL, offset
     invisible(fits)
 }
 
+# remote fits of FE GLMs cost one to several seconds each: the default tier
+# fits three cases remotely (Poisson with weights, an offset and clusters;
+# logit with a factor; missing values), the full tier all of them (the
+# families and offset() terms are also fitted remotely without FE in
+# test_parity_glm.R)
+full_modes <- if (full_tests) remote_modes else character()
+
 set.seed(20261126)
 n <- 1500
 d <- data.frame(
@@ -125,22 +132,22 @@ d$yb[d$a %% 29 == 0] <- 0
 src <- put(d, "dglm")
 
 # Poisson --------------------------------------------------------------------
-check_fe(y ~ x1 + x2 | a, poisson, d, src, cluster = ~cl, info = "poisson one-way, cluster not nested")
+check_fe(y ~ x1 + x2 | a, poisson, d, src, cluster = ~cl, modes = full_modes, info = "poisson one-way, cluster not nested")
 check_fe(y ~ x1 + x2 | a + b, poisson, d, src, cluster = ~a, weights = "w", offset = "e",
          info = "poisson two-way, weights, offset, cluster nested")
-check_fe(y ~ x1 + x2 + offset(log(e)) | a + b + c, poisson, d, src, cluster = ~cl,
+check_fe(y ~ x1 + x2 + offset(log(e)) | a + b + c, poisson, d, src, cluster = ~cl, modes = full_modes,
          info = "poisson three-way, offset() term")
 
 # Logit, probit --------------------------------------------------------------
 check_fe(yb ~ x1 + x2 + f | a + b, binomial, d, src, cluster = ~cl, info = "logit two-way")
 # (non-integer weights: glm()'s warning)
-suppressWarnings(check_fe(yb ~ x1 + x2 | a + b + c, binomial, d, src, weights = "w", info = "logit three-way weighted"))
-check_fe(yb ~ x1 + x2 | a + b, binomial("probit"), d, src, cluster = ~b, info = "probit two-way")
-check_fe(yb ~ x1 * f | a^c + b, binomial("probit"), d, src, cluster = ~cl, modes = "sql",
-         info = "probit interacted FE")
+suppressWarnings(check_fe(yb ~ x1 + x2 | a + b + c, binomial, d, src, weights = "w", modes = full_modes, info = "logit three-way weighted"))
+check_fe(yb ~ x1 + x2 | a + b, binomial("probit"), d, src, cluster = ~b, modes = full_modes, info = "probit two-way")
+check_fe(yb ~ x1 * f | a^c + b, binomial("probit"), d, src, cluster = ~cl,
+         modes = intersect(full_modes, "sql"), info = "probit interacted FE")
 
 # Other families (fixest has the same estimator for any family) -------------
-check_fe(y ~ x1 + x2 | a + b, quasipoisson, d, src, modes = "sql", info = "quasipoisson")
+check_fe(y ~ x1 + x2 | a + b, quasipoisson, d, src, modes = intersect(full_modes, "sql"), info = "quasipoisson")
 check_fe(y ~ x1 + x2 | a + b, binomial("cloglog"), within(d, y <- pmin(y, 1)), NULL, info = "cloglog")
 dg <- d
 dg$yg <- rgamma(n, 2, 2 / exp(0.2 * d$x1 + d$b / 15))
@@ -235,8 +242,8 @@ if (remote) {
 }
 
 # Remote query size stays bounded (probit: DuckDB expands the qnorm and
-# pnorm macros inline; frozen columns keep queries short) -------------------
-if (remote) {
+# pnorm macros inline; frozen columns keep queries short; full tier) --------
+if (remote && full_tests) {
     qlen <- integer()
     withCallingHandlers({
         op <- options(design.matrix.remote_debug = TRUE)
@@ -248,5 +255,5 @@ if (remote) {
     })
     expect_true(max(qlen) < 2e4)
     expect_equal(coef(fp), coef(design_glm(yb ~ x1 + x2 | a + b + c, binomial("probit"), d)), tolerance = TOL)
-    DBI::dbDisconnect(con)
 }
+if (remote) DBI::dbDisconnect(con)

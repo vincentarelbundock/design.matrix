@@ -1,9 +1,10 @@
 ## Parity of design_lm() in memory and on remote data: one set of cases,
 ## each fitted by lm(), by design_lm() on a data frame, and by design_lm()
-## on a DuckDB table and a Parquet file (both engines), compared on every
+## on a DuckDB table and a Parquet file (full tier), compared on every
 ## method.
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
+source("helpers.R")
 library(design.matrix)
 
 con <- DBI::dbConnect(duckdb::duckdb())
@@ -93,8 +94,7 @@ for (nm in names(cases)) {
     check_methods(m, l, paste(nm, "memory"))
     sources <- list(
         sql = list(data = quote(con), extra = list(table = "d")),
-        chunked = list(data = quote(con), extra = list(table = "d", engine = "chunked", chunk_size = 128)),
-        parquet = list(data = quote(pq), extra = list()))
+        parquet = list(data = quote(pq), extra = list()))[remote_modes]
     for (src in names(sources)) {
         info <- paste(nm, src)
         s <- sources[[src]]
@@ -210,7 +210,7 @@ check_methods(suppressMessages(design_lm(Dk, y = my_transform(y), weights = myfu
 
 ## the engine with R expressions: a message with "auto", an error with "sql"
 expect_message(design_lm(y ~ x + f, con, table = "d", weights = myfun(x)),
-               "chunked engine: weights `myfun(x)` cannot be translated", fixed = TRUE)
+               "Evaluated in R: weights `myfun(x)` cannot be translated", fixed = TRUE)
 expect_error(design_lm(y ~ x + f, con, table = "d", subset = myfun(z) > 2, engine = "sql"),
              "SQL engine cannot compute this fit: subset `myfun(z) > 2`", fixed = TRUE)
 ## compression stays exact with R-evaluated weights and offsets

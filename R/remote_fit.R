@@ -18,9 +18,8 @@
 #' the database. Any other R expression, such as `weights = myfun(x)`, is
 #' evaluated in R, batch by batch, and its values are written with the
 #' columns of the remote data to a temporary table, on which the fit runs
-#' (one more pass over the data; with `engine = "auto"`, the chunked engine
-#' is used, with a message naming the expression, and `engine = "sql"`
-#' refuses). Compression stays exact, since the computed values are columns
+#' (one more pass over the data, with a message naming the expression;
+#' `engine = "sql"` refuses). Compression stays exact, since the computed values are columns
 #' of that table. `na.action` can be [na.omit()] (default), [na.exclude()],
 #' [na.fail()] or [na.pass()], with the results or errors of [lm()]. The
 #' rows used are those with no missing model variable, response, weight or
@@ -80,7 +79,7 @@
 #' failures). The fit is the same code as in memory, on the remote methods
 #' of the products: with few design patterns (see *Compression*), the
 #' iterations run on the patterns; otherwise each iteration computes its
-#' products in the database or in batches. `predict(fit, newdata = con,
+#' products in the database. `predict(fit, newdata = con,
 #' table = ..., type = "response")`, `fitted()` and `residuals(fit, type =
 #' )` return a temporary view with a `.fitted` (and `.resid`) column next to
 #' the columns of the remote data. Fixed effects (`y ~ x | fe`, see
@@ -115,7 +114,7 @@ dm_na_kind <- function(na.action, allowed = c("omit", "exclude", "fail", "pass")
 ##   na: "omit" (or "exclude": the same rows), "fail" or "pass" (lm()'s
 ##     errors when a row has a missing value).
 ## R expressions with no SQL translation are evaluated in R into a
-## temporary table, with the chunked engine (`engine = "sql"` refuses). The
+## temporary table (`engine = "sql"` refuses). The
 ## rows used are those of the subset where no model variable, argument or
 ## `present` column is missing, and factor levels are those of these rows,
 ## as model.frame(drop.unused.levels = TRUE) gives them in memory.
@@ -248,8 +247,7 @@ dm_remote_lm_fit <- function(D, y, w, off, compress = "auto", tol = 1e-07) {
     dmfit_check_compress(compress)
     intercept <- attr(D$plan$terms, "intercept") > 0L && !isTRUE(D$plan$drop_intercept)
     out <- dmfit_lm(D, y, w, off, compress, tol, intercept)
-    out$method <- if (out$compressed) "patterns" else if (D$engine == "sql") "SQL moments"
-                  else "moments computed in batches"
+    out$method <- if (out$compressed) "patterns" else "SQL moments"
     out$spec <- D$plan
     out$contrasts <- D$plan$contrasts
     out$xlevels <- D$plan$xlevels
@@ -401,10 +399,15 @@ dm_remote_new_offset <- function(object, D) {
 ## any other. One pass over the data; the rows, levels, missing values and
 ## compressed sums are then exact, as for translated expressions.
 ##   exprs: named list of R expressions (the names of the new columns);
-##   logical: names of the expressions to keep as logical (subset).
+##   logical: names of the expressions to keep as logical (subset);
+##   model: for the expressions that are model variables (named as in
+##     exprs), list(inputs, factor, label), see dm_eval_model(). Their
+##     columns and kinds are returned in the attribute "model" of the
+##     result: list(kind, cols) per expression.
 ## Returns the new source (dm_remote_source() of the temporary table),
 ## which keeps the original one alive.
-dm_materialize <- function(src, exprs, env, logical = character(), chunk_size = 250000) {
+dm_materialize <- function(src, exprs, env, logical = character(), chunk_size = 250000, model = list()) {
+    info <- list()
     con <- src$holder$con
     q <- function(x) as.character(DBI::dbQuoteIdentifier(con, x))
     from <- src$base_table
@@ -428,6 +431,12 @@ dm_materialize <- function(src, exprs, env, logical = character(), chunk_size = 
     }
     evaluate <- function(chunk) {
         for (nm in names(exprs)) {
+            if (!is.null(model[[nm]])) {
+                r <- dm_eval_model(exprs[[nm]], chunk, env, model[[nm]], nm, info[[nm]])
+                info[[nm]] <<- r$info
+                for (cn in names(r$cols)) chunk[[cn]] <- r$cols[[cn]]
+                next
+            }
             v <- eval(exprs[[nm]], chunk, env)
             if (length(v) == 1L && nrow(chunk) != 1L) v <- rep(v, nrow(chunk))
             if (length(v) != nrow(chunk) || !is.null(dim(v)))
@@ -459,7 +468,65 @@ dm_materialize <- function(src, exprs, env, logical = character(), chunk_size = 
     new <- dm_remote_source(con, out, NULL)
     new$parent <- src$holder
     new$label <- paste(src$label, "(with columns computed in R)")
+    attr(new, "model") <- info
     new
+}
+
+## The value of a model variable (the R expression `expr`) on a batch of
+## rows, as columns named after `nm`: one numeric column, or one per column
+## of a numeric matrix (nm_1, nm_2, ...: poly(), ns()); a text column for a
+## factor or character value, or when the specification holds levels for
+## the variable (m$factor); a logical column. The expression sees only the
+## rows where its input columns (m$inputs) are present; the others get
+## missing values. m$class: the class of the variable in training (one
+## named element of the plan's data classes), checked on each batch.
+## `prev`: the kind and columns found on earlier batches,
+## which every batch must give. Returns list(cols, info = list(kind, cols)).
+dm_eval_model <- function(expr, chunk, env, m, nm, prev = NULL) {
+    n <- nrow(chunk)
+    ok <- if (length(m$inputs)) stats::complete.cases(chunk[m$inputs]) else rep(TRUE, n)
+    bad <- function(msg) stop(sprintf("`%s` %s.", m$label, msg), call. = FALSE)
+    if (!any(ok) && !is.null(prev)) {
+        v <- NULL
+        info <- prev
+    } else {
+        v <- eval(expr, chunk[ok, , drop = FALSE], env)
+        ## a variable of another type than in training: the error of
+        ## predict.lm() (a character variable with levels is a factor, as
+        ## model.frame() makes it)
+        if (!is.null(m$class))
+            stats::.checkMFClasses(m$class, stats::setNames(list(if (is.character(v) && isTRUE(m$factor)) factor(v) else v),
+                                                            names(m$class)))
+        k <- if (is.matrix(v)) ncol(v) else 1L
+        if (!is.matrix(v) && length(v) == 1L && sum(ok) != 1L) v <- rep(v, sum(ok))
+        if (NROW(v) != sum(ok)) bad(sprintf("gives %d values for %d rows", NROW(v), sum(ok)))
+        kind <- if (is.matrix(v)) {
+            if (!is.numeric(v) && !is.logical(v)) bad("gives a matrix that is not numeric")
+            "numeric"
+        } else if (isTRUE(m$factor) || is.factor(v) || is.character(v)) {
+            "factor"
+        } else if (is.logical(v)) {
+            "logical"
+        } else if (is.numeric(v)) {
+            "numeric"
+        } else {
+            bad(sprintf("gives values of class %s, which a remote design cannot use", class(v)[1L]))
+        }
+        info <- list(kind = kind, cols = if (k == 1L) nm else paste0(nm, "_", seq_len(k)))
+        if (!is.null(prev) && !identical(prev, info)) bad("gives values of different kinds on different rows")
+    }
+    fill <- function(x, na) {
+        out <- rep(na, n)
+        if (!is.null(v)) out[ok] <- x
+        out
+    }
+    cols <- lapply(seq_along(info$cols), function(u) {
+        switch(info$kind,
+               numeric = fill(if (is.matrix(v)) as.double(v[, u]) else as.double(v), NA_real_),
+               factor = fill(as.character(v), NA_character_),
+               logical = fill(v, NA))
+    })
+    list(cols = stats::setNames(cols, info$cols), info = info)
 }
 
 ## Resolve an argument (dm_resolve_arg()), or, when its R expression has no
@@ -482,14 +549,12 @@ dm_untranslated_msg <- function(items) {
     sprintf("%s `%s` cannot be translated to SQL (%s)", nm, deparse2(items[[1L]]$expr), items[[1L]]$reason)
 }
 
-## The engine for a fit with expressions evaluated in R: "auto" switches to
-## the chunked engine with a message, "sql" refuses.
+## A fit with expressions evaluated in R: a message names the first one;
+## `engine = "sql"` refuses.
 dm_untranslated_engine <- function(items, dots) {
     if (!length(items)) return(dots)
     why <- dm_untranslated_msg(items)
-    engine <- dots$engine %||% "auto"
-    if (identical(engine, "sql")) stop("The SQL engine cannot compute this fit: ", why, ".", call. = FALSE)
-    if (identical(engine, "auto")) message("Using the chunked engine: ", why, ".")
-    dots$engine <- "chunked"
+    if (identical(dots$engine, "sql")) stop("The SQL engine cannot compute this fit: ", why, ".", call. = FALSE)
+    message("Evaluated in R: ", why, ".")
     dots
 }

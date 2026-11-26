@@ -566,14 +566,23 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_f
     nfe <- length(G)
     n <- dm_nrows(x)
     ## moments
+    mem_resid <- !inherits(x, "dm_remote") && is.double(z) && is.null(dim(z)) &&
+        (is.null(w) || (is.double(w) && is.null(dim(w)) && length(w) == length(z))) &&
+        all(vapply(codes, function(g) is.integer(g$codes) && length(g$codes) == length(z), NA))
     wz <- if (is.null(w)) z else w * z
     xtx <- unname(if (is.null(w)) dmp_crossprod(x) else dmp_crossprod(x, dmp_scale(x, w)))
     xty <- unname(dmp_crossprod(x, wz))[, 1L]
-    sm <- dmc_sums(wz * z, if (is.null(w)) 0 else w, wz)
+    if (mem_resid) {
+        ## in memory: the same sums in C, without the columns of the terms
+        sm <- .Call(C_dm_fe_moments, z, w)
+        tss <- sm[4L]
+    } else {
+        sm <- dmc_sums(wz * z, if (is.null(w)) 0 else w, wz)
+    }
     yty <- sm[1L]
     sw <- if (is.null(w)) n else sm[2L]
     ybar <- sm[3L] / sw
-    tss <- dm_colsum(if (is.null(w)) (z - ybar)^2 else w * (z - ybar)^2)
+    if (!mem_resid) tss <- dm_colsum(if (is.null(w)) (z - ybar)^2 else w * (z - ybar)^2)
     if (!all(is.finite(xtx)) || !all(is.finite(xty))) stop("NA/NaN/Inf in 'x'", call. = FALSE)
     ## grouped sums and the FE system
     gs <- dmp_colsums_groups(if (is.null(w)) x else dmp_scale(x, w), codes, extra = z)
@@ -608,6 +617,18 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_f
         beta <- numeric(p)
         beta[xcols] <- b0
         ## (along z and w: remotely, on a frame that has their columns)
+        if (mem_resid && all(vapply(fe, function(v) is.double(v) && is.null(dim(v)), NA))) {
+            ## in memory: the fitted values, e, w e, their sums within the
+            ## FE levels and sum(w e^2) in one pass (C); w e comes as a
+            ## one-column matrix, which the product takes without a copy
+            xb <- dmp_mult(x, beta)
+            if (is.double(xb) && length(xb) == length(z)) {
+                r <- .Call(C_dm_fe_resid, z, xb, w, fe, lapply(codes, `[[`, "codes"), G)
+                we <- r[[1L]]
+                return(list(xte = unname(dmp_crossprod(x, we))[, 1L], Be = lapply(r[[2L]], function(m) m[, 1L]),
+                            rss = r[[3L]], we = drop(we)))
+            }
+        }
         f <- dm_fe_fitted(x, beta, fe, codes, along = list(z, w))
         e <- z - f
         we <- if (is.null(w)) e else w * e
@@ -698,6 +719,11 @@ dm_fe_cluster <- function(x, est, codes, cl) {
 ## With beta a p x k matrix and each fe[[k]] a G_k x k matrix, k columns.
 dm_fe_fitted <- function(x, beta, fe, codes, levels = NULL, along = list()) {
     f <- dmp_mult(x, beta, along = along)
+    ## in memory, one column: the lookups and sums in one pass (C)
+    if (is.null(levels) && is.double(f) && is.null(dim(f)) && length(fe) &&
+        all(vapply(fe, function(v) is.double(v) && is.null(dim(v)), NA)) &&
+        all(vapply(codes, function(g) dm_is_codes(g) && is.integer(g$codes), NA)))
+        return(.Call(C_dm_fe_fitted_add, f, fe, lapply(codes, `[[`, "codes")))
     for (k in seq_along(fe))
         f <- f + dmc_lookup(fe[[k]], codes[[k]], levels[[k]], along = list(f))
     f
@@ -884,7 +910,7 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     ## (remotely, na.exclude pads the results with every row not used)
     fit$na.action <- if (isTRUE(base$exclude)) dm_remote_exclude(prob$x_rows)
                      else dm_fe_na_action(base$na_act, prob$rows, base$nall)
-    fit$method <- switch(dm_engine(prob$x), sql = "SQL aggregates", chunked = "aggregates computed in batches", NULL)
+    fit$method <- switch(dm_engine(prob$x), sql = "SQL aggregates", NULL)
     ## (the data of a remote fit stay in the database: always kept)
     if (!is.null(fit$method)) {
         ## nothing to drop
@@ -1044,10 +1070,18 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
             last <- list(cds[[k]]$codes$codes)
         }
         if (!rm_single && !rm0 && !rm1) break
-        ## per level: rows, rows with a response not 0, not 1
-        one <- dmc_const(z, 1)
-        cols <- dmc_cbind(one, if (rm0) dmc_count(z != 0) else one, if (rm1) dmc_count(z != 1) else one)
-        cnt <- lapply(cds, function(cd) dmp_groupsum(cols, cd$codes))
+        ## per level: rows, rows with a response not 0, not 1 (in memory
+        ## without bounds, the counts of rows: no columns to form)
+        if (!rm0 && !rm1 && !dm_is_rcols(z)) {
+            cnt <- lapply(cds, function(cd) {
+                m <- as.double(tabulate(cd$codes$codes, nbins = cd$codes$G))
+                matrix(m, length(m), 3L)
+            })
+        } else {
+            one <- dmc_const(z, 1)
+            cols <- dmc_cbind(one, if (rm0) dmc_count(z != 0) else one, if (rm1) dmc_count(z != 1) else one)
+            cnt <- lapply(cds, function(cd) dmp_groupsum(cols, cd$codes))
+        }
         flag <- function(m) (rm_single & m[, 1L] == 1) | (rm0 & m[, 2L] == 0) | (rm1 & m[, 3L] == 0)
         ## no level to drop
         if (!any(vapply(cnt, function(m) any(flag(m)), NA))) break
@@ -1057,9 +1091,17 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
             ## a level is perfectly fit (counted as such) or a singleton
             pf_k <- (rm0 & m[, 2L] == 0) | (rm1 & m[, 3L] == 0)
             sg_k <- rm_single & m[, 1L] == 1 & !pf_k
-            lk <- dmc_lookup(cbind(as.double(pf_k), as.double(sg_k)), cds[[k]]$codes, along = last)
-            p1 <- dmc_col(lk, 1L) == 1
-            s1 <- dmc_col(lk, 2L) == 1
+            cc <- cds[[k]]$codes$codes
+            if (!dm_is_rcols(cc)) {
+                ## in memory: the flags of the rows' levels, indexed
+                p1 <- pf_k[cc]
+                s1 <- sg_k[cc]
+                lk <- p1
+            } else {
+                lk <- dmc_lookup(cbind(as.double(pf_k), as.double(sg_k)), cds[[k]]$codes, along = last)
+                p1 <- dmc_col(lk, 1L) == 1
+                s1 <- dmc_col(lk, 2L) == 1
+            }
             perfect <- if (is.null(perfect)) p1 else perfect | p1
             single <- if (is.null(single)) s1 else single | s1
             last <- list(lk)

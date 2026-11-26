@@ -72,7 +72,7 @@ for (type in c("simple", "difficult")) {
         expect_equal(sigma(a), unname(sqrt(b$ssr / (nobs(b) - b$nparams))), tolerance = TOL,
                      info = paste(inf, "sigma"))
         if (remote && nm != "auto") {
-            for (eng in c("sql", "chunked")) {
+            for (eng in "sql") {
                 r <- warns(suppressMessages(design_lm(f3, con, table = type, vcov = ~firm_id,
                                                       engine = eng, chunk_size = 7000)))
                 ar <- r$value

@@ -5,6 +5,7 @@
 ## design_lm(), design_glm() and fixed effects.
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
+source("helpers.R")
 library(design.matrix)
 
 con <- DBI::dbConnect(duckdb::duckdb())
@@ -34,8 +35,7 @@ DBI::dbExecute(con, sprintf("COPY d TO '%s' (FORMAT PARQUET)", pq))
 
 remotes <- list(
     sql = list(data = quote(con), extra = list(table = "d")),
-    chunked = list(data = quote(con), extra = list(table = "d", engine = "chunked", chunk_size = 64)),
-    parquet = list(data = quote(pq), extra = list()))
+    parquet = list(data = quote(pq), extra = list()))[remote_modes]
 fit_on <- function(fun, args, data, extra = list()) eval(as.call(c(list(fun), args, list(data = data), extra)))
 
 cases <- list(

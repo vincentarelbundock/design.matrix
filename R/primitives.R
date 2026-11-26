@@ -58,7 +58,7 @@
 ## Comparisons with NULL are NULL (R: NA).
 ##
 ## Columns from successive products live on successive frames: each product
-## builds a new frame (a view, or a table with the chunked engine) on top of
+## builds a new frame (a view) on top of
 ## the frame of the columns passed as `along`, and keeps all their columns.
 ## Combining columns takes the later frame (they must come from the same
 ## design). In memory `along` is ignored.
@@ -108,7 +108,7 @@
 ##   dmc_mean(col)            the mean of a column
 ##   dmp_colnorms(col)        Euclidean norms of the columns
 ##   dm_nrows(x)              number of rows of a design or column
-##   dm_engine(x)             "sql" or "chunked" for a remote design, ""
+##   dm_engine(x)             "sql" for a remote design, ""
 ##                            in memory (for the description of a fit)
 ##   dmp_patterns(x, z, w, compress, keys = NULL)
 ##                            compressed least squares: when rows with the
@@ -154,7 +154,7 @@
 ##                            the container differs.
 ##
 ## Remote methods: crossprod, colSums, products and patterns run in the
-## database (or in batches with the chunked engine); dmp_groupsum and
+## database; dmp_groupsum and
 ## dmp_crosstab are single GROUP BY queries.
 ##
 ## ---------------------------------------------------------------------------
@@ -192,7 +192,7 @@
 ##   finite_rows(D) (internal)    a logical column                  done
 ##
 ## Tests: test_primitives.R (the layer), test_parity_ops.R (every operation
-## above on the same data, in memory and remote: SQL, chunked, Parquet).
+## above on the same data, in memory and remote: a table, Parquet).
 
 ## ---- remote columns ----
 
@@ -295,6 +295,13 @@ dmc_ifelse <- function(test, yes, no) {
     f <- dm_rcols_frame(test, yes, no)
     if (is.null(f)) {
         n <- length(test)
+        ## (one pass in C, which allocates only the result)
+        if (is.logical(test) && n > 0L && length(yes) %in% c(1L, n) && length(no) >= 1L &&
+            is.numeric(yes) && is.numeric(no)) {
+            if (!is.double(yes)) yes <- as.double(yes)
+            if (!is.double(no)) no <- as.double(no)
+            return(.Call(C_dm_ifelse, test, yes, no))
+        }
         out <- rep_len(as.double(no), n)
         i <- which(test)
         out[i] <- if (length(yes) == 1L) yes else yes[i]
@@ -398,8 +405,8 @@ dmc_sums <- function(...) {
 ## The mean of a column (in memory as mean() computes it).
 dmc_mean <- function(x) if (dm_is_rcols(x)) dm_colsum(x) / dm_nrows(x) else mean(x)
 
-## The engine of a remote design ("sql" or "chunked"), "" in memory.
-dm_engine <- function(x) if (inherits(x, "dm_remote")) x$engine else ""
+## "sql" for a remote design, "" in memory.
+dm_engine <- function(x) if (inherits(x, "dm_remote")) "sql" else ""
 
 dm_nrows <- function(x) {
     if (inherits(x, "dm_remote")) return(x$cache$n %||% x$n)
@@ -454,28 +461,14 @@ dm_with_columns <- function(x, col, nm) {
 }
 
 dmp_crossprod <- function(x, y = NULL) {
-    if (!inherits(x, "dm_remote")) return(if (is.null(y)) crossprod(x) else crossprod(x, y))
     if (is.null(y)) return(crossprod(x))
-    if (inherits(y, "dm_remote")) {
-        if (dm_frame_depth(y) > dm_frame_depth(x)) x <- dm_rebase(x, y)
-        if (dm_frame_depth(x) > dm_frame_depth(y)) y <- dm_rebase(y, x)
-        return(crossprod(x, y))
-    }
-    if (!dm_is_rcols(y)) stop("`y` must be a design or a column.", call. = FALSE)
-    nm <- paste0("__dm_y", seq_along(y))
-    out <- crossprod(dm_with_columns(x, y, nm), nm)
-    dimnames(out) <- list(colnames(x), NULL)
-    out
+    if (inherits(x, "dm_remote") && !inherits(y, "dm_remote") && !dm_is_rcols(y))
+        stop("`y` must be a design or a column.", call. = FALSE)
+    crossprod(x, y)
 }
 
 dmp_colsums <- function(x, group = NULL) {
-    if (!inherits(x, "dm_remote")) {
-        if (is.null(group)) return(colSums(x))
-        return(colSums(x, group = group))
-    }
-    if (is.null(group)) return(colSums(x))
-    if (!dm_is_rcols(group)) stop("`group` of a remote design must be a remote column.", call. = FALSE)
-    colSums(dm_with_columns(x, group, "__dm_g"), group = "__dm_g")
+    if (is.null(group)) colSums(x) else colSums(x, group = group)
 }
 
 ## SQL GROUP BY over the frame of columns: list(groups (a data frame of the
@@ -573,29 +566,22 @@ dmp_quad <- function(x, V, along = list()) {
 }
 
 ## Compressed least squares (see the header); the in-memory method groups
-## identical rows (lm.R), the remote one is one GROUP BY (remote_compress.R).
+## identical rows (lm.R), the remote one is the scan of the SQL engine
+## grouped by the cells of the design (remote_compress.R).
 dmp_patterns <- function(x, z, w = NULL, compress = "auto", keys = NULL) {
     if (inherits(x, "dm_remote")) {
         mode <- if (isTRUE(compress)) TRUE else if (isFALSE(compress)) FALSE else dm_compress_mode()
-        if (!is.null(keys)) {
-            ## extra key columns: added to the source, and to the GROUP BY
-            nm <- paste0("__dm_key", seq_along(keys))
-            x <- dm_with_columns(x, keys, nm)
-            z <- dm_rcols(x, unclass(z)$sql)
-            if (!is.null(w)) w <- dm_rcols(x, unclass(w)$sql)
-        }
-        pt <- dm_remote_patterns(x, unclass(z)$sql, if (!is.null(w)) unclass(w)$sql, within = TRUE,
-                                 mode = mode, group = if (!is.null(keys)) nm)
+        ## (extra key columns: more keys of the GROUP BY)
+        if (!is.null(keys)) x <- dm_remote_cols(x, keys, "keys")$D
+        pt <- dm_sql_patterns(x, unclass(z)$sql, if (!is.null(w)) unclass(w)$sql,
+                              keys = if (!is.null(keys)) unclass(keys)$sql, mode = mode)
         if (is.null(pt)) return(NULL)
-        pd <- dm_pattern_design(x, pt$P[dm_compress_keys(x)])
-        k <- pd$keep
-        sw <- pt$sw[k]
-        pos <- which(sw > 0)
-        ws <- sw[pos]
+        pos <- which(pt$sw > 0)
+        ws <- pt$sw[pos]
         if (is.null(w) && all(ws == 1)) ws <- NULL
-        return(list(x = pd$design[pos, ], z = pt$sy[k, 1L][pos] / sw[pos], w = ws,
-                    within = sum(pt$within[k]), rows = sum(pt$n[k]),
-                    keys = if (!is.null(keys)) as.matrix(pt$P[k[pos], nm, drop = FALSE])))
+        return(list(x = dm_dense_design(pt$x[pos, , drop = FALSE]), z = pt$sy[pos] / pt$sw[pos], w = ws,
+                    within = sum(pt$within), rows = sum(pt$n),
+                    keys = if (!is.null(keys)) pt$keys[pos, , drop = FALSE]))
     }
     g <- dmfit_groups(x, compress)
     if (is.null(g)) return(NULL)
@@ -735,8 +721,9 @@ dm_is_codes <- function(x) inherits(x, "dm_codes")
 dmp_groupsum_codes <- function(col, group) {
     G <- group$G
     if (!dm_is_rcols(col) && !dm_is_rcols(group$codes)) {
-        W <- if (is.matrix(col)) col else matrix(col, ncol = 1L)
-        storage.mode(W) <- "double"
+        ## (the kernel takes a vector as one column: no copy of a double)
+        W <- col
+        if (!is.double(W)) storage.mode(W) <- "double"
         return(.Call(C_dm_fe_gsum, group$codes, G, W))
     }
     res <- dm_group_query(list(group$codes), list(col), nulls = TRUE)
@@ -791,11 +778,16 @@ dmp_colsums_groups <- function(x, groups, extra = NULL) {
     if (dm_is_comb(x)) {
         if (!is.null(x$design2)) stop("A combination of two designs has no grouped sums here.", call. = FALSE)
         D <- x$design
-        w <- if (is.null(x$scale)) NULL else rep_len(as.double(x$scale), nrow(D))
+        s <- x$scale
+        w <- if (is.null(s)) NULL
+             else if (is.double(s) && length(s) == nrow(D) && is.null(attributes(s))) s
+             else rep_len(as.double(s), nrow(D))
     }
     G <- vapply(groups, function(g) g$G, 1L)
     codes <- lapply(groups, function(g) g$codes)
-    Y <- if (is.null(extra)) NULL else { E <- if (is.matrix(extra)) extra else matrix(extra, ncol = 1L); storage.mode(E) <- "double"; E }
+    ## (the kernels take a vector as one column: no copy of a double)
+    Y <- extra
+    if (!is.null(Y) && !is.double(Y)) storage.mode(Y) <- "double"
     if (dm_colsums_struct_ok(D, G)) {
         M <- .Call(C_dm_fe_struct_gsum, D$setup, D$vars, w, codes, as.integer(G), Y, TRUE)
         info <- dm_struct_info(D)
@@ -811,15 +803,13 @@ dmp_colsums_groups <- function(x, groups, extra = NULL) {
                     S[, Tt$cols[1L, 1L]] <- m[1L, ]
                     next
                 }
-                L <- nrow(Tt$C)
+                L <- Tt$L
                 ns <- nrow(Tt$cols)
-                for (u in seq_len(ns)) {
-                    rows <- q + (u - 1L) * L + seq_len(L)
-                    S[, Tt$cols[u, ]] <- crossprod(m[rows, , drop = FALSE], Tt$C)
-                }
+                rows <- q + seq_len(L * ns)
+                S[, Tt$cols] <- t(dm_struct_contract(m[rows, , drop = FALSE], Tt, G[k]))
                 q <- q + L * ns
             }
-            list(S = S, n = m[1L, ], extra = if (is.null(Y)) NULL else t(m[q + seq_len(ncol(Y)), , drop = FALSE]))
+            list(S = S, n = m[1L, ], extra = if (is.null(Y)) NULL else t(m[q + seq_len(NCOL(Y)), , drop = FALSE]))
         }))
     }
     one <- if (is.null(w)) rep(1, nrow(D)) else w
@@ -837,7 +827,7 @@ dm_colsums_struct_ok <- function(D, G) {
     if (!isTRUE(getOption("design.matrix.structured", TRUE))) return(FALSE)
     if (!dm_struct_ok(D)) return(FALSE)
     info <- dm_struct_info(D)
-    Q <- 2 + sum(vapply(info, function(Tt) nrow(Tt$C) * nrow(Tt$cols), 0))
+    Q <- 2 + sum(vapply(info, function(Tt) Tt$L * nrow(Tt$cols), 0))
     all(Q * as.double(G) <= 2^25)
 }
 
@@ -877,7 +867,13 @@ dmc_is_finite <- function(x) {
 }
 
 ## TRUE where x is not missing (NA or NaN; infinite values count as present).
-dmc_notnan <- function(x) dmc_is_finite(x) | (abs(x) == Inf)
+## (In memory, as remotely for NULL, a missing value gives NA, not FALSE: in
+## memory one pass in C for a plain vector.)
+dmc_notnan <- function(x) {
+    if (!dm_is_rcols(x) && is.null(attributes(x)) && (is.double(x) || is.integer(x) || is.logical(x)))
+        return(.Call(C_dm_notnan, x))
+    dmc_is_finite(x) | (abs(x) == Inf)
+}
 
 ## The rows where a logical column is TRUE (with negate, where it is not
 ## TRUE: FALSE or missing), as a column to sum: 1 or 0. In memory a logical
@@ -1008,7 +1004,7 @@ dmp_y <- function(x, y) {
 dmp_subset <- function(x, keep) {
     if (!inherits(x, "dm_remote")) {
         if (dm_is_rcols(keep)) stop("A remote column cannot select rows of a design in memory.", call. = FALSE)
-        return(x[!is.na(keep) & keep, ])
+        return(x[if (is.logical(keep) && !anyNA(keep)) keep else !is.na(keep) & keep, ])
     }
     if (inherits(keep, "SQL")) keep <- dm_rcols(x, as.character(keep))
     if (!dm_is_rcols(keep))

@@ -35,14 +35,13 @@ its columns (\code{DBI::SQL()}).}
 \item{reorder}{Only \code{TRUE} (groups sorted) is supported.}
 
 \item{sql}{For \code{summary()}: also print the generated SQL (the query that
-computes the model variables and, for the SQL engine, the aggregates of
-\code{crossprod()}; for the chunked engine, the query that reads a batch).}
+computes the model variables, and the aggregates of \code{crossprod()}).}
 }
 \description{
 With a DBI connection to DuckDB, or the path of Parquet files, as \code{data},
 \code{\link[=design_matrix]{design_matrix()}} returns a \emph{remote design}: the rows stay in the
-database, and products with the design run there (or in batches), so that
-data larger than memory can be used.
+database, and products with the design run there, so that data larger
+than memory can be used.
 }
 \details{
 \if{html}{\out{<div class="sourceCode">}}\preformatted{design_matrix(formula, con, table = "flights")
@@ -95,26 +94,26 @@ predictions are \code{NULL}, and products involving their columns are \code{NA}.
 With \code{na.action = na.omit}, they are dropped.
 }
 
-\section{Engines}{
+\section{Engine}{
 
-\code{engine = "sql"} computes everything in DuckDB. It covers factors,
-character and logical columns, numeric columns, interactions, and
-numeric expressions built from \code{+}, \code{-}, \code{*}, \code{/}, \code{^}, \code{\link[=I]{I()}}, \code{\link[=log]{log()}}
+Products with a remote design are computed in DuckDB. SQL computes
+factors, character and logical columns, numeric columns, interactions,
+and numeric expressions built from \code{+}, \code{-}, \code{*}, \code{/}, \code{^}, \code{\link[=I]{I()}}, \code{\link[=log]{log()}}
 (with base 2, 10 or a number), \code{\link[=log2]{log2()}}, \code{\link[=log10]{log10()}}, \code{\link[=exp]{exp()}}, \code{\link[=sqrt]{sqrt()}} and
-\code{\link[=abs]{abs()}}. \code{engine = "chunked"} handles any formula: rows are read in
-batches of \code{chunk_size} rows (from the table itself when it is a DuckDB
-base table, otherwise from a temporary table holding the needed columns of
-the rows used) and each batch goes through \code{design_matrix(spec, batch)}.
-\code{engine = "auto"} (default) uses SQL when every variable can be
-translated, and otherwise the chunked engine, with a message naming the
-first term that cannot be translated. \code{summary(D)} shows the decision
-for each term, and \code{summary(D, sql = TRUE)} the generated SQL.
+\code{\link[=abs]{abs()}}. Any other variable, such as \code{\link[stats:poly]{stats::poly()}}, \code{\link[splines:ns]{splines::ns()}},
+\code{factor(cyl)} or a function of yours, is evaluated in R once, in batches
+of \code{chunk_size} rows, and written with the columns of the remote data to
+a temporary table (one pass over the data, and a copy of it in the
+database), whose columns the design then reads like any others; a
+message names the first such term. The expression is evaluated on the
+rows where its input columns are present, and a row where it gives \code{NA}
+is a row with a missing value. With \code{engine = "sql"}, such a formula is
+refused instead. \code{summary(D)} shows, for each term, whether SQL computes
+it, and \code{summary(D, sql = TRUE)} the generated SQL.
 
-In the chunked engine, a variable evaluated in R is taken as missing,
-when selecting rows in SQL, if one of its input columns is missing; rows
-where the R expression itself gives \code{NA} are then dropped in R. The
-number of rows printed is that of the SQL selection until a pass over the
-data has counted the rows kept.
+A term whose factors have more than about eight million combined
+level-column cells is refused; for a factor with many levels, use fixed
+effects (\code{y ~ x | f} in \code{\link[=design_lm]{design_lm()}} and \code{\link[=design_glm]{design_glm()}}).
 }
 
 \section{Operations}{
@@ -132,8 +131,8 @@ involved: \code{crossprod(x, y)} needs \code{y} to be \code{x} with other scales
 \code{DBI::SQL()} expression), the sums or means within groups (sorted as
 \code{\link[base:rowsum]{base::rowsum()}} sorts them).
 \item \code{D \%*\% beta}: the linear predictor, with all the columns of the remote
-data (to join it back), written to a temporary view (SQL engine) or
-table (chunked engine) whose name is returned, as a string of class
+data (to join it back), as a temporary view whose name is returned, a
+string of class
 \code{dm_remote_table}; \code{\link[=as.data.frame]{as.data.frame()}} reads it, and its \code{"connection"}
 attribute is the connection where it lives (for a Parquet source, a
 private one). To keep it, create a table from it:
@@ -149,14 +148,14 @@ or with \code{force = TRUE}.
 
 \section{Compression}{
 
-When the rows have few distinct \emph{design patterns} (the same values in
-every input column of the design, as with factors and discrete numeric
-variables), \code{crossprod()}, \code{colSums()}, \code{colMeans()} and \code{\link[=design_lm]{design_lm()}}
-run one \verb{GROUP BY} over those columns, which returns
-each pattern with its number of rows and the sums of the weights and
-responses, and compute the result from the design of the patterns, in
-memory. This works with both engines (a variable evaluated in R is
-evaluated on the patterns). The option \code{design.matrix.remote_compress}
+When the rows have few distinct \emph{design patterns} (the same factor levels
+and the same values of the numeric variables of the design, as with
+factors and discrete numeric variables), \code{crossprod()}, \code{colSums()},
+\code{colMeans()}, \code{\link[=design_lm]{design_lm()}} and \code{\link[=design_glm]{design_glm()}} compress: the one scan of
+the rows also groups by the numeric variables, which returns each pattern
+with its number of rows and the sums of the weights and responses, and
+the result is computed from the design of the patterns, in memory. The
+option \code{design.matrix.remote_compress}
 controls it. With \code{"auto"} (default), a design with a continuous
 numeric column (a \code{DOUBLE} column with many distinct values in a sample
 of the rows) is not compressed, at almost no cost; otherwise the number
@@ -166,8 +165,7 @@ and the products are compressed when it is at most
 of rows and at most \code{getOption("design.matrix.remote_compress_max", 1e6)}.
 \code{TRUE} always compresses (unless every row is distinct); \code{FALSE} never
 does. Designs that keep rows with missing values
-(\code{na.action = na.pass}) are not compressed, nor are products with a
-column or row scale that has missing values.
+(\code{na.action = na.pass}) are not compressed.
 
 Remote designs keep only the \emph{Algebra} promise of the package: results
 agree with the in-memory computation up to floating point rounding. With
@@ -181,8 +179,9 @@ result has \code{NA}.
 With remote data, \code{\link[=design_matrix]{design_matrix()}}, \code{\link[=design_lm]{design_lm()}}, \code{\link[=design_glm]{design_glm()}} and
 \code{predict()} take, through \code{...}: \code{table} or \code{sql} (the remote rows: a
 table name, or a \code{SELECT} query; not with Parquet paths), \code{engine}
-(\code{"auto"}, \code{"sql"} or \code{"chunked"}) and \code{chunk_size} (rows per batch for
-the chunked engine, default \code{getOption("design.matrix.chunk_size", 250000)}).
+(\code{"auto"}, or \code{"sql"} to refuse variables that must be evaluated in R)
+and \code{chunk_size} (rows per batch when variables are evaluated in R,
+default \code{getOption("design.matrix.chunk_size", 250000)}).
 }
 
 \section{Linear models}{
@@ -198,9 +197,8 @@ comparisons, \code{&}, \code{|}, \code{!}, \code{\%in\%} with constants and \cod
 the database. Any other R expression, such as \code{weights = myfun(x)}, is
 evaluated in R, batch by batch, and its values are written with the
 columns of the remote data to a temporary table, on which the fit runs
-(one more pass over the data; with \code{engine = "auto"}, the chunked engine
-is used, with a message naming the expression, and \code{engine = "sql"}
-refuses). Compression stays exact, since the computed values are columns
+(one more pass over the data, with a message naming the expression;
+\code{engine = "sql"} refuses). Compression stays exact, since the computed values are columns
 of that table. \code{na.action} can be \code{\link[=na.omit]{na.omit()}} (default), \code{\link[=na.exclude]{na.exclude()}},
 \code{\link[=na.fail]{na.fail()}} or \code{\link[=na.pass]{na.pass()}}, with the results or errors of \code{\link[=lm]{lm()}}. The
 rows used are those with no missing model variable, response, weight or
@@ -266,7 +264,7 @@ with \code{y} naming the response column (two columns for successes and
 failures). The fit is the same code as in memory, on the remote methods
 of the products: with few design patterns (see \emph{Compression}), the
 iterations run on the patterns; otherwise each iteration computes its
-products in the database or in batches. \code{predict(fit, newdata = con, table = ..., type = "response")}, \code{fitted()} and \code{residuals(fit, type = )} return a temporary view with a \code{.fitted} (and \code{.resid}) column next to
+products in the database. \code{predict(fit, newdata = con, table = ..., type = "response")}, \code{fitted()} and \code{residuals(fit, type = )} return a temporary view with a \code{.fitted} (and \code{.resid}) column next to
 the columns of the remote data. Fixed effects (\code{y ~ x | fe}, see
 \code{\link[=design_glm]{design_glm()}}) work remotely as in memory: each iteration's sums over
 rows are queries, the working weights and responses a temporary table.

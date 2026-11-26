@@ -1,10 +1,10 @@
 ## Parity of the matrix operations of a design in memory and remote: every
-## operation on the same data, in memory and on a DuckDB table (SQL and
-## chunked engines) and a Parquet file. Two formulas: one that SQL computes
-## (the SQL engine for the table and the Parquet file), and one with a term
-## evaluated in R (the chunked engine for every source).
+## operation on the same data, in memory and on a DuckDB table and a
+## Parquet file (full tier). Two formulas: one that SQL computes, and one with a term
+## evaluated in R into columns (also in small batches).
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
+source("helpers.R")
 library(design.matrix)
 
 con <- DBI::dbConnect(duckdb::duckdb())
@@ -29,8 +29,9 @@ by_id <- function(tab, col) {
 
 sources <- list(
     table = function(f) design_matrix(f, con, table = "d", engine = "auto"),
-    chunked = function(f) design_matrix(f, con, table = "d", engine = "chunked", chunk_size = 97),
+    batches = function(f) design_matrix(f, con, table = "d", chunk_size = 97),
     parquet = function(f) design_matrix(f, pq))
+if (!full_tests) sources$parquet <- NULL
 for (fname in names(formulas)) for (src in names(sources)) {
     fo <- formulas[[fname]]
     M <- design_matrix(fo, d)
@@ -42,7 +43,7 @@ for (fname in names(formulas)) for (src in names(sources)) {
     V <- crossprod(matrix(rnorm(ncol(X)^2), ncol(X)))
     D <- suppressMessages(sources[[src]](fo))
     info <- paste(fname, src)
-    expect_identical(D$engine, if (fname == "sql" && src != "chunked") "sql" else "chunked", info = info)
+    expect_identical(is.null(D$evaluated), fname == "sql", info = info)
     ## shape and printing
     expect_equal(dim(D), dim(M), info = info)
     expect_identical(colnames(D), colnames(M), info = info)
