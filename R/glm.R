@@ -609,7 +609,7 @@ dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg
 dmglm_wls_design <- function(x, tol) {
     force(x)
     function(w2, z) {
-        f <- dmfit_ls(x, z, w2, tol, FALSE)
+        f <- dmfit_ls(x, z, w2, tol, FALSE, sums = FALSE)
         b <- f$coefficients
         b[is.na(b)] <- 0
         list(coefficients = unname(b), rank = f$rank, pivot = f$pivot, R = unname(f$R))

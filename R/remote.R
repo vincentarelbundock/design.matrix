@@ -318,7 +318,7 @@ dm_execute <- function(D, sql) {
 dm_tmp <- new.env(parent = emptyenv())
 dm_tmp_name <- function(prefix) {
     if (is.null(dm_tmp$token))
-        dm_tmp$token <- sprintf("%x%x", Sys.getpid(), as.integer(as.numeric(Sys.time()) * 1000) %% 1e9)
+        dm_tmp$token <- sprintf("%x%x", Sys.getpid(), as.integer((as.numeric(Sys.time()) * 1000) %% 1e9))
     dm_tmp$i <- (dm_tmp$i %||% 0) + 1
     sprintf("%s_%08x%s", prefix, as.integer(dm_tmp$i), dm_tmp$token)
 }
@@ -722,6 +722,26 @@ dm_remote_moments <- function(x, y = NULL, weights = NULL) {
     out
 }
 
+## X'X of a remote design (rows possibly scaled) and, with the remote
+## columns Y, X'Y, from one scan with the SQL engine: list(xtx, xty).
+## (Without Y, or with the chunked engine, crossprod(x), and xty NULL.)
+dm_remote_gram_xty <- function(x, Y = NULL) {
+    if (is.null(Y) || x$engine != "sql" || !length(Y)) return(list(xtx = crossprod(x), xty = NULL))
+    nm <- paste0("__dm_y", seq_along(Y))
+    D <- dm_with_columns(x, Y, nm)
+    sc <- D$scale
+    yy <- list(cols = nm, response = FALSE)
+    D <- dm_remote_unscaled(D)
+    mo <- if (is.null(sc)) {
+        dm_sql_moments(D, yy)
+    } else {
+        D <- dm_remote_extend(D, c(`__dm_w2` = sprintf("(%s) * (%s)", sc, sc), `__dm_w1` = sc), "scale")
+        dm_sql_moments(D, yy, "__dm_w2", wy = "__dm_w1")
+    }
+    dimnames(mo$xty) <- list(colnames(x), NULL)
+    mo[c("xtx", "xty")]
+}
+
 ## X %*% beta written to a temporary view (SQL engine) or table (chunked
 ## engine), or to the table `name`, with the columns `keep` (default: all)
 ## of the remote data. Returns the name, of class dm_remote_table.
@@ -1007,7 +1027,7 @@ summary.dm_remote <- function(object, sql = FALSE, ...) {
     if (sql) {
         attr(tab, "sql") <- if (x$engine == "sql") {
             c(paste0("-- model variables\n", dm_sql_base(x)),
-              paste0("-- crossprod\n", vapply(dm_sql_gram_queries(x, NULL), function(q) q$sql, "")))
+              paste0("-- crossprod\n", dm_sql_moments(x, NULL, sql_only = TRUE)))
         } else {
             paste0("-- batch\n", dm_chunk_sql(x, dm_remote_inputs(x), range = c(0, x$chunk_size)))
         }

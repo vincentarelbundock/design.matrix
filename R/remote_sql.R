@@ -165,31 +165,66 @@ dm_sql_extra_w <- function(D, w) {
     if (is.null(w)) character() else sprintf("CAST(s.%s AS DOUBLE) AS __dm_w", dm_qi(D, w))
 }
 
-## Queries for X'WX: one per set of factors U = S_s + S_t.
-dm_sql_gram_queries <- function(D, w) {
-    st <- D$sql_terms
-    base <- dm_sql_base(D, dm_sql_extra_w(D, w))
-    groups <- list()
-    for (t in seq_along(st)) for (s in seq_len(t)) {
-        U <- sort(union(st[[s]]$S, st[[t]]$S))
-        key <- paste(U, collapse = ",")
-        prod <- dm_sql_prod(c(st[[s]]$M, st[[t]]$M), !is.null(w))
-        g <- groups[[key]] %||% list(U = U, aggs = character(), pairs = list())
-        a <- match(prod, g$aggs)
-        if (is.na(a)) {
-            g$aggs <- c(g$aggs, prod)
-            a <- length(g$aggs)
-        }
-        g$pairs[[length(g$pairs) + 1L]] <- c(s, t, a)
-        groups[[key]] <- g
+## One scan of the rows used for many sums at once. Each item is a SQL
+## expression over the base query `b`, summed within the combined levels of
+## a set U of factors: add(U, e) returns its id, run() executes, and
+## get(id) gives list(res, m): the cells (their code columns __dm_c<j>, at
+## least those of U) and the sums. All items share one GROUP BY over every
+## factor involved, so that the data are read once; a cell finer than U is
+## summed again by the caller (dm_sql_fold(), or a sparse matrix, which adds
+## duplicates). When that joint grouping would return too many cells, items
+## are grouped by their own U instead, one query per set.
+dm_sql_scan <- function(D, base, levels) {
+    U <- list()
+    e <- character()
+    out <- NULL
+    plan <- function() {
+        all <- sort(unique(unlist(U)))
+        ue <- unique(e)
+        joint <- prod(as.numeric(levels[all])) * length(ue) <= dm_sql_max_cells
+        key <- if (joint) rep("", length(e)) else vapply(U, paste, "", collapse = ",")
+        lapply(unique(key), function(k) {
+            i <- which(key == k)
+            keys <- if (joint) all else U[[i[1L]]]
+            ge <- unique(e[i])
+            kc <- if (length(keys)) paste0("__dm_c", keys) else character()
+            list(items = i, col = match(e[i], ge),
+                 sql = sprintf("WITH b AS (%s) SELECT %s FROM b%s", base,
+                               paste(c(kc, sprintf("SUM(%s) AS __dm_m%d", ge, seq_along(ge))), collapse = ", "),
+                               if (length(kc)) " GROUP BY ALL" else ""))
+        })
     }
-    lapply(groups, function(g) {
-        keys <- if (length(g$U)) paste0("__dm_c", g$U) else character()
-        aggs <- sprintf("SUM(%s) AS __dm_m%d", g$aggs, seq_along(g$aggs))
-        g$sql <- sprintf("WITH b AS (%s) SELECT %s FROM b%s", base, paste(c(keys, aggs), collapse = ", "),
-                         if (length(keys)) " GROUP BY ALL" else "")
-        g
-    })
+    list(
+        add = function(u, expr) {
+            U[[length(U) + 1L]] <<- sort(as.integer(u))
+            e <<- c(e, expr)
+            length(e)
+        },
+        sql = function() vapply(plan(), function(g) g$sql, ""),
+        run = function() {
+            out <<- vector("list", length(e))
+            for (g in plan()) {
+                res <- dm_query(D, g$sql)
+                for (k in seq_along(g$items)) {
+                    m <- as.double(res[[paste0("__dm_m", g$col[k])]])
+                    m[is.na(m)] <- 0
+                    out[[g$items[k]]] <<- list(res = res, m = m)
+                }
+            }
+            invisible()
+        },
+        get = function(id) out[[id]],
+        total = function(id) sum(out[[id]]$m))
+}
+
+## Sums of x within the 0-based levels `a` (of L levels).
+dm_sql_fold <- function(a, x, L) {
+    out <- numeric(L)
+    ok <- !is.na(a)
+    if (!any(ok)) return(out)
+    r <- rowsum(x[ok], a[ok], reorder = FALSE)
+    out[as.numeric(rownames(r)) + 1] <- r[, 1L]
+    out
 }
 
 ## Number of rows used where a column is missing.
@@ -235,46 +270,7 @@ dm_sql_na_cols <- function(D) {
     unlist(lapply(D$sql_terms[bad], function(t) t$cols))
 }
 
-dm_sql_gram <- function(D, w = NULL) {
-    st <- D$sql_terms
-    p <- D$p
-    G <- matrix(0, p, p, dimnames = list(D$colnames, D$colnames))
-    if (!is.null(w) && dm_sql_count_na(D, w) > 0) {
-        G[] <- NA_real_
-        return(G)
-    }
-    bad <- dm_sql_na_terms(D)
-    for (g in dm_sql_gram_queries(D, w)) {
-        if (all(vapply(g$pairs, function(pr) bad[pr[1L]] || bad[pr[2L]], NA))) next
-        res <- dm_query(D, g$sql)
-        for (pr in g$pairs) {
-            s <- pr[1L]
-            t <- pr[2L]
-            if (bad[s] || bad[t]) next
-            m <- as.double(res[[paste0("__dm_m", pr[3L])]])
-            m[is.na(m)] <- 0
-            Ts <- st[[s]]
-            Tt <- st[[t]]
-            if (!length(Ts$cols) || !length(Tt$cols)) next
-            a <- dm_sql_level(res, Ts$S, Ts$strides)
-            if (s == t) {
-                mm <- numeric(Ts$Lt)
-                mm[a + 1] <- m
-                G[Ts$cols, Ts$cols] <- crossprod(Ts$C, mm * Ts$C)
-            } else {
-                b <- dm_sql_level(res, Tt$S, Tt$strides)
-                Mst <- Matrix::sparseMatrix(i = a + 1, j = b + 1, x = m, dims = c(Ts$Lt, Tt$Lt))
-                blk <- as.matrix(crossprod(Ts$C, as.matrix(Mst %*% Tt$C)))
-                G[Ts$cols, Tt$cols] <- blk
-                G[Tt$cols, Ts$cols] <- t(blk)
-            }
-        }
-    }
-    na <- dm_sql_na_cols(D)
-    G[na, ] <- NA_real_
-    G[, na] <- NA_real_
-    G
-}
+dm_sql_gram <- function(D, w = NULL) dm_sql_moments(D, NULL, w)$xtx
 
 ## X'W Y for SQL expressions `ycols` over the base query (with `extra`
 ## select items defining them): p x K.
@@ -323,53 +319,87 @@ dm_sql_ycols <- function(D, yy) {
          extra = sprintf("CAST(s.%s AS DOUBLE) AS __dm_y%d", dm_qi(D, yy$cols), seq_len(K)))
 }
 
-dm_sql_xty <- function(D, yy, w = NULL) {
-    yc <- dm_sql_ycols(D, yy)
-    out <- dm_sql_xty_core(D, yc$exprs, yc$extra, w)
-    dimnames(out) <- list(D$colnames, yy$cols)
-    na <- dm_sql_count_na(D, c(if (!yy$response) yy$cols, w))
-    if (!is.null(w) && na[[w]] > 0) out[] <- NA_real_
-    if (!yy$response) out[, na[yy$cols] > 0] <- NA_real_
-    out
-}
+dm_sql_xty <- function(D, yy, w = NULL) dm_sql_moments(D, yy, w, gram = FALSE)$xty
 
-dm_sql_moments <- function(D, yy, w = NULL) {
-    if (is.null(yy)) {
-        xtx <- dm_sql_gram(D, w)
-        base <- dm_sql_base(D, dm_sql_extra_w(D, w))
-        res <- dm_query(D, sprintf("WITH b AS (%s) SELECT COUNT(*) AS __dm_n, SUM(%s) AS __dm_sw FROM b",
-                                   base, if (is.null(w)) "CAST(1 AS DOUBLE)" else "__dm_w"))
-        sumw <- as.double(res$`__dm_sw`)
-        if (is.na(sumw) || (!is.null(w) && dm_sql_count_na(D, w) > 0)) sumw <- if (is.null(w)) 0 else NA_real_
-        return(list(xtx = xtx, xty = NULL, yty = NULL, n = as.numeric(res$`__dm_n`), sumw = sumw))
-    }
-    yc <- dm_sql_ycols(D, yy)
+## X'WX, X'WY, Y'WY, the number of rows and the sum of the weights, in one
+## scan (dm_sql_scan()). `yy`: the response or columns (dm_remote_y()), or
+## NULL; `w`: the name of a weights column, or NULL; `wy`: the name of
+## another weights column for the sums with Y (X'[wy]Y; Y'Y is then not
+## computed). With sql_only, the queries instead.
+dm_sql_moments <- function(D, yy, w = NULL, gram = TRUE, sql_only = FALSE, wy = NULL) {
+    st <- D$sql_terms
+    p <- D$p
+    yc <- if (is.null(yy)) list(exprs = character(), extra = character()) else dm_sql_ycols(D, yy)
     K <- length(yc$exprs)
-    xtx <- dm_sql_gram(D, w)
-    xty <- dm_sql_xty(D, yy, w)
-    base <- dm_sql_base(D, c(yc$extra, dm_sql_extra_w(D, w)))
-    wf <- if (is.null(w)) "" else " * __dm_w"
-    idx <- expand.grid(k = seq_len(K), l = seq_len(K))
-    aggs <- c("COUNT(*) AS __dm_n", sprintf("SUM(CAST(1 AS DOUBLE)%s) AS __dm_sw", wf),
-              sprintf("SUM(%s * %s%s) AS __dm_yy%d", yc$exprs[idx$k], yc$exprs[idx$l], wf, seq_len(nrow(idx))))
-    res <- dm_query(D, sprintf("WITH b AS (%s) SELECT %s FROM b", base, paste(aggs, collapse = ", ")))
-    yty <- matrix(vapply(seq_len(nrow(idx)), function(r) as.double(res[[paste0("__dm_yy", r)]]), 0), K, K,
-                  dimnames = list(yy$cols, yy$cols))
-    yty[is.na(yty)] <- 0
-    n <- as.numeric(res$`__dm_n`)
-    sumw <- as.double(res$`__dm_sw`)
-    if (is.na(sumw)) sumw <- 0
-    na <- dm_sql_count_na(D, c(if (!yy$response) yy$cols, w))
-    if (!is.null(w) && na[[w]] > 0) {
-        yty[] <- NA_real_
+    hasw <- !is.null(w)
+    wf <- if (hasw) " * __dm_w" else ""
+    bad <- dm_sql_na_terms(D)
+    live <- which(!bad & vapply(st, function(t) length(t$cols) > 0L, NA))
+    extra_wy <- if (!is.null(wy)) sprintf("CAST(s.%s AS DOUBLE) AS __dm_wy", dm_qi(D, wy))
+    sc <- dm_sql_scan(D, dm_sql_base(D, c(yc$extra, dm_sql_extra_w(D, w), extra_wy)),
+                      vapply(D$vars, function(v) max(1L, length(v$levels)), 1L))
+    yprod <- function(M, y) if (is.null(wy)) dm_sql_prod(M, hasw, y) else dm_sql_prod(M, FALSE, c(y, "__dm_wy"))
+    missing_of <- function(e) sprintf("CASE WHEN %s IS NULL OR isnan(%s) THEN 1 ELSE 0 END", e, e)
+    id <- list(n = sc$add(integer(), "1"), sw = sc$add(integer(), paste0("CAST(1 AS DOUBLE)", wf)),
+               naw = if (hasw) sc$add(integer(), missing_of("__dm_w")),
+               nay = if (K && !yy$response) vapply(yc$exprs, function(e) sc$add(integer(), missing_of(e)), 1L))
+    gid <- list()
+    if (gram) for (t in live) for (s in live[live <= t])
+        gid[[length(gid) + 1L]] <- c(s, t, sc$add(c(st[[s]]$S, st[[t]]$S), dm_sql_prod(c(st[[s]]$M, st[[t]]$M), hasw)))
+    hid <- matrix(0L, length(st), K)
+    for (t in live) for (k in seq_len(K))
+        hid[t, k] <- sc$add(st[[t]]$S, yprod(st[[t]]$M, yc$exprs[k]))
+    yid <- matrix(0L, K, K)
+    if (is.null(wy)) for (k in seq_len(K)) for (l in seq_len(k))
+        yid[k, l] <- yid[l, k] <- sc$add(integer(), sprintf("%s * %s%s", yc$exprs[l], yc$exprs[k], wf))
+    if (sql_only) return(sc$sql())
+    sc$run()
+
+    xtx <- xty <- yty <- NULL
+    if (gram) {
+        xtx <- matrix(0, p, p, dimnames = list(D$colnames, D$colnames))
+        for (pr in gid) {
+            Ts <- st[[pr[1L]]]
+            Tt <- st[[pr[2L]]]
+            g <- sc$get(pr[3L])
+            a <- dm_sql_level(g$res, Ts$S, Ts$strides)
+            if (pr[1L] == pr[2L]) {
+                xtx[Ts$cols, Ts$cols] <- crossprod(Ts$C, dm_sql_fold(a, g$m, Ts$Lt) * Ts$C)
+            } else {
+                b <- dm_sql_level(g$res, Tt$S, Tt$strides)
+                Mst <- Matrix::sparseMatrix(i = a + 1, j = b + 1, x = g$m, dims = c(Ts$Lt, Tt$Lt))
+                blk <- as.matrix(crossprod(Ts$C, as.matrix(Mst %*% Tt$C)))
+                xtx[Ts$cols, Tt$cols] <- blk
+                xtx[Tt$cols, Ts$cols] <- t(blk)
+            }
+        }
+    }
+    na <- dm_sql_na_cols(D)
+    if (gram) xtx[na, ] <- xtx[, na] <- NA_real_
+    sumw <- sc$total(id$sw)
+    if (K) {
+        xty <- matrix(0, p, K, dimnames = list(D$colnames, yy$cols))
+        for (t in live) for (k in seq_len(K)) {
+            Tt <- st[[t]]
+            g <- sc$get(hid[t, k])
+            xty[Tt$cols, k] <- crossprod(Tt$C, dm_sql_fold(dm_sql_level(g$res, Tt$S, Tt$strides), g$m, Tt$Lt))
+        }
+        xty[na, ] <- NA_real_
+        if (is.null(wy)) yty <- matrix(vapply(yid, sc$total, 0), K, K, dimnames = list(yy$cols, yy$cols))
+        if (!yy$response) {
+            miss <- vapply(id$nay, sc$total, 0) > 0
+            xty[, miss] <- NA_real_
+            if (is.null(wy)) yty[miss, ] <- yty[, miss] <- NA_real_
+        }
+    }
+    ## a missing weight: every sum is missing, as in the dense computation
+    if (hasw && sc$total(id$naw) > 0) {
+        if (gram) xtx[] <- NA_real_
+        if (K) xty[] <- NA_real_
+        if (!is.null(yty)) yty[] <- NA_real_
         sumw <- NA_real_
     }
-    if (!yy$response) {
-        bad <- na[yy$cols] > 0
-        yty[bad, ] <- NA_real_
-        yty[, bad] <- NA_real_
-    }
-    list(xtx = xtx, xty = xty, yty = yty, n = n, sumw = sumw)
+    list(xtx = xtx, xty = xty, yty = yty, n = sc$total(id$n), sumw = sumw)
 }
 
 dm_sql_colsums <- function(D, group, w, mean) {

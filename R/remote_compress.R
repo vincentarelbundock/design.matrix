@@ -47,6 +47,14 @@ dm_compress_mode <- function(mode = getOption("design.matrix.remote_compress", "
 ## The real GROUP BY gives up as well when it returns more patterns than
 ## that (dm_remote_patterns()).
 dm_compress_worth <- function(D, keys, n) {
+    ## (asked once for the rows of a design and a set of keys)
+    ck <- paste(c(D$filter, keys), collapse = "\r")
+    if (!is.null(D$cache$worth[[ck]])) return(D$cache$worth[[ck]])
+    D$cache$worth[[ck]] <- out <- dm_compress_worth_ask(D, keys, n)
+    out
+}
+
+dm_compress_worth_ask <- function(D, keys, n) {
     qk <- paste0("s.", dm_qi(D, keys))
     dbl <- keys[D$src$types[keys] == "double"]
     if (length(dbl)) {
@@ -209,6 +217,7 @@ dm_compress_ys <- function(D, yy) {
 
 ## Moments from patterns (dm_remote_moments()), or NULL.
 dm_compressed_moments <- function(D, yy, weights, gram = TRUE) {
+    if (isFALSE(dm_compress_mode()) || !identical(D$na, "omit")) return(NULL)
     ys <- dm_compress_ys(D, yy)
     if (is.null(ys)) return(NULL)
     ## missing responses or weights give NA (the uncompressed path does that)
@@ -240,6 +249,7 @@ dm_compressed_moments <- function(D, yy, weights, gram = TRUE) {
 
 ## colSums()/colMeans() from patterns (with the group in the key), or NULL.
 dm_compressed_colsums <- function(D, group, weights, mean) {
+    if (isFALSE(dm_compress_mode()) || !identical(D$na, "omit")) return(NULL)
     if (!is.null(weights) && dm_sql_count_na(D, weights) > 0) return(NULL)
     w <- if (is.null(weights)) NULL else sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, weights))
     pt <- dm_remote_patterns(D, character(), w, group = group)
