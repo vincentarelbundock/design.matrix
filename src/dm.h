@@ -39,5 +39,8 @@ SEXP dm_min_nonzero(SEXP, SEXP);
 SEXP dm_all_finite(SEXP);
 SEXP dm_col_norms(SEXP);
 SEXP dm_in_range(SEXP, SEXP, SEXP);
+SEXP dm_codes_ok(SEXP, SEXP);
+SEXP dm_int_unique(SEXP);
+SEXP dm_str_unique(SEXP);
 SEXP dm_omp_max_threads(void);
 #endif
