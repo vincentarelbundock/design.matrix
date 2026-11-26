@@ -96,3 +96,78 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     expect_true(is.na(dm_colsum(dmp_column(Rn, 'CAST(s."y" AS DOUBLE)'))))
     DBI::dbDisconnect(con)
 }
+
+## ---- contract extensions: coded groups, subsets, arguments ----
+dmc_codes <- design.matrix:::dmc_codes
+dmp_colsums_groups <- design.matrix:::dmp_colsums_groups
+dmp_subset <- design.matrix:::dmp_subset
+dmp_resolve <- design.matrix:::dmp_resolve
+dmc_cbind <- design.matrix:::dmc_cbind
+cg <- dmc_codes(d$g, 7L)
+cf <- dmc_codes(match(d$f, c("a", "b", "c")), 3L)
+expect_true(same(dmp_groupsum(cbind(d$y, d$w), cg), rowsum(cbind(d$y, d$w), d$g)))
+expect_true(same(as.matrix(dmp_crosstab(cf, cg, d$w)), as.matrix(dmp_crosstab(d$f, d$g, d$w))))
+gs <- dmp_colsums_groups(dmp_scale(D, d$w), list(cg, cf), extra = d$y)
+expect_true(same(gs[[1]]$S, rowsum(d$w * X, d$g)))
+expect_true(same(gs[[2]]$S, rowsum(d$w * X, d$f)))
+expect_true(same(gs[[1]]$n, drop(rowsum(d$w, d$g))))
+expect_true(same(gs[[2]]$extra, rowsum(d$w * d$y, d$f)))
+gs0 <- dmp_colsums_groups(D, list(cg))
+expect_true(same(gs0[[1]]$S, rowsum(X, d$g)) && same(gs0[[1]]$n, tabulate(d$g)))
+keep <- d$x > 0
+expect_true(same(c(as.matrix(dmp_subset(D, keep))), c(X[keep, ])))
+expect_true(same(dmp_mult(D, B[, 1]), drop(X %*% B[, 1])))
+expect_identical(dmp_resolve(D, list(w = quote(2 * w)), environment(), data = d)$cols$w, 2 * d$w)
+## patterns split by keys (an offset, say): exact sums
+kz <- round(d$x)
+ptk <- dmp_patterns(Dd, d$y - kz, d$w, compress = TRUE, keys = kz)
+lk <- lm(y ~ xd + f, d, weights = w, offset = kz)
+lpk <- lm.wfit(as.matrix(ptk$x), ptk$z, ptk$w)
+expect_true(same(coef(lpk), coef(lk)))
+expect_equal(ncol(ptk$keys), 1L)
+
+if (requireNamespace("duckdb", quietly = TRUE)) {
+    con <- DBI::dbConnect(duckdb::duckdb())
+    DBI::dbWriteTable(con, "d", d)
+    dd <- DBI::dbReadTable(con, "d")
+    R <- design_matrix(y ~ x * f + xd, con, table = "d")
+    Xr <- as.matrix(design_matrix(y ~ x * f + xd, dd))
+    y <- dmp_column(R, 'CAST(s."y" AS DOUBLE)')
+    w <- dmp_column(R, 'CAST(s."w" AS DOUBLE)')
+    gr <- dmc_codes(dmp_column(R, 's."g"'), 7L)
+    fr <- dmc_codes(dmp_column(R, 'CASE s."f" WHEN \'a\' THEN 1 WHEN \'b\' THEN 2 ELSE 3 END'), 3L)
+    expect_true(same(dmp_groupsum(dmc_cbind(y, w), gr), rowsum(cbind(dd$y, dd$w), dd$g)))
+    expect_true(same(as.matrix(dmp_crosstab(fr, gr, w)), as.matrix(dmp_crosstab(dd$f, dd$g, dd$w))))
+    gsr <- dmp_colsums_groups(dmp_scale(R, w), list(gr, fr), extra = y)
+    expect_true(same(gsr[[1]]$S, rowsum(dd$w * Xr, dd$g)) && same(gsr[[2]]$extra, rowsum(dd$w * dd$y, dd$f)))
+    expect_true(same(gsr[[1]]$n, drop(rowsum(dd$w, dd$g))))
+    ## a group with a missing value sums to NA, as rowsum()
+    yn <- design.matrix:::dmc_ifelse(dmp_column(R, 's."g"') == 3, design.matrix:::dmp_column(R, "CAST(NULL AS DOUBLE)"), y)
+    expect_identical(unname(is.na(dmp_groupsum(yn, dmp_column(R, 's."g"'))[, 1])), sort(unique(dd$g)) == 3)
+    ## crosstab labels as in memory
+    ct <- dmp_crosstab(dmp_column(R, 's."f"'), dmp_column(R, 's."g"'))
+    expect_identical(dimnames(ct), dimnames(dmp_crosstab(dd$f, dd$g)))
+    ## subsets: a logical column or a SQL predicate
+    Rs <- dmp_subset(R, dmp_column(R, 'CAST(s."x" AS DOUBLE)') > 0)
+    expect_true(same(crossprod(Rs), crossprod(Xr[dd$x > 0, ])))
+    expect_true(same(crossprod(dmp_subset(R, DBI::SQL("x > 0"))), crossprod(Xr[dd$x > 0, ])))
+    expect_true(same(dm_colsum(design.matrix:::dmc_on(y, Rs)), sum(dd$y[dd$x > 0])))
+    ## arguments: SQL, translatable R, and R evaluated in batches
+    myf <- function(v) v^2 + 1
+    rr <- dmp_resolve(R, list(a = quote(2 * w), b = DBI::SQL("x + 1"), c = quote(myf(x)), s = quote(x > 0)),
+                      environment(), logical = "s")
+    expect_identical(names(rr$evaluated), "c")
+    expect_true(same(dm_colsum(rr$cols$a), sum(2 * dd$w)))
+    expect_true(same(dm_colsum(rr$cols$b), sum(dd$x + 1)))
+    expect_true(same(dm_colsum(rr$cols$c), sum(dd$x^2 + 1)))
+    expect_true(same(crossprod(dmp_subset(rr$x, rr$cols$s)), crossprod(Xr[dd$x > 0, ])))
+    ## patterns with keys, remotely
+    Rd <- design_matrix(y ~ xd + f, con, table = "d")
+    kzr <- design.matrix:::dmc_round(dmp_column(Rd, 'CAST(s."x" AS DOUBLE)'))
+    ptr <- dmp_patterns(Rd, dmp_column(Rd, 'CAST(s."y" AS DOUBLE)') - kzr, dmp_column(Rd, 'CAST(s."w" AS DOUBLE)'),
+                        compress = TRUE, keys = kzr)
+    lpr <- lm.wfit(as.matrix(ptr$x), ptr$z, ptr$w)
+    expect_true(same(coef(lpr), coef(lm(y ~ xd + f, dd, weights = w, offset = round(x)))))
+    expect_true(same(design.matrix:::dmp_collect(design.matrix:::dmc_lgamma(w))[1:3], lgamma(dd$w[1:3])))
+    DBI::dbDisconnect(con)
+}

@@ -467,6 +467,29 @@ dmqr_out <- function(out, yy, rows = yy$rows) {
     out
 }
 
+## Remote designs: `y` is a column name (or several), a DBI::SQL()
+## expression or a remote column; the row-wise results are tables (see
+## dmp_output() in primitives.R).
+dmqr_is_remote <- function(qr) inherits(qr$design, "dm_remote")
+
+dmqr_ry <- function(qr, y) {
+    D <- dm_remote_unscaled(qr$design)
+    if (dm_is_rcols(y)) return(list(Y = y, vec = length(y) == 1L, cols = NULL))
+    if (inherits(y, "SQL")) return(list(Y = dm_rcols(D, as.character(y)), vec = TRUE, cols = NULL))
+    if (is.character(y)) {
+        dm_remote_column(D, y, "y", several = TRUE)
+        return(list(Y = dm_rcols(D, sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, y))), vec = length(y) == 1L,
+                    cols = if (length(y) > 1L) y))
+    }
+    stop("For a remote design, `y` must name columns of its data, or be a DBI::SQL() expression.", call. = FALSE)
+}
+
+dmqr_rout <- function(qr, cols, prefix) {
+    k <- length(cols)
+    nm <- if (k == 1L) prefix else paste0(prefix, seq_len(k))
+    dmp_output(qr$design, stats::setNames(lapply(seq_len(k), function(j) dmc_col(cols, j)), nm))
+}
+
 dmqr_fitted <- function(qr, y) {
     yy <- dmqr_y(y, nrow(qr$design))
     if (!is.null(qr$dense))
@@ -490,6 +513,13 @@ setOldClass("design_qr")
 #'   as in [solve.qr()].
 #' @exportMethod qr.coef
 setMethod("qr.coef", "design_qr", function(qr, y) {
+    if (dmqr_is_remote(qr)) {
+        yy <- dmqr_ry(qr, y)
+        out <- dmqr_full(qr, dmqr_coef(qr, yy$Y), fill = NA_real_)
+        rownames(out) <- colnames(qr$design)
+        colnames(out) <- yy$cols
+        return(if (yy$vec) out[, 1L] else out)
+    }
     yy <- dmqr_y(y, nrow(qr$design))
     b <- dmqr_coef(qr, yy$Y)
     out <- dmqr_full(qr, b, fill = NA_real_)
@@ -501,6 +531,11 @@ setMethod("qr.coef", "design_qr", function(qr, y) {
 setMethod("qr.fitted", "design_qr", function(qr, y, k = qr$rank) {
     if (!identical(as.integer(k), as.integer(qr$rank)))
         stop("Only `k = qr$rank` is supported for design matrices.", call. = FALSE)
+    if (dmqr_is_remote(qr)) {
+        yy <- dmqr_ry(qr, y)
+        fit <- dmp_mult(qr$design, dmqr_full(qr, dmqr_coef(qr, yy$Y)), along = list(yy$Y))
+        return(dmqr_rout(qr, fit, ".fitted"))
+    }
     f <- dmqr_fitted(qr, y)
     dmqr_out(f$fit, f$yy)
 })
@@ -508,6 +543,11 @@ setMethod("qr.fitted", "design_qr", function(qr, y, k = qr$rank) {
 #' @rdname design_qr
 #' @exportMethod qr.resid
 setMethod("qr.resid", "design_qr", function(qr, y) {
+    if (dmqr_is_remote(qr)) {
+        yy <- dmqr_ry(qr, y)
+        fit <- dmp_mult(qr$design, dmqr_full(qr, dmqr_coef(qr, yy$Y)), along = list(yy$Y))
+        return(dmqr_rout(qr, yy$Y - fit, ".resid"))
+    }
     f <- dmqr_fitted(qr, y)
     dmqr_out(f$yy$Y - f$fit, f$yy)
 })
@@ -515,9 +555,14 @@ setMethod("qr.resid", "design_qr", function(qr, y) {
 #' @rdname design_qr
 #' @exportMethod qr.qty
 setMethod("qr.qty", "design_qr", function(qr, y) {
-    yy <- dmqr_y(y, nrow(qr$design))
     k <- qr$rank
     keep <- qr$pivot[seq_len(k)]
+    if (dmqr_is_remote(qr)) {
+        yy <- dmqr_ry(qr, y)
+        out <- dmqr_bs(dmqr_R11(qr), dmp_crossprod(qr$design, yy$Y)[keep, , drop = FALSE], transpose = TRUE)
+        return(if (yy$vec) out[, 1L] else out)
+    }
+    yy <- dmqr_y(y, nrow(qr$design))
     if (!is.null(qr$dense))
         return(dmqr_out(base::qr.qty(qr$dense, yy$Y)[seq_len(k), , drop = FALSE], yy,
                         yy$rows[seq_len(k)]))
@@ -537,6 +582,7 @@ setMethod("qr.qy", "design_qr", function(qr, y) {
         return(dmqr_out(unname(base::qr.qy(qr$dense, Z)), yy, NULL))
     }
     b <- dmqr_bs(dmqr_R11(qr), yy$Y)
+    if (dmqr_is_remote(qr)) return(dmqr_rout(qr, dmp_mult(qr$design, dmqr_full(qr, b)), ".qy"))
     out <- unname(qr$design %*% dmqr_full(qr, b))
     dmqr_out(out, yy, NULL)
 })
@@ -550,6 +596,8 @@ setMethod("qr.Q", "design_qr", function(qr, complete = FALSE, Dvec) {
         stop("`Dvec` is not supported for design matrices.", call. = FALSE)
     k <- qr$rank
     if (!is.null(qr$dense)) return(unname(base::qr.Q(qr$dense)[, seq_len(k), drop = FALSE]))
+    if (dmqr_is_remote(qr))
+        return(dmqr_rout(qr, dmp_mult(qr$design, dmqr_full(qr, dmqr_bs(dmqr_R11(qr), diag(1, k)))), ".Q"))
     unname(qr$design %*% dmqr_full(qr, dmqr_bs(dmqr_R11(qr), diag(1, k))))
 })
 
@@ -565,6 +613,13 @@ setMethod("qr.R", "design_qr", function(qr, complete = FALSE) {
 #' @method solve design_qr
 #' @export
 solve.design_qr <- function(a, b, ...) {
+    if (dmqr_is_remote(a)) {
+        if (missing(b)) stop("only square matrices can be inverted", call. = FALSE)
+        if (a$rank != ncol(a$design)) stop("singular matrix 'a' in solve", call. = FALSE)
+        res <- qr.coef(a, b)
+        res[is.na(res)] <- 0
+        return(res)
+    }
     n <- nrow(a$design)
     p <- ncol(a$design)
     if (a$rank != min(n, p)) stop("singular matrix 'a' in solve", call. = FALSE)

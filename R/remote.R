@@ -868,28 +868,7 @@ dm_remote_weights <- function(D, extra = NULL) {
 dm_remote_same <- function(a, b) identical(a$id, b$id)
 
 #' @export
-as.matrix.dm_remote <- function(x, force = FALSE, ...) {
-    max_rows <- getOption("design.matrix.remote_max_rows", 1e5)
-    if (!isTRUE(force) && nrow(x) > max_rows)
-        stop(sprintf("The remote design has %s rows (more than %s): use `force = TRUE` to build the dense matrix in memory.",
-                     dm_fmt_count(nrow(x)), dm_fmt_count(max_rows)), call. = FALSE)
-    sc <- x$scale
-    x <- dm_remote_unscaled(x)
-    cols <- dm_remote_inputs(x)
-    if (!is.null(sc)) {
-        x <- dm_remote_extend(x, c(`__dm_scale` = sc), "scale")
-        cols <- c(cols, "__dm_scale")
-    }
-    chunk <- dm_query(x, dm_chunk_sql(x, cols))
-    cd <- dm_chunk_design(x, chunk)
-    X <- as.matrix(cd$design)
-    if (!is.null(sc)) {
-        a <- attributes(X)
-        X <- chunk$`__dm_scale`[cd$keep] * X
-        attributes(X) <- a
-    }
-    X
-}
+as.matrix.dm_remote <- function(x, force = FALSE, ...) as.matrix(dm_remote_collect(x, force))
 
 #' @method crossprod dm_remote
 #' @export
@@ -986,6 +965,56 @@ setMethod("colMeans", "dm_remote", function(x, na.rm = FALSE, dims = 1, ..., gro
     dm_defaults_only(na.rm, dims)
     dm_remote_colsums(x, group, reorder, mean = TRUE)
 })
+
+#' @rdname design_remote
+#' @export
+setMethod("rowSums", "dm_remote", function(x, na.rm = FALSE, dims = 1, ...) {
+    dm_defaults_only(na.rm, dims)
+    dmp_output(x, list(.rowsum = dmp_mult(x, rep(1, ncol(x)))))
+})
+
+#' @rdname design_remote
+#' @export
+setMethod("rowMeans", "dm_remote", function(x, na.rm = FALSE, dims = 1, ...) {
+    dm_defaults_only(na.rm, dims)
+    dmp_output(x, list(.rowmean = dmp_mult(x, rep(1 / ncol(x), ncol(x)))))
+})
+
+## The rows of a remote design where a logical remote column, or a
+## DBI::SQL() predicate over its data, is TRUE (see dmp_subset()). Numeric
+## indices are refused: remote rows have no order.
+#' @export
+`[.dm_remote` <- function(x, i, j, ..., drop = FALSE) {
+    if (!missing(j)) stop("Remote designs keep all their columns: use `D[i, ]`.", call. = FALSE)
+    if (missing(i)) return(x)
+    if (is.numeric(i) || is.logical(i))
+        stop("Rows of a remote design are selected by a DBI::SQL() predicate or a logical remote column, not by position: remote rows have no order.",
+             call. = FALSE)
+    dmp_subset(x, i)
+}
+
+## A sparse matrix of the collected rows, with the guard of as.matrix().
+setAs("dm_remote", "CsparseMatrix", function(from) as(dm_remote_collect(from), "CsparseMatrix"))
+setAs("dm_remote", "dgCMatrix", function(from) as(dm_remote_collect(from), "CsparseMatrix"))
+
+## The in-memory design of the rows of a remote design, refused above
+## getOption("design.matrix.remote_max_rows", 1e5) rows unless force.
+dm_remote_collect <- function(x, force = FALSE) {
+    max_rows <- getOption("design.matrix.remote_max_rows", 1e5)
+    if (!isTRUE(force) && nrow(x) > max_rows)
+        stop(sprintf("The remote design has %s rows (more than %s): use `force = TRUE`, or raise the option `design.matrix.remote_max_rows`, to collect it in memory.",
+                     dm_fmt_count(nrow(x)), dm_fmt_count(max_rows)), call. = FALSE)
+    sc <- x$scale
+    x <- dm_remote_unscaled(x)
+    cols <- dm_remote_inputs(x)
+    if (!is.null(sc)) {
+        x <- dm_remote_extend(x, c(`__dm_scale` = sc), "scale")
+        cols <- c(cols, "__dm_scale")
+    }
+    chunk <- dm_query(x, dm_chunk_sql(x, cols))
+    cd <- dm_chunk_design(x, chunk)
+    if (is.null(sc)) cd$design else chunk$`__dm_scale`[cd$keep] * cd$design
+}
 
 #' @rdname design_remote
 #' @param sql For `summary()`: also print the generated SQL (the query that

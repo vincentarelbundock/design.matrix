@@ -31,32 +31,16 @@
 #include <Rinternals.h>
 #include <R_ext/BLAS.h>
 #include "dm.h"
+#include "structured.h"
 #ifndef FCONE
 # define FCONE
 #endif
 
-#define SMAXC 32
-#define BLOCK 2048
 #define SAFE (DBL_MAX / 16)
-
-typedef struct {
-    int L, ns, nf, nn, kc, count, off;
-    const int *code[SMAXC];
-    int adj[SMAXC], lstride[SMAXC], nrc[SMAXC], fnc[SMAXC], fstride[SMAXC];
-    const double *cm[SMAXC];
-    const double *num[SMAXC];
-    int nnc[SMAXC], nstride[SMAXC];
-} sterm;
-
-typedef struct {
-    R_xlen_t n;
-    int p, nt;
-    sterm *t;
-} sctx;
 
 /* Terms of a plain design (the intercept is a term with no component).
    Leaves one object PROTECTed (the coerced variables). */
-static void build_sctx(sctx *S, SEXP setup, SEXP vars)
+void build_sctx(sctx *S, SEXP setup, SEXP vars)
 {
     SEXP factors = VECTOR_ELT(setup, 0), contr1 = VECTOR_ELT(setup, 1),
 	contr2 = VECTOR_ELT(setup, 2);
@@ -132,7 +116,7 @@ static void build_sctx(sctx *S, SEXP setup, SEXP vars)
    N[u * BLOCK + r] (column-major, leading dimension BLOCK), so that every
    loop over rows reads contiguous memory and the dense terms' columns can
    be passed to BLAS in place. */
-static void term_block(const sterm *T, R_xlen_t n, R_xlen_t i0, int nb, int *F, double *N)
+void term_block(const sterm *T, R_xlen_t n, R_xlen_t i0, int nb, int *F, double *N)
 {
     for (int r = 0; r < nb; r++) F[r] = 0;
     for (int c = 0; c < T->nf; c++) {

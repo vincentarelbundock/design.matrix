@@ -407,6 +407,11 @@ setMethod("rowMeans", "design_matrix", function(x, na.rm = FALSE, dims = 1, ...)
 #' @rdname design_algebra
 #' @export
 quadratic_diagonal <- function(x, V) {
+    ## a remote design: a table with the column .quad (primitives.R)
+    if (inherits(x, "dm_remote")) {
+        checkmate::assert_matrix(V, mode = "numeric", nrows = ncol(x), ncols = ncol(x), any.missing = FALSE)
+        return(dmp_output(x, list(.quad = dmp_quad(x, V))))
+    }
     checkmate::assert_class(x, "design_matrix")
     p <- ncol(x)
     checkmate::assert_matrix(V, mode = "numeric", nrows = p, ncols = p, any.missing = FALSE)
@@ -429,6 +434,12 @@ quadratic_diagonal <- function(x, V) {
 ## including entries that overflow, such as the product of two large numeric
 ## variables, and, for a combination of designs, scaled sums that overflow).
 finite_rows <- function(x) {
+    ## a remote design: a logical column (every entry of the row finite)
+    if (inherits(x, "dm_remote")) {
+        P <- dmp_mult(x, diag(1, ncol(x)))
+        return(dm_rcols(unclass(P)$frame,
+                        paste(sprintf("COALESCE(isfinite(%s), FALSE)", unclass(P)$sql), collapse = " AND ")))
+    }
     checkmate::assert_class(x, "design_matrix")
     J <- as_jac(x)
     if (!jac_kernel_ok(J)) {
