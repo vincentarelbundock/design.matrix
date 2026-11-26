@@ -14,11 +14,12 @@
 ##       NULL). `values` can be a G x k matrix: k columns, from one lookup
 ##       table (one join remotely).
 ##       In memory: values[codes] (C), or values[match(keys)] (key: a vector,
-##       or a list or data frame of vectors, one per part).
+##       or a list or data frame of vectors, one per part), as doubles.
 ##       Remotely: the lookup table is written to a temporary table and
 ##       joined (LEFT JOIN) to the frame of the key (or the later frame of
 ##       `along`, as for dmp_mult()), which gives a new frame keeping every
-##       column of the old one.
+##       column of the old one; integer `values` (codes) give an integer
+##       column.
 ##   dmc_key(x, vars, data = NULL)
 ##       the values of variables (columns of the data, of any type) as a key
 ##       over the rows of design x: in memory a data frame (from `data`, or
@@ -47,6 +48,9 @@
 
 dmc_lookup <- function(values, key, levels = NULL, along = list()) {
     mat <- is.matrix(values)
+    ## (remotely, integer values stay integer: codes, which group and join
+    ## faster and arrive in R as integers)
+    int <- is.integer(values) && !mat
     values <- if (mat) {
         storage.mode(values) <- "double"
         values
@@ -87,7 +91,7 @@ dmc_lookup <- function(values, key, levels = NULL, along = list()) {
         }, "")
         on <- paste(on, collapse = " AND ")
     }
-    for (j in seq_along(vcols)) tab[[vcols[j]]] <- vm[, j]
+    for (j in seq_along(vcols)) tab[[vcols[j]]] <- if (int) as.integer(vm[, j]) else vm[, j]
     tn <- dm_tmp_name("dm_lookup")
     dm_write_temp(con, tn, tab)
     col <- paste0("__dm_lk", substr(tn, 11L, 18L), if (mat) paste0("_", seq_along(vcols)))
@@ -96,10 +100,21 @@ dmc_lookup <- function(values, key, levels = NULL, along = list()) {
                              paste(sprintf("l.%s AS %s", vcols, q(col)), collapse = ", "),
                              frame$src$select, q(tn), on)
     fr$src$base_table <- NULL
-    fr$src$proto <- DBI::dbGetQuery(con, sprintf("SELECT * FROM (%s) AS s LIMIT 0", fr$src$select))
+    fr$src$proto <- dm_proto_add(frame, col, if (int) integer(0) else double(0),
+                                 sprintf("SELECT * FROM (%s) AS s LIMIT 0", fr$src$select))
     fr$src$types <- vapply(fr$src$proto, dm_col_type, "")
     fr$depth <- dm_frame_depth(frame) + 1L
     dm_rcols(fr, sprintf("s.%s", q(col)))
+}
+
+## The columns of the frame of a remote design (or column) plus the new
+## columns `cols` (all of the prototype `type`): from the frame's
+## prototype when it has one, else from the database (query `sql`).
+dm_proto_add <- function(frame, cols, type, sql) {
+    proto <- frame$src$proto
+    if (is.null(proto) || any(cols %in% names(proto))) return(DBI::dbGetQuery(dm_con(frame), sql))
+    for (cn in cols) proto[[cn]] <- type
+    proto
 }
 
 ## A data frame written to the temporary table `name`: registered with

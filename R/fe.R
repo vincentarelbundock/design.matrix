@@ -632,9 +632,11 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_f
         f <- dm_fe_fitted(x, beta, fe, codes, along = list(z, w))
         e <- z - f
         we <- if (is.null(w)) e else w * e
+        ## (F_k'We and the rss: one query remotely)
+        gs <- dmc_groupsums(we, codes, total = we * e)
         list(xte = unname(dmp_crossprod(x, we))[, 1L],
-             Be = lapply(seq_len(nfe), function(k) dmp_groupsum(we, codes[[k]])[, 1L]),
-             rss = dm_colsum(we * e), we = we)
+             Be = lapply(gs$groups, function(m) m[, 1L]),
+             rss = gs$total, we = we)
     }
     r <- resid(b0, fe)
     ## iterative refinement: the normal equations X'M e = 0 from residuals
@@ -1134,7 +1136,8 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
     ## whose rows not used pad the results with na.exclude.
     x <- dm_rebase(x, if (length(last)) dm_rcols_frame(last[[1L]]))
     x_rows <- x
-    x <- dmp_materialize(x)
+    ## (remotely, only the columns that the design and these columns read)
+    x <- dmp_materialize(x, cols = list(z, w, more, lapply(cds, `[[`, "codes"), cl))
     on <- function(col) dmc_on(col, x)
     oncodes <- function(g) if (!is.null(g)) dmc_codes(on(g$codes), g$G)
     list(x = x, x_rows = x_rows,
