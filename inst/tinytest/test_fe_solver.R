@@ -93,6 +93,17 @@ expect_true(a$fe_info$formed)
 expect_equal(a$fe_info$precond, "ichol")
 options(op)
 
+# the dense solver (pivoted Cholesky) on the singular system of the
+# difficult panel: one more level dropped, and the exact rank of the FE
+op <- options(design.matrix.fe_solver = "dense")
+d <- dgp(30360, "difficult")
+a <- design_lm(f3, d)
+options(op)
+expect_equal(a$fe_info$solver, "dense")
+expect_equal(a$fe_dof_exact, sum(a$fe_sizes) - 3L)  # two references and firm parity = year parity
+b <- fixest::feols(f3, d, fixef.tol = 1e-11, fixef.iter = 1e5, notes = FALSE, warn = FALSE)
+expect_equal(unname(coef(a)), unname(coef(b)), tolerance = TOL)
+
 # Jacobi on request on the formed system; two FE
 d <- dgp(30360, "difficult")
 for (f in list(f3, y ~ x1 + x2 | indiv_id + firm_id)) {
@@ -142,6 +153,10 @@ for (fm in c(0, Inf)) {
         ## (the FE values are unique up to normalization: compare their sums)
         fsum <- function(A) Reduce(`+`, lapply(seq_along(G), function(k) A[[k]][codes[[k]], 1L]))
         expect_equal(fsum(warm$A), fsum(cold$A), tolerance = 1e-8)
+        ## a starting value worse than zero is dropped
+        bad <- ns$dm_fe_apply(sys, gsum(w * v2), Z0 = 1e6 * s0$Z + 1)
+        expect_equal(bad$info$iter, cold$info$iter)
+        expect_equal(fsum(bad$A), fsum(cold$A), tolerance = 1e-8)
     }
 }
 

@@ -33,7 +33,9 @@
 ## solver then drops a further level (dm_fe_solve()).
 ##
 ## R is solved densely when small (at most 1000 levels: beyond, the dense
-## factorization costs more than conjugate gradients), otherwise by
+## factorization costs more than conjugate gradients), by a pivoted
+## Cholesky factorization that sets the levels of pivots at rounding level
+## to zero (and gives the rank of the FE), otherwise by
 ## conjugate gradients, on R formed or applied without forming it:
 ##
 ## * Formed (dm_fe_schur() in src/fe.c, the lower triangle by Gustavson's
@@ -55,7 +57,9 @@
 ##   first, so that giving up is cheap.
 ##
 ## The stopping rule is a normwise backward error below 1e-12 (see
-## dm_fe_pcg() in src/fe.c), and a warm start (Z0) is accepted, for
+## dm_fe_pcg() in src/fe.c), with the norm of the right-hand side floored
+## at that of the first solve of the system (a refinement step's right-hand
+## side is at rounding level), and a warm start (Z0) is accepted, for
 ## sequences of nearby systems (the steps of a GLM). Sparse Cholesky
 ## (CHOLMOD) is used only on request (option design.matrix.fe_solver =
 ## "chol"): on worker x firm graphs its fill is close to dense.
@@ -244,8 +248,11 @@ dm_fe_components <- function(Nt) {
 ## symmetric matrix (formed), or a "dm_fe_op" (R = A - N diag(d) N',
 ## applied without being formed, the rows of N mapped to those of R by
 ## `map`: Jacobi only). Z0: a starting value (a warm
-## start) or NULL. The preconditioner is built once per `cache`.
-dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.env(), Z0 = NULL) {
+## start; dropped for columns where it is worse than zero) or NULL. bmin: a
+## floor for the norm of the right-hand sides in the stopping rule. The
+## preconditioner is built once per `cache`.
+dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.env(), Z0 = NULL,
+                      bmin = 0) {
     if (is.null(cache$A)) {
         if (inherits(R, "dm_fe_op")) {
             cache$A <- R$A
@@ -287,7 +294,7 @@ dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.e
     }
     r <- .Call(C_dm_fe_pcg, A@p, A@i, A@x, if (!is.null(N)) N@p, if (!is.null(N)) N@i,
                if (!is.null(N)) N@x, cache$map, cache$d, L$p, L$i, L$x, B, Z0,
-               as.double(tol), as.integer(maxit))
+               as.double(bmin), as.double(tol), as.integer(maxit))
     ## (nullv: on a breakdown, a direction close to a null vector of R)
     list(x = r[[1L]], iter = r[[2L]], resid = r[[3L]], converged = r[[3L]] <= tol,
          nullv = r[[4L]], precond = cache$precond)
@@ -306,19 +313,33 @@ dm_fe_lower <- function(R) {
 ## right-hand side). R: a sparse matrix, or a "dm_fe_op" (not formed: by
 ## conjugate gradients with the Jacobi preconditioner). Z0: a starting
 ## value for conjugate gradients (a warm start: the solution of a nearby
-## system), or NULL. Returns Z and solver details.
+## system), or NULL. bmin: a floor for the norm of the right-hand sides in
+## the stopping rule of conjugate gradients; by default the largest norm of
+## the right-hand sides solved before with the same `cache` (a refinement
+## step's right-hand side is at rounding level: its solution is needed to
+## the accuracy of the first solve, not to tol relative to itself).
+## Returns Z and solver details.
 dm_fe_solve <- function(R, B, opts, block, cache = new.env(), dense_max = opts$dense_max %||% 1000L,
-                        Z0 = NULL) {
+                        Z0 = NULL, bmin = NULL) {
     m <- if (inherits(R, "dm_fe_op")) R$m else nrow(R)
     if (m == 0L) return(list(z = B, solver = "none"))
     solver <- opts$solver
     if (solver == "auto") solver <- if (m <= dense_max) "dense" else "pcg"
     if (inherits(R, "dm_fe_op")) solver <- "pcg"
     if (solver == "dense") {
-        ch <- tryCatch(chol(as.matrix(R)), error = function(e) NULL)
+        ## pivoted Cholesky: R can be singular with three or more FE (FE
+        ## collinear beyond the references removed); the levels of pivots
+        ## below rounding are set to zero too (a valid normalization)
+        M <- as.matrix(R)
+        ch <- tryCatch(suppressWarnings(chol(M, pivot = TRUE, tol = 1e-11 * max(diag(M)))),
+                       error = function(e) NULL)
         if (!is.null(ch)) {
-            z <- backsolve(ch, backsolve(ch, B, transpose = TRUE))
-            return(list(z = z, solver = "dense"))
+            rk <- attr(ch, "rank")
+            pv <- attr(ch, "pivot")[seq_len(rk)]
+            Rk <- ch[seq_len(rk), seq_len(rk), drop = FALSE]
+            z <- matrix(0, m, ncol(B))
+            z[pv, ] <- backsolve(Rk, backsolve(Rk, B[pv, , drop = FALSE], transpose = TRUE))
+            if (all(is.finite(z))) return(list(z = z, solver = "dense", rank = rk))
         }
         solver <- "pcg"
     }
@@ -341,13 +362,15 @@ dm_fe_solve <- function(R, B, opts, block, cache = new.env(), dense_max = opts$d
     ## direction of the breakdown (close to a null vector) is then set to
     ## zero too, a valid normalization, and the system solved again; the
     ## levels dropped are kept in the cache for later solves.
+    if (is.null(bmin)) bmin <- cache$bnorm %||% 0
+    cache$bnorm <- max(cache$bnorm, sqrt(colSums(B^2)))
     drop <- cache$drop
     repeat {
         if (is.null(cache$pc)) cache$pc <- new.env(parent = emptyenv())
         use <- if (length(drop)) seq_len(m)[-drop] else seq_len(m)
         sol <- dm_fe_pcg(dm_fe_sub(R, use), B[use, , drop = FALSE], opts$pcg_tol, opts$pcg_maxit,
                          block[use], precond, cache$pc,
-                         Z0 = if (!is.null(Z0) && nrow(Z0) == m) Z0[use, , drop = FALSE])
+                         Z0 = if (!is.null(Z0) && nrow(Z0) == m) Z0[use, , drop = FALSE], bmin = bmin)
         if (sol$converged || is.null(sol$nullv) || length(drop) >= 20L) break
         drop <- sort(c(drop, use[which.max(abs(sol$nullv))]))
         cache$drop <- drop
@@ -467,7 +490,11 @@ dm_fe_apply <- function(sys, B, Z0 = NULL) {
     Q <- Q + crossprod(Brr, Z)
     A[[f1]] <- (B[[f1]] - as.matrix(Matrix::crossprod(sys$Ntr, Z))) / sys$D1
     for (r in seq_along(rest)) A[[rest[r]]] <- Z[sys$off[r] + seq_len(sys$Gr[r]), , drop = FALSE]
-    list(Q = Q, A = A, info = c(sol, sys$info), Z = Zk)
+    info <- c(sol, sys$info)
+    ## (factored densely: m, the rank of the reduced system)
+    if (!is.null(sol$rank)) info$m <- sol$rank
+    info$rank <- NULL
+    list(Q = Q, A = A, info = info, Z = Zk)
 }
 
 ## Sequential pivoted Cholesky of a p x p matrix M in column order: a column
@@ -592,8 +619,8 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE) {
     fe_dof <- sum(G) - (nfe - 1L)
     ## the exact rank of K (fixest's K.exact = TRUE): with two FE, one level
     ## per connected component is redundant; with more, the count is exact
-    ## when the reduced system was positive definite once references were
-    ## removed (a dense or sparse Cholesky succeeded); otherwise NA
+    ## when the reduced system was factored (a pivoted dense Cholesky, which
+    ## gives its rank, or a sparse Cholesky that succeeded); otherwise NA
     fe_dof_exact <- if (nfe == 1L) {
         G
     } else if (nfe == 2L || ab$info$solver %in% c("dense", "chol")) {

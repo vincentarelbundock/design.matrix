@@ -402,7 +402,8 @@ SEXP dm_fe_code_int(SEXP v, SEXP maxrange_)
    forming it (two passes over N per product; map: the 0-based index in R
    of each row of N, or -1 for a row dropped).  Preconditioned by L L'
    (IC(0) factor of R or of a block diagonal of it) or by the diagonal of R
-   when L is NULL.  X0: a starting value (n x m) or NULL (zero).  Stops
+   when L is NULL.  X0: a starting value (n x m) or NULL (zero; also for
+   the columns where X0 is worse than zero).  Stops
    when every column's normwise backward error ||B - R X|| / (||R|| ||X||
    + ||B||) is below tol, with max(diag R) for ||R||: the relative
    residual ||B - R X|| / ||B|| cannot go below rounding times ||R|| ||X||
@@ -685,7 +686,7 @@ static void fe_op(int n, int nc, const int *ap, const int *ai, const double *ax,
 }
 
 SEXP dm_fe_pcg(SEXP ap_, SEXP ai_, SEXP ax_, SEXP np_, SEXP ni_, SEXP nx_, SEXP map_, SEXP d_,
-	       SEXP lp_, SEXP li_, SEXP lx_, SEXP B_, SEXP X0_, SEXP tol_, SEXP maxit_)
+	       SEXP lp_, SEXP li_, SEXP lx_, SEXP B_, SEXP X0_, SEXP bmin_, SEXP tol_, SEXP maxit_)
 {
     int n = nrows(B_), nc = ncols(B_);
     const int *ap = INTEGER(ap_), *ai = INTEGER(ai_);
@@ -697,7 +698,7 @@ SEXP dm_fe_pcg(SEXP ap_, SEXP ai_, SEXP ax_, SEXP np_, SEXP ni_, SEXP nx_, SEXP 
     int use_ic = !isNull(lx_);
     const int *lp = use_ic ? INTEGER(lp_) : NULL, *li = use_ic ? INTEGER(li_) : NULL;
     const double *lx = use_ic ? REAL(lx_) : NULL;
-    double tol = asReal(tol_);
+    double tol = asReal(tol_), bmin = asReal(bmin_);
     int maxit = asInteger(maxit_);
     const double *B = REAL(B_);
     SEXP X_ = PROTECT(allocMatrix(REALSXP, n, nc)), nullv_ = R_NilValue;
@@ -758,16 +759,28 @@ SEXP dm_fe_pcg(SEXP ap_, SEXP ai_, SEXP ax_, SEXP np_, SEXP ni_, SEXP nx_, SEXP 
     if (!isNull(X0_)) {
 	fe_op(n, nc, ap, ai, ax, G, np, ni, mp, nx, d, x, Ap, s);
 	for (size_t t = 0; t < nn; t++) r[t] -= Ap[t];
+	/* a starting value worse than zero (residual above ||b||) is dropped */
+	for (int c = 0; c < nc; c++) {
+	    double t = 0.0;
+	    for (int k = 0; k < n; k++) t += r[(size_t) k * nc + c] * r[(size_t) k * nc + c];
+	    if (sqrt(t) > bn[c])
+		for (int k = 0; k < n; k++) {
+		    x[(size_t) k * nc + c] = 0.0;
+		    r[(size_t) k * nc + c] = B[(size_t) n * c + k];
+		}
+	}
     }
     /* normwise backward error of column c: ||r|| / (max(diag R) ||x|| +
-       ||b||), max(diag R) standing for ||R|| (a lower bound) */
+       max(||b||, bmin)), max(diag R) standing for ||R|| (a lower bound);
+       bmin: a floor for right-hand sides at rounding level (such as those
+       of a refinement step), relative to which tol is meaningless */
     #define BACKERR(c) do { \
 	double rr_ = 0.0, xx_ = 0.0; \
 	for (int k = 0; k < n; k++) { \
 	    double rk_ = r[(size_t) k * nc + (c)], xk_ = x[(size_t) k * nc + (c)]; \
 	    rr_ += rk_ * rk_; xx_ += xk_ * xk_; \
 	} \
-	res[c] = sqrt(rr_) / (dmax * sqrt(xx_) + bn[c]); \
+	res[c] = sqrt(rr_) / (dmax * sqrt(xx_) + (bn[c] > bmin ? bn[c] : bmin)); \
     } while (0)
     for (int c = 0; c < nc; c++) {
 	if (bn[c] == 0.0) {
