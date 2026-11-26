@@ -58,16 +58,20 @@ formulas <- list(
     list(fo = y ~ xt + f1, method = "moments"),
     list(fo = y ~ xc + f1 + f3, method = "moments"),
     list(fo = y ~ log(xd) + I(xc^2) + f1, method = "moments"))
+## ("patterns" designs are compressed with compress = TRUE: under "auto" an
+## lm compresses only at most 0.1% patterns, a weighted one only with many
+## numeric columns; "moments" designs are not compressed under "auto")
 for (spec in formulas) {
     fo <- spec$fo
+    cp <- if (spec$method == "patterns") TRUE else "auto"
     for (wt in c(FALSE, TRUE)) {
         l <- if (wt) lm(fo, dd, weights = w) else lm(fo, dd)
         for (engine in "auto") {
             info <- paste(deparse(fo), engine, if (wt) "weighted" else "")
             f <- suppressMessages(if (wt) {
-                design_lm(fo, con, table = "d", engine = engine, weights = w)
+                design_lm(fo, con, table = "d", engine = engine, weights = w, compress = cp)
             } else {
-                design_lm(fo, con, table = "d", engine = engine)
+                design_lm(fo, con, table = "d", engine = engine, compress = cp)
             })
             expect_inherits(f, "design_lm")
             expect_identical(f$compressed, spec$method == "patterns", info = info)
@@ -107,12 +111,17 @@ expect_false(q$value$compressed)
 expect_true(has(q, "TABLESAMPLE"))
 expect_false(has(q, "approx_count_distinct(hash("))
 check_fit(q$value, lm(y ~ xc + f1, dd), "auto: continuous")
-## a discrete DOUBLE key: sample, estimate, compression
-q <- queries(design_lm(y ~ xd7 + f1, con, table = "d"))
+## a discrete DOUBLE key: sample, estimate, and compression of a glm (about
+## 25 patterns, 0.8% of the rows, at most 20%), not of an lm (at most 0.1%)
+q <- queries(design_glm(y ~ xd7 + f1, gaussian, con, table = "d"))
 expect_true(q$value$compressed)
 expect_true(has(q, "TABLESAMPLE") && has(q, "approx_count_distinct(hash(") && has(q, "var_pop(__dm_y1)"))
+q <- queries(design_lm(y ~ xd7 + f1, con, table = "d"))
+expect_false(q$value$compressed)
+expect_true(has(q, "TABLESAMPLE") && has(q, "approx_count_distinct(hash("))
+expect_false(has(q, "var_pop(__dm_y1)"))
 ## integer keys: no sample, the estimate decides
-q <- queries(design_lm(y ~ xd + f1, con, table = "d"))
+q <- queries(design_glm(y ~ xd + f1, gaussian, con, table = "d"))
 expect_true(q$value$compressed)
 expect_false(has(q, "TABLESAMPLE"))
 q <- queries(design_lm(y ~ id + f1, con, table = "d"))  # an integer id: one pattern per row
@@ -131,7 +140,7 @@ expect_null(design.matrix:::dm_sql_patterns(D, "CAST(s.y AS DOUBLE)"))
 options(op)
 
 ## printing
-f <- design_lm(y ~ xd + f1, con, table = "d")
+f <- design_lm(y ~ xd + f1, con, table = "d", compress = TRUE)
 expect_stdout(print(f), "design patterns of 2,9")
 expect_stdout(print(design_lm(y ~ xc + f1, con, table = "d")), "from SQL moments of")
 expect_stdout(print(summary(f)), "Residual standard error")

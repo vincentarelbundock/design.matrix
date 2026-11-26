@@ -122,7 +122,7 @@
 ##   dm_nrows(x)              number of rows of a design or column
 ##   dm_engine(x)             "sql" for a remote design, ""
 ##                            in memory (for the description of a fit)
-##   dmp_patterns(x, z, w, compress, keys = NULL)
+##   dmp_patterns(x, z, w, compress, keys = NULL, fit = "lm")
 ##                            compressed least squares: when rows with the
 ##                            same design inputs are worth grouping, a list
 ##                            with x (the design of the patterns, in memory),
@@ -137,7 +137,10 @@
 ##                            `within` is that of the fit on every row. With
 ##                            `keys` (a column, k columns), patterns are also
 ##                            split by their values, returned as `keys`
-##                            (one row per pattern).
+##                            (one row per pattern). fit: "lm" or "glm",
+##                            for the remote rule of "auto"
+##                            (dm_compress_rule(); a weighted "lm" is
+##                            "wlm").
 ##   dmp_materialize(x, cols = NULL)
 ##                            the design over a copy of its rows: remotely a
 ##                            temporary table of the rows used with every
@@ -685,13 +688,13 @@ dmp_quad <- function(x, V, along = list()) {
 ## Compressed least squares (see the header); the in-memory method groups
 ## identical rows (lm.R), the remote one is the scan of the SQL engine
 ## grouped by the cells of the design (remote_compress.R).
-dmp_patterns <- function(x, z, w = NULL, compress = "auto", keys = NULL) {
+dmp_patterns <- function(x, z, w = NULL, compress = "auto", keys = NULL, fit = "lm") {
     if (inherits(x, "dm_remote")) {
         mode <- if (isTRUE(compress)) TRUE else if (isFALSE(compress)) FALSE else dm_compress_mode()
         ## (extra key columns: more keys of the GROUP BY)
         if (!is.null(keys)) x <- dm_remote_cols(x, keys, "keys")$D
         pt <- dm_sql_patterns(x, unclass(z)$sql, if (!is.null(w)) unclass(w)$sql,
-                              keys = if (!is.null(keys)) unclass(keys)$sql, mode = mode)
+                              keys = if (!is.null(keys)) unclass(keys)$sql, mode = mode, fit = fit)
         if (is.null(pt)) return(NULL)
         pos <- which(pt$sw > 0)
         ws <- pt$sw[pos]
