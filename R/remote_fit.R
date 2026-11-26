@@ -662,7 +662,8 @@ dm_materialize <- function(src, exprs, env, logical = character(), chunk_size = 
     raw <- NULL
     if (is.null(from)) {
         raw <- q(dm_tmp_name("dm_raw"))
-        DBI::dbExecute(con, sprintf("CREATE TEMPORARY TABLE %s AS %s", raw, src$select))
+        dm_sql_send(src$holder, sprintf("CREATE TEMPORARY TABLE %s AS %s", raw, src$select), DBI::dbExecute,
+                    log = FALSE)
         on.exit(DBI::dbExecute(con, sprintf("DROP TABLE IF EXISTS %s", raw)), add = TRUE)
         from <- raw
     }
