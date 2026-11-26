@@ -64,6 +64,12 @@ fe_mem <- design_lm(y ~ x + f | cl, d, vcov = ~cl)
 fe_db  <- design_lm(y ~ x + f | cl, con, table = "d", vcov = ~cl)
 all.equal(coef(fe_mem), coef(fe_db))
 all.equal(vcov(fe_mem), vcov(fe_db))
+
+## a Poisson GLM with two fixed effects, clustered
+fg_mem <- design_glm(k ~ x + f | cl + z, poisson, d, vcov = ~cl)
+fg_db  <- design_glm(k ~ x + f | cl + z, poisson, con, table = "d", vcov = ~cl)
+all.equal(coef(fg_mem), coef(fg_db))
+all.equal(vcov(fg_mem), vcov(fg_db))
 ```
 
 = Remote designs
