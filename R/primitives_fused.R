@@ -68,13 +68,15 @@ dmc_irls_working <- function(W, eta, mu, y, off, v, me, table = FALSE) {
 }
 
 ## The deviance residuals of poisson(): 2 w (y log(y / m) - (y - m)) where
-## y > 0, 2 m w elsewhere.
-dmc_poisson_dev <- function(y, m, w) {
+## y > 0, 2 m w elsewhere (`positive`: m > 0 by construction, so that the
+## logarithm, reached only for y > 0, takes the fast ln of dm_fast_log()).
+dmc_poisson_dev <- function(y, m, w, positive = FALSE) {
     if (dm_plain(y) && dm_plain(m) && dm_plain(w)) {
         ## (the kernel checks the lengths: 1 or the longest)
         return(.Call(C_dm_poisson_dev, y, m, w))
     }
-    dmc_ifelse(y > 0, 2 * w * (y * log(y / m) - (y - m)), 2 * m * w)
+    lg <- if (positive) dm_fast_log else log
+    dmc_ifelse(y > 0, 2 * w * (y * lg(y / m) - (y - m)), 2 * m * w)
 }
 
 ## The weighted binomial log densities of the AIC (as binomial()$aic): m

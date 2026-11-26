@@ -771,8 +771,8 @@ dm_sql_pow <- function(a, b, e2) {
 ## NULL and order NaN above every number, while in R an NA or NaN gives NA or
 ## NaN (that of y where both are missing, as R's pmax takes the later
 ## missing argument). NULLIF(v, NaN) is NULL where v is NA or NaN. With a
-## finite number on one side (every use in the fits), the column is kept
-## where it is missing or beyond the number.
+## finite number on one side, the column is kept where it is missing or
+## beyond the number. (The fits use dm_fast_pmax/dm_fast_pmin, below.)
 dmc_pmax <- function(x, y) {
     f <- dm_column_frame(x, y)
     if (is.null(f)) return(pmax(x, y))
@@ -798,6 +798,36 @@ dm_sql_pext <- function(f, x, y, fun, cmp) {
     dm_column(f, sprintf(paste("CASE WHEN NULLIF(%2$s, %3$s) IS NULL THEN %2$s",
                               "WHEN NULLIF(%1$s, %3$s) IS NULL THEN %1$s ELSE %4$s(%1$s, %2$s) END"),
                         a, b, nan, fun))
+}
+
+## Internal pmax/pmin for the fits (qpr8), only where the inputs are never
+## missing: remotely DuckDB's greatest() and least(), which name each
+## operand once. The CASE of dmc_pmax/dmc_pmin repeats its operand, and the
+## links nest them around eta inside the pnorm/dnorm macros, which repeat
+## their argument again (a small probit fit: 1.3 s -> 3.4 s). They give
+## pmax/pmin wherever no input is NA or NaN (greatest() skips NULL; least()
+## skips NULL and NaN); each use states why its inputs are not. In memory:
+## pmax/pmin.
+dm_fast_pmax <- function(x, y) {
+    f <- dm_column_frame(x, y)
+    if (is.null(f)) return(pmax(x, y))
+    dm_column(f, sprintf("greatest(%s, %s)", dm_column_operand(x), dm_column_operand(y)))
+}
+
+dm_fast_pmin <- function(x, y) {
+    f <- dm_column_frame(x, y)
+    if (is.null(f)) return(pmin(x, y))
+    dm_column(f, sprintf("least(%s, %s)", dm_column_operand(x), dm_column_operand(y)))
+}
+
+## Internal log for the fits (qpr8), only where x is positive by
+## construction (or NULL): remotely DuckDB's ln(), which names x once (the
+## CASE of log(), R's log of 0 and of negative numbers, names it three
+## times; at 0 and below, ln() gives -Inf and NaN in DuckDB 2.0 but older
+## versions refuse them). In memory: log().
+dm_fast_log <- function(x) {
+    if (!dm_is_column(x)) return(log(x))
+    dm_column(unclass(x)$frame, sprintf("ln(CAST(%s AS DOUBLE))", unclass(x)$sql))
 }
 
 ## (in memory a numeric vector: `no` with `yes` where test is TRUE and NA
@@ -862,9 +892,12 @@ dmc_logit_mu_eta <- function(e) {
     if (!dm_is_column(e)) return(stats::binomial()$mu.eta(e))
     dmc_ifelse(e > 30 | e < -30, .Machine$double.eps, exp(e) / ((1 + exp(e)) * (1 + exp(e))))
 }
-dmc_binomial_dev <- function(y, mu, w) {
+## (`positive`: mu is in (0, 1) by construction, so that the logarithms,
+## reached only for y in (0, 1], take the fast ln of dm_fast_log())
+dmc_binomial_dev <- function(y, mu, w, positive = FALSE) {
     if (is.null(dm_column_frame(y, mu, w))) return(stats::binomial()$dev.resids(y, mu, w))
-    xlogx <- function(a, b) dmc_ifelse(a != 0, a * log(a / b), 0)
+    lg <- if (positive) dm_fast_log else log
+    xlogx <- function(a, b) dmc_ifelse(a != 0, a * lg(a / b), 0)
     2 * w * (xlogx(y, mu) + xlogx(1 - y, 1 - mu))
 }
 

@@ -289,27 +289,37 @@ dmglm_kind <- function(family) {
 ## values are those of glm.fit(), to the last bit).
 dmglm_cf <- function(k) {
     eps <- .Machine$double.eps
+    ## The clamps of the links use the fast pmax/pmin (dm_fast_pmax(), plain
+    ## greatest()/least() remotely, qpr8): eta is never NA or NaN where they
+    ## are used. In the fit, eta = X beta + offset over the kept rows, with X,
+    ## offset and the coefficients finite (checked: "NA/NaN/Inf in 'x'",
+    ## dmglm_checks(), dmglm_loop() stops at non-finite coefficients, a
+    ## non-finite `start` is refused by dmp_mult()); in fitted()
+    ## and residuals() it is that of the fit's rows; predict() applies the
+    ## inverse link only where eta is present (dmglm_response()). On finite
+    ## (or infinite) eta, exp(), dnorm(), pnorm() and the like are never NA
+    ## or NaN either.
     link <- switch(k$link,
         identity = list(fun = function(m) m, inv = function(e) e, me = function(e) dmc_const(e, 1)),
-        log = list(fun = function(m) log(m), inv = function(e) dmc_pmax(exp(e), eps),
-                   me = function(e) dmc_pmax(exp(e), eps)),
+        log = list(fun = function(m) log(m), inv = function(e) dm_fast_pmax(exp(e), eps),
+                   me = function(e) dm_fast_pmax(exp(e), eps)),
         logit = list(fun = function(m) log(m / (1 - m)), inv = dmc_logit_inv, me = dmc_logit_mu_eta),
         probit = {
             thr <- -stats::qnorm(eps)
-            list(fun = function(m) dmc_qnorm(m), inv = function(e) dmc_pnorm(dmc_pmin(dmc_pmax(e, -thr), thr)),
-                 me = function(e) dmc_pmax(dmc_dnorm(e), eps))
+            list(fun = function(m) dmc_qnorm(m), inv = function(e) dmc_pnorm(dm_fast_pmin(dm_fast_pmax(e, -thr), thr)),
+                 me = function(e) dm_fast_pmax(dmc_dnorm(e), eps))
         },
         cloglog = list(fun = function(m) log(-log(1 - m)),
-                       inv = function(e) dmc_pmax(dmc_pmin(dmc_mexpm1m(exp(e)), 1 - eps), eps),
+                       inv = function(e) dm_fast_pmax(dm_fast_pmin(dmc_mexpm1m(exp(e)), 1 - eps), eps),
                        me = function(e) {
-                           e <- dmc_pmin(e, 700)
-                           dmc_pmax(exp(e) * exp(-exp(e)), eps)
+                           e <- dm_fast_pmin(e, 700)
+                           dm_fast_pmax(exp(e) * exp(-exp(e)), eps)
                        }),
         cauchit = {
             thr <- -stats::qcauchy(eps)
             list(fun = function(m) dmc_qcauchy(m),
-                 inv = function(e) dmc_pcauchy(dmc_pmin(dmc_pmax(e, -thr), thr)),
-                 me = function(e) dmc_pmax(1 / (pi * (1 + e * e)), eps))
+                 inv = function(e) dmc_pcauchy(dm_fast_pmin(dm_fast_pmax(e, -thr), thr)),
+                 me = function(e) dm_fast_pmax(1 / (pi * (1 + e * e)), eps))
         },
         inverse = list(fun = function(m) 1 / m, inv = function(e) 1 / e, me = function(e) -1 / (e * e),
                        valid = function(e) dmc_is_finite(e) & e != 0),
@@ -327,8 +337,14 @@ dmglm_cf <- function(k) {
     xlogx <- function(a, b) dmc_ifelse(a != 0, a * log(a / b), 0)
     dev <- switch(k$dev,
         gaussian = function(y, m, w) w * ((y - m)^2),
-        binomial = dmc_binomial_dev,
-        poisson = dmc_poisson_dev,
+        ## (fast ln where mu > 0 by construction, qpr8: the logit, probit,
+        ## cloglog and cauchit links clamp mu into [eps, 1 - eps] (logit:
+        ## |eta| <= 30), the log link to mu >= eps; y is finite on the
+        ## fit's rows: dmglm_checks())
+        binomial = if (k$link %in% c("logit", "probit", "cloglog", "cauchit"))
+                       function(y, m, w) dmc_binomial_dev(y, m, w, positive = TRUE) else dmc_binomial_dev,
+        poisson = if (k$link == "log") function(y, m, w) dmc_poisson_dev(y, m, w, positive = TRUE)
+                  else dmc_poisson_dev,
         gamma = function(y, m, w) -2 * w * (log(dmc_ifelse(y == 0, 1, y / m)) - (y - m) / m),
         qgamma = function(y, m, w) dmc_pmax(-2 * w * (log(dmc_ifelse(y == 0, 1, y) / m) - (y - m) / m), 0),
         invgauss = function(y, m, w) w * ((y - m)^2) / (y * m^2))
@@ -344,7 +360,8 @@ dmglm_cf <- function(k) {
         binomial = function(y, w, n, cb) if (cb) (n * y + 0.5) / (n + 1) else (w * y + 0.5) / (w + 1),
         poisson = function(y, w, n, cb) y + 0.1,
         y01 = function(y, w, n, cb) y + 0.1 * dmc_count(y == 0),
-        clamp = function(y, w, n, cb) dmc_pmax(0.001, dmc_pmin(0.999, y)))
+        ## (y is finite: dmglm_checks(); fast clamps, see the links above)
+        clamp = function(y, w, n, cb) dm_fast_pmax(0.001, dm_fast_pmin(0.999, y)))
     valid <- function(eta, mu) {
         a <- link$valid
         b <- validmu
@@ -873,7 +890,9 @@ residuals.design_glm <- function(object, type = c("deviance", "pearson", "workin
     w <- d$weights
     res <- switch(type,
                   deviance = if (object$df.residual > 0) {
-                      dd <- sqrt(dmc_pmax(cf$dev(y, mu, w), 0))
+                      ## (fast pmax: on the fit's rows, y, w and mu are never
+                      ## NA; a NaN deviance stays NaN with greatest(), as in R)
+                      dd <- sqrt(dm_fast_pmax(cf$dev(y, mu, w), 0))
                       dmc_ifelse(y > mu, dd, -dd)
                   } else 0 * mu,
                   pearson = (y - mu) * sqrt(w) / sqrt(cf$variance(mu)),
