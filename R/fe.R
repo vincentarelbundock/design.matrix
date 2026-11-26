@@ -610,7 +610,10 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_f
         warm$iter <- c(warm$iter, pj$info$iter %||% 0L)
     }
     M <- pj$M
-    pc <- dm_fe_pivchol(M[xi, xi, drop = FALSE], A$variance(diag(mo$M)[xi]), tol)
+    dxx <- diag(mo$M)[xi]
+    scale <- A$variance(dxx)
+    su <- dm_fe_suspects(x, cols, A, xcols, M, scale, dxx, tol)
+    pc <- dm_fe_pivchol(M[xi, xi, drop = FALSE], scale, tol, band = su$band, recheck = su$recheck)
     kp <- pc$keep
     b0 <- numeric(px)
     if (length(kp)) b0[kp] <- backsolve(pc$R, backsolve(pc$R, M[kp, px + 1L], transpose = TRUE))
@@ -627,6 +630,55 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_f
                 we = rf$r$we, absorb = A)
     if (cluster) out <- dm_fe_cluster(out, cols$cl, out$we)
     out
+}
+
+## The suspect band of the pivoted Cholesky of a fit with FE (dm_pivchol()):
+## the residual variance d of a column after the FE and the earlier kept
+## columns comes from the aggregates, X'WX - S'K^-S, accurate only to about
+## c eps diag(X'WX). A column with |d - tol * scale| <= c eps diag(X'WX)
+## cannot be judged from them: its d is computed again from the data, the
+## sum of w e^2 of its residual e = x_j - X_K c - F f (c from the factor of
+## the columns K kept before it, f = Gamma_j - Gamma_K c), one pass over
+## the rows per suspect (dmc_fe_resid()). That residual is not refined, but
+## the error of c and f from the aggregates changes its sum of squares only
+## to second order, far below the band.
+##
+## c = 1e4 (c eps ~ 2.2e-12): the aggregates are one-pass sums (rounding of
+## order eps each), their difference cancels (absolute error of order eps
+## diag(X'WX)), and with conjugate gradients K^-S is accurate only to the
+## stopping rule, a normwise backward error of 1e-12 (~4500 eps), which
+## enters S'K^-S at that order relative to diag(X'WX); c covers that with a
+## margin of 2. With centered columns and tol = 1e-10, a column is a
+## suspect only when its residual variance is within about 2% of the
+## threshold: rare, so the extra passes cost nothing in general. Without
+## a positive scale a column is never taken, nor a suspect.
+## Returns list(band (lo, hi), recheck) for dm_fe_pivchol().
+dm_fe_suspects <- function(x, cols, A, xcols, M, scale, dxx, tol) {
+    width <- 1e4 * .Machine$double.eps * abs(dxx)
+    ok <- is.finite(scale) & scale > 0 & is.finite(width)
+    thr <- tol * scale
+    band <- list(lo = ifelse(ok, thr - width, Inf), hi = ifelse(ok, thr + width, -Inf))
+    px <- length(xcols)
+    z0 <- dmc_const(cols$z, 0)
+    recheck <- function(ch, sus) {
+        acc <- ch$pivot[seq_len(ch$rank)]
+        d <- vapply(sus, function(j) {
+            K <- acc[acc < j]
+            a <- length(K)
+            Ra <- ch$R[seq_len(a), seq_len(a), drop = FALSE]
+            bk <- numeric(px)
+            if (a) bk[K] <- backsolve(Ra, backsolve(Ra, M[K, j], transpose = TRUE))
+            beta <- numeric(ncol(x))
+            beta[xcols] <- bk
+            beta[xcols[j]] <- -1
+            ## e = 0 - (X_K c - x_j) - F f
+            r <- dmc_fe_resid(z0, dmp_mult(x, beta, along = list(z0, cols$w)), cols$w, A$effects(bk, j),
+                              cols$codes)
+            r[[3L]]
+        }, 0)
+        list(dres = d, taken = is.finite(d) & d > 0 & d > thr[sus])
+    }
+    list(band = band, recheck = recheck)
 }
 
 ## The moments of a fit with FE: M = [X z]'W[X z] on the columns xcols of
@@ -843,7 +895,11 @@ dm_fe_center <- function(mt, mf, contrasts) {
 #' * Coefficients: the intercept is absorbed; a column collinear with the
 #'   FE or earlier columns is `NA` (fixest's rule: its residual variance is
 #'   below `tol` times its variance; `tol` defaults to `1e-10` with FE, as
-#'   `collin.tol`). One step of iterative refinement from the residuals is
+#'   `collin.tol`). The residual variance comes from sums over rows; for a
+#'   column within rounding of that threshold (about `2e-12` times its sum
+#'   of squares) it is computed again from the data, one pass over the
+#'   rows, so that the decision does not depend on rounding. One step of
+#'   iterative refinement from the residuals is
 #'   taken, and numeric variables far from zero are centered when that is
 #'   an exact transform of the design, so that coefficients and standard
 #'   errors stay accurate.

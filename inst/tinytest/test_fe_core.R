@@ -180,3 +180,57 @@ expect_false(ns$dm_uncenter_ok(Tm, 2L, 1L))
 expect_true(ns$dm_uncenter_ok(Tm, integer(0), 1:3))
 V <- crossprod(matrix(rnorm(9), 3))
 expect_equal(ns$dm_uncenter_cov(Tm, V), Tm %*% V %*% t(Tm))
+
+# The suspect band of FE (design.matrix#6sq4, part b) -------------------------
+# x2 = x1 + a e, e orthogonal to the FE and x1 (in the weighted inner
+# product), a chosen so that the residual variance of x2 after the FE and
+# x1 is m * tol times its variance. Near the threshold (m within about 2%
+# of 1) the decision is taken from the data: it follows the exact ratio,
+# computed here by a dense QR on the dummies, in memory and remotely.
+remote <- requireNamespace("DBI", quietly = TRUE) && requireNamespace("duckdb", quietly = TRUE)
+if (remote) con <- DBI::dbConnect(duckdb::duckdb())
+set.seed(8)
+n <- 2000
+d <- data.frame(a = sample(50, n, TRUE), b = sample(10, n, TRUE), x1 = rnorm(n), e0 = rnorm(n),
+                w = runif(n, 0.5, 2))
+d$y <- d$x1 + d$a / 20 + rnorm(n)
+Fd <- cbind(model.matrix(~ factor(a) - 1, d), model.matrix(~ factor(b) - 1, d))
+tol <- 1e-10
+for (wt in c(FALSE, TRUE)) {
+    ww <- if (wt) d$w else rep(1, n)
+    sw <- sqrt(ww)
+    Q <- qr(sw * cbind(Fd, d$x1))
+    e <- qr.resid(Q, sw * d$e0) / sw
+    wvar <- function(v) sum(ww * (v - sum(ww * v) / sum(ww))^2)
+    ratio <- function(v) sum(qr.resid(Q, sw * v)^2) / wvar(v)
+    for (m in c(0.5, 0.98, 0.995, 0.999, 1.001, 1.005, 1.02, 2)) {
+        t <- m * tol
+        d$x2 <- d$x1 + sqrt(t * wvar(d$x1) / (sum(ww * e^2) * (1 - t))) * e
+        r <- ratio(d$x2)
+        info <- paste("band", m, if (wt) "weighted")
+        expect_true(abs(r / t - 1) < 1e-4, info = paste(info, "construction"))
+        fit <- if (wt) design_lm(y ~ x1 + x2 | a + b, d, weights = w) else design_lm(y ~ x1 + x2 | a + b, d)
+        expect_identical(is.na(coef(fit)[["x2"]]), r <= tol, info = info)
+        expect_false(is.na(coef(fit)[["x1"]]), info = info)
+        ## the same decision for every solver of the reduced system
+        for (s in c("dense", "pcg")) {
+            op <- options(design.matrix.fe_solver = s)
+            fs <- if (wt) design_lm(y ~ x1 + x2 | a + b, d, weights = w) else design_lm(y ~ x1 + x2 | a + b, d)
+            options(op)
+            expect_identical(is.na(coef(fs)), is.na(coef(fit)), info = paste(info, s))
+        }
+        ## remotely (other rounding of the sums): the same decision
+        if (remote && m %in% c(0.995, 1.005)) {
+            DBI::dbWriteTable(con, "dband", d, overwrite = TRUE)
+            fr <- if (wt) design_lm(y ~ x1 + x2 | a + b, con, table = "dband", weights = w)
+                  else design_lm(y ~ x1 + x2 | a + b, con, table = "dband")
+            expect_identical(is.na(coef(fr)), is.na(coef(fit)), info = paste(info, "remote"))
+        }
+        ## clear cases: the NA pattern of feols()
+        if (m %in% c(0.5, 2) && requireNamespace("fixest", quietly = TRUE)) {
+            b <- fixest::feols(y ~ x1 + x2 | a + b, d, weights = if (wt) ~w, notes = FALSE, warn = FALSE)
+            expect_identical(names(coef(fit))[!is.na(coef(fit))], names(coef(b)), info = paste(info, "feols"))
+        }
+    }
+}
+if (remote) DBI::dbDisconnect(con, shutdown = TRUE)
