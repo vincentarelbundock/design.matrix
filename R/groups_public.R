@@ -396,7 +396,12 @@ dm_groups_key_memory <- function(x, parts, nms) {
                 stop(sprintf(paste("`%s` is not a variable of the design: in memory, a design keeps only the",
                                    "variables of its model frame; pass the values instead (for instance",
                                    "`d[\"%s\"]`, one value per row of the design)."), v, v), call. = FALSE)
+            cls <- unname(attr(attr(vars, "terms"), "dataClasses")[v])
             v <- vars[[v]]
+            ## (a character variable of the data may be kept as a factor whose
+            ## levels are sorted in the locale: its key sorts as strings, as
+            ## the same values given as a vector, or a remote key)
+            if (is.factor(v) && identical(cls, "character")) v <- as.character(v)
         }
         if (!is.atomic(v) || !is.null(dim(v)) || !(is.numeric(v) || is.logical(v) || is.character(v) || is.factor(v)))
             stop(sprintf("`key`: variable `%s` must be a vector (numeric, logical, character or factor).", nms[j]),
