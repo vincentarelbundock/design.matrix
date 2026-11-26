@@ -227,8 +227,13 @@ for (wt in c(FALSE, TRUE)) {
                   else design_lm(y ~ x1 + x2 | a + b, con, table = "dband")
             expect_identical(is.na(coef(fr)), is.na(coef(fit)), info = paste(info, "remote"))
         }
-        ## clear cases: the NA pattern of feols()
-        if (m %in% c(0.5, 2) && requireNamespace("fixest", quietly = TRUE)) {
+        ## clear case kept: the NA pattern of feols(). Not at m = 0.5:
+        ## feols() uses another rule (collin.tol = 1e-9 on its unnormalized
+        ## Cholesky pivot of the demeaned X'X), which keeps x2 down to a
+        ## ratio of about 1e-12 and depends on the scale of the columns,
+        ## so it keeps x2 there while the 1e-10 variance-ratio rule drops it
+        ## (as dm_fe_pivchol did before design.matrix#6sq4).
+        if (m == 2 && requireNamespace("fixest", quietly = TRUE)) {
             b <- fixest::feols(y ~ x1 + x2 | a + b, d, weights = if (wt) ~w, notes = FALSE, warn = FALSE)
             expect_identical(names(coef(fit))[!is.na(coef(fit))], names(coef(b)), info = paste(info, "feols"))
         }
