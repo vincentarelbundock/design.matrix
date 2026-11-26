@@ -8,9 +8,10 @@
 ##     (X'WX)[cols_s, cols_t] = C_s' M_st C_t,
 ##     M_st[a, b] = sum over rows with F_s = a, F_t = b of w N_s N_t,
 ##
-## and M_st is a GROUP BY over the factor codes of S_s and S_t. X'Wy and
-## grouped column sums are the same with one term. Predictions join each
-## term's table of level -> C_t beta_t to the rows.
+## and M_st is a GROUP BY over the factors of S_s and S_t (their columns as
+## stored; levels become codes in R, on the cells). X'Wy and grouped column
+## sums are the same with one term. Predictions read each term's C_t beta_t
+## at the row's level (dm_sql_predict()).
 ##
 ## C_t is read off the in-memory design of a few prototype rows (every
 ## combined level of S_t, numeric variables set to 1), so that columns,
@@ -150,35 +151,77 @@ dm_sql_vnames <- function(j, k, u) {
     ifelse(k == 1L, paste0("__dm_v", j), paste0("__dm_v", j, "_", rep_len(u, n)))
 }
 
-## The query computing, for each row used, the factor codes (__dm_c<j>) and
+## The query computing, for each row used, the factor keys (__dm_c<j>) and
 ## numeric variables (__dm_v<j>), plus `extra`: named SQL expressions over
 ## the source `s` (the responses, weights and groups of a product), each
 ## computed as a column of that name (doubles, except those in `asis`).
+## The key of a factor or logical variable is its column as stored (no
+## join to a table of codes: GROUP BY over a raw column is cheapest), and
+## dm_sql_decode() turns the keys of a small aggregated result into codes;
+## dm_sql_code() is the code as SQL, where a row needs it.
 dm_sql_base <- function(D, extra = character(), asis = character()) {
-    con <- dm_con(D)
     items <- if (length(extra)) sprintf(ifelse(names(extra) %in% asis, "(%s) AS %s", "CAST((%s) AS DOUBLE) AS %s"),
                                         extra, names(extra)) else character()
-    joins <- character()
     for (j in seq_along(D$vars)) {
         v <- D$vars[[j]]
-        if (v$kind == "factor") {
-            lv <- v$levels
-            vals <- paste0("(", DBI::dbQuoteString(con, lv), ", ", seq_along(lv), ")", collapse = ", ")
-            ## (names that no expression of the user over `s` can capture)
-            joins <- c(joins, sprintf("LEFT JOIN (VALUES %s) AS dm_l%d(__dm_lv, __dm_lc) ON CAST(s.%s AS VARCHAR) = dm_l%d.__dm_lv",
-                                      vals, j, dm_qi(D, v$col), j))
-            items <- c(items, sprintf("dm_l%d.__dm_lc AS __dm_c%d", j, j))
-        } else if (v$kind == "logical") {
-            q <- dm_qi(D, v$col)
-            items <- c(items, sprintf("CASE WHEN s.%s IS NULL THEN NULL WHEN s.%s THEN 2 ELSE 1 END AS __dm_c%d",
-                                      q, q, j))
+        if (v$kind %in% c("factor", "logical")) {
+            items <- c(items, sprintf("%s AS __dm_c%d", dm_sql_key(D, v), j))
         } else if (v$kind == "numeric") {
             items <- c(items, sprintf("%s AS %s", v$sql, dm_sql_vnames(j, length(v$sql), seq_along(v$sql))))
         }
     }
     if (!length(items)) items <- "1 AS __dm_one"
-    sprintf("SELECT %s FROM (%s) AS s %s WHERE %s", paste(items, collapse = ", "),
-            D$src$select, paste(joins, collapse = " "), D$filter)
+    sprintf("SELECT %s FROM (%s) AS s WHERE %s", paste(items, collapse = ", "), D$src$select, D$filter)
+}
+
+## The key of a factor or logical variable, as SQL over the source `s`: the
+## column itself, when R reads its values as the strings that match the
+## levels (text, ENUM) or as logicals; else its text, which is what the
+## levels match.
+dm_sql_key <- function(D, v) {
+    q <- sprintf("s.%s", dm_qi(D, v$col))
+    ty <- D$src$types[[v$col]]
+    if (v$kind == "logical") {
+        if (identical(ty, "logical")) return(q)
+        return(sprintf("CASE WHEN %s IS NULL THEN NULL WHEN %s THEN 2 ELSE 1 END", q, q))
+    }
+    if (isTRUE(ty %in% c("character", "factor"))) q else sprintf("CAST(%s AS VARCHAR)", q)
+}
+
+## The keys __dm_c<j> of a query result (dm_sql_base()) as codes: the
+## position of the level (NA: no level), 1 (FALSE) or 2 (TRUE).
+dm_sql_decode <- function(D, res) {
+    for (nm in grep("^__dm_c[0-9]+$", names(res), value = TRUE)) {
+        v <- D$vars[[as.integer(substring(nm, 7L))]]
+        x <- res[[nm]]
+        res[[nm]] <- if (v$kind == "factor") match(as.character(x), v$levels)
+                     else if (is.logical(x)) as.integer(x) + 1L
+                     else as.integer(x)
+    }
+    res
+}
+
+## Largest table of codes or values written inline in SQL (else joined).
+dm_sql_max_inline <- 65536
+
+## The code of factor or logical variable j as SQL over its key `ref`
+## (dm_sql_key()) in constant time: the logical as 1 or 2, an ENUM by its
+## position in the type. NULL where no such expression exists (text): a
+## join on the text then gives the values (a CASE over the levels, or a
+## search of a list, costs more per row than the join beyond a few levels).
+dm_sql_code <- function(D, j, ref) {
+    v <- D$vars[[j]]
+    ty <- D$src$types[[v$col]]
+    lv <- v$levels
+    list_of <- function(pos) sprintf("[%s]", paste(ifelse(is.na(pos), "NULL", pos), collapse = ", "))
+    if (v$kind == "logical") return(if (identical(ty, "logical")) sprintf("(CAST(%s AS INTEGER) + 1)", ref) else ref)
+    if (identical(ty, "factor")) {
+        dict <- levels(D$src$proto[[v$col]])
+        if (is.null(dict) || length(dict) > dm_sql_max_inline) return(NULL)
+        if (identical(dict, lv)) return(sprintf("(enum_code(%s) + 1)", ref))
+        return(sprintf("list_extract(%s, enum_code(%s) + 1)", list_of(match(dict, lv)), ref))
+    }
+    NULL
 }
 
 ## Product of numeric columns (and weights), as SQL over the base query.
@@ -236,7 +279,7 @@ dm_sql_scan <- function(D, base, levels, by = character()) {
         run = function() {
             out <<- vector("list", length(e))
             for (g in plan()) {
-                res <- dm_query(D, g$sql)
+                res <- dm_sql_decode(D, dm_query(D, g$sql))
                 for (k in seq_along(g$items)) {
                     m <- as.double(res[[paste0("__dm_m", g$col[k])]])
                     m[is.na(m)] <- 0
@@ -433,6 +476,12 @@ dm_sql_colsums <- function(D, group, w, mean) {
     out
 }
 
+## X B for the rows used, as a temporary view (name NULL) or the table
+## `name`, with the columns `keep` of the source. Each term adds N_t times
+## the row of C_t B_t of the row's combined level: read off a list of
+## values by its index (codes by dm_sql_code()), or, when a factor of the
+## term has no such code (text), from a table joined on the keys, one join
+## per set of factors shared by the terms that have them.
 dm_sql_predict <- function(D, B, name, outcols, keep, overwrite) {
     con <- dm_con(D)
     st <- D$sql_terms
@@ -441,6 +490,14 @@ dm_sql_predict <- function(D, B, name, outcols, keep, overwrite) {
     base <- dm_sql_base(D, stats::setNames(paste0("s.", qk), qk), asis = qk)
     joins <- character()
     pieces <- rep(list(character()), K)
+    codes <- list()
+    code <- function(j) {
+        if (is.null(codes[[as.character(j)]]))
+            codes[[as.character(j)]] <<- dm_sql_code(D, j, sprintf("b.__dm_c%d", j)) %||% NA_character_
+        codes[[as.character(j)]]
+    }
+    ## the joined tables: per set of factors, its key columns and values
+    tabs <- list()
     for (k in seq_along(st)) {
         Tt <- st[[k]]
         if (!length(Tt$cols)) next
@@ -448,16 +505,47 @@ dm_sql_predict <- function(D, B, name, outcols, keep, overwrite) {
         N <- if (length(Tt$M)) paste0(paste0("b.", sort(Tt$M), collapse = " * "), " * ") else ""
         if (Tt$Lt == 1L) {
             for (j in seq_len(K)) pieces[[j]] <- c(pieces[[j]], paste0(N, dm_sql_double(V[1L, j])))
-        } else {
-            alias <- sprintf("dm_p%d", k)
-            vals <- do.call(paste, c(list(seq_len(Tt$Lt) - 1L), lapply(seq_len(K), function(j) dm_sql_double(V[, j])),
-                                     sep = ", "))
-            keyexpr <- paste(sprintf("(b.__dm_c%d - 1) * %.0f", Tt$S, Tt$strides), collapse = " + ")
-            joins <- c(joins, sprintf("LEFT JOIN (VALUES %s) AS %s(key, %s) ON %s = %s.key",
-                                      paste0("(", vals, ")", collapse = ", "), alias,
-                                      paste0("v", seq_len(K), collapse = ", "), keyexpr, alias))
-            for (j in seq_len(K)) pieces[[j]] <- c(pieces[[j]], sprintf("%s%s.v%d", N, alias, j))
+            next
         }
+        cs <- vapply(Tt$S, code, "")
+        if (!anyNA(cs) && Tt$Lt <= dm_sql_max_inline) {
+            ## (0-based combined level, as in dm_sql_level())
+            key <- paste(sprintf("(%s - 1) * %.0f", cs, Tt$strides), collapse = " + ")
+            for (j in seq_len(K))
+                pieces[[j]] <- c(pieces[[j]], sprintf("%slist_extract([%s], %s + 1)", N,
+                                                      paste(dm_sql_double(V[, j]), collapse = ", "), key))
+            next
+        }
+        id <- paste(Tt$S, collapse = ",")
+        if (is.null(tabs[[id]])) tabs[[id]] <- list(S = Tt$S, L = Tt$L, alias = sprintf("dm_p%d", length(tabs) + 1L),
+                                                    vals = list())
+        tb <- tabs[[id]]
+        m <- length(tb$vals)
+        tabs[[id]]$vals <- c(tb$vals, lapply(seq_len(K), function(j) V[, j]))
+        for (j in seq_len(K)) pieces[[j]] <- c(pieces[[j]], sprintf("%s%s.v%d", N, tb$alias, m + j))
+    }
+    for (tb in tabs) {
+        ## the key of each factor: its code where SQL computes it, else its
+        ## text against the level (first factor varying fastest)
+        grid <- expand.grid(lapply(tb$L, seq_len), KEEP.OUT.ATTRS = FALSE)
+        kcols <- paste0("k", seq_along(tb$S))
+        kv <- on <- character()
+        cols <- lapply(seq_along(tb$S), function(i) {
+            j <- tb$S[i]
+            cj <- code(j)
+            if (!is.na(cj)) {
+                on <<- c(on, sprintf("%s = %s.%s", cj, tb$alias, kcols[i]))
+                as.character(grid[[i]])
+            } else {
+                on <<- c(on, sprintf("CAST(b.__dm_c%d AS VARCHAR) = %s.%s", j, tb$alias, kcols[i]))
+                as.character(DBI::dbQuoteString(con, D$vars[[j]]$levels[grid[[i]]]))
+            }
+        })
+        vals <- do.call(paste, c(cols, lapply(tb$vals, dm_sql_double), sep = ", "))
+        joins <- c(joins, sprintf("LEFT JOIN (VALUES %s) AS %s(%s) ON %s",
+                                  paste0("(", vals, ")", collapse = ", "), tb$alias,
+                                  paste(c(kcols, paste0("v", seq_along(tb$vals))), collapse = ", "),
+                                  paste(on, collapse = " AND ")))
     }
     preds <- vapply(pieces, function(x) if (length(x)) paste(x, collapse = " + ") else "CAST(0 AS DOUBLE)", "")
     select <- sprintf("WITH b AS (%s) SELECT %s FROM b %s", base,
