@@ -866,13 +866,17 @@ dmc_is_finite <- function(x) {
     dm_rcols(unclass(x)$frame, sprintf("COALESCE(isfinite(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql))
 }
 
-## TRUE where x is not missing (NA or NaN; infinite values count as present).
-## (In memory, as remotely for NULL, a missing value gives NA, not FALSE: in
-## memory one pass in C for a plain vector.)
+## TRUE where x is not missing, FALSE where it is NA or NaN (NULL remotely);
+## infinite values count as present. Never NA, so that !dmc_notnan(x)
+## counts the missing values. (In memory one pass in C for a plain vector.)
 dmc_notnan <- function(x) {
-    if (!dm_is_rcols(x) && is.null(attributes(x)) && (is.double(x) || is.integer(x) || is.logical(x)))
-        return(.Call(C_dm_notnan, x))
-    dmc_is_finite(x) | (abs(x) == Inf)
+    if (!dm_is_rcols(x)) {
+        if (is.null(attributes(x)) && (is.double(x) || is.integer(x) || is.logical(x)))
+            return(.Call(C_dm_notnan, x))
+        return(!is.na(x))
+    }
+    dm_rcols(unclass(x)$frame, sprintf("COALESCE(NOT isnan(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
+             notnull = TRUE)
 }
 
 ## The rows where a logical column is TRUE (with negate, where it is not
