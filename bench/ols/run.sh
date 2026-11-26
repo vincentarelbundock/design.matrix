@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# OLS benchmark: design.matrix's qr() against eight other least squares
+# OLS benchmark: xtx's qr() against eight other least squares
 # implementations, on four families of designs (numeric only, numeric with
 # a factor, one numeric and a factor, numeric x factor interaction) at
 # several widths, plus one rank-deficient design. See cell.R for what is
 # measured.
 #
-# Fair: one thread everywhere; design.matrix's na.omit-copy shortcut off;
+# Fair: one thread everywhere; xtx's na.omit-copy shortcut off;
 # one fresh R process per method and design; every result checked against
 # lm(). Processes run one at a time on one fast core (this machine is
 # hybrid: cores 0, 2, 4, 6 are fast). Several workers on separate fast cores
@@ -21,7 +21,7 @@
 # BENCH_SIZE=quick (make bench-quick): two widths per family and 3 timed
 # calls per method, to check the scripts. Quick results never go to
 # bench/ols/: they go to $BENCH_OUT/ols (default
-# ${TMPDIR:-/tmp}/design.matrix-bench-quick/ols), printed at the end.
+# ${TMPDIR:-/tmp}/xtx-bench-quick/ols), printed at the end.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 cores=${1:-"0"}
@@ -38,7 +38,7 @@ case "$size" in
     iters=11
     w_numeric="5 20 50 100"; w_mixed="25 50 100"; w_factor="5 20 50 100"; w_interaction="6 20 50 100" ;;
   quick)
-    dest=${BENCH_OUT:-${TMPDIR:-/tmp}/design.matrix-bench-quick}/ols
+    dest=${BENCH_OUT:-${TMPDIR:-/tmp}/xtx-bench-quick}/ols
     mkdir -p "$dest" || exit 1
     iters=3
     w_numeric="5 50"; w_mixed="25 100"; w_factor="5 50"; w_interaction="6 50" ;;

@@ -1,5 +1,5 @@
 ## Remote (DuckDB) auto-compression: compressed vs uncompressed products and
-## fits (kata design.matrix#8jp3). Base R + DBI + duckdb + bench + design.matrix.
+## fits (kata design.matrix#8jp3). Base R + DBI + duckdb + bench + xtx.
 ##
 ## Run from the package root, with the package installed in a private
 ## library:
@@ -27,8 +27,8 @@
 ## g with 10 groups (colSums(group = "g")).
 ##
 ## Modes: compressed (compress = TRUE and option
-## design.matrix.remote_compress = TRUE) and uncompressed (FALSE / FALSE).
-## The "auto" decision (dm_compress_worth_ask(), the internal function the
+## xtx.remote_compress = TRUE) and uncompressed (FALSE / FALSE).
+## The "auto" decision (xtx_compress_worth_ask(), the internal function the
 ## package calls; its result is cached per design, so it is timed apart
 ## on its own) is timed separately: decision_s and the decision it takes.
 ## FE fits are never compressed by the package; they are timed with
@@ -44,7 +44,7 @@
 suppressMessages({
     library(DBI)
     library(duckdb)
-    library(design.matrix)
+    library(xtx)
 })
 
 args <- commandArgs(trailingOnly = TRUE)
@@ -137,17 +137,17 @@ make_data <- function(con, n, r, kind, keytype) {
 ## time the "auto" decision: the internal query of the package, on a fresh
 ## design (no cache), with or without the group of colSums()
 time_decision <- function(D, group = NULL) {
-    ns <- asNamespace("design.matrix")
-    keys <- ns$dm_compress_keys(D)
+    ns <- asNamespace("xtx")
+    keys <- ns$xtx_compress_keys(D)
     g <- character()
     if (!is.null(group)) {
-        gc <- ns$dm_remote_cols(D, group, "group", numeric = FALSE)
+        gc <- ns$xtx_remote_cols(D, group, "group", numeric = FALSE)
         D <- gc$D
         g <- gc$sql
     }
     n <- D$n
-    dec <- ns$dm_compress_worth_ask(D, keys, n, g)
-    bm <- bench::mark(ns$dm_compress_worth_ask(D, keys, n, g), iterations = max(5L, REPS + 2L),
+    dec <- ns$xtx_compress_worth_ask(D, keys, n, g)
+    bm <- bench::mark(ns$xtx_compress_worth_ask(D, keys, n, g), iterations = max(5L, REPS + 2L),
                       check = FALSE, filter_gc = FALSE, memory = FALSE)
     list(time = as.numeric(bm$median), decision = isTRUE(dec), est = D$cache$compress_estimate %||% NA)
 }
@@ -169,7 +169,7 @@ op_fun <- function(con, op, dat, D, mode) {
     ## the option is "auto" for them as for the package default)
     opt <- if (op == "fe") "auto" else mode
     function() {
-        oo <- options(design.matrix.remote_compress = opt)
+        oo <- options(xtx.remote_compress = opt)
         on.exit(options(oo))
         suppressMessages(f())
     }

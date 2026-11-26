@@ -14,8 +14,8 @@ ols_results <- function(file = "bench/ols/results.csv") {
 }
 
 ## categorical palette in a fixed order (validated for colour-vision
-## deficiency); design.matrix in near-black, drawn thicker
-ols_colours <- c("design.matrix qr()" = "#191919", "lm()" = "#257de0", ".lm.fit()" = "#f47230",
+## deficiency); xtx in near-black, drawn thicker
+ols_colours <- c("xtx qr()" = "#191919", "lm()" = "#257de0", ".lm.fit()" = "#f47230",
                  "RcppEigen QR" = "#00b894", "RcppEigen Cholesky" = "#f2a600",
                  "RcppArmadillo" = "#ee7fac", "speedglm" = "#008a17",
                  "MatrixModels" = "#6a4ce2", "fixest" = "#ec4647")
@@ -36,8 +36,8 @@ ols_plot <- function(res, family, title) {
                           levels = c("matches lm()", "different answer"))
     ## a shape legend only when some method gives a different answer
     all_match <- all(long$matches_lm %in% TRUE)
-    ours <- long[long$Method == "design.matrix qr()", ]
-    others <- long[long$Method != "design.matrix qr()", ]
+    ours <- long[long$Method == "xtx qr()", ]
+    others <- long[long$Method != "xtx qr()", ]
     ggplot(mapping = aes(p, value, colour = Method)) +
         geom_line(data = others, linewidth = 0.6) +
         geom_point(data = others, aes(shape = answer), size = 1.8, stroke = 0.7) +

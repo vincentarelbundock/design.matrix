@@ -1,5 +1,5 @@
 # Benchmarks against stats. Run with: Rscript bench/bench.R
-library(design.matrix)
+library(xtx)
 tm <- function(e, k = 5) { e <- substitute(e); env <- parent.frame(); min(replicate(k, system.time(eval(e, env))[[3]])) }
 us <- function(e, k = 2000) { e <- substitute(e); env <- parent.frame(); f <- function() eval(e, env); invisible(f()); 1e6 * system.time(for (i in seq_len(k)) f())[[3]] / k }
 set.seed(1)
@@ -8,7 +8,7 @@ D <- data.frame(y = rnorm(N), x1 = rnorm(N), z = runif(N),
                 f1 = factor(sample(sprintf("a%02d", 1:50), N, TRUE)),
                 f2 = factor(sample(letters[1:20], N, TRUE)))
 res <- list()
-row <- function(task, stats, ours) res[[length(res) + 1L]] <<- data.frame(task, stats = stats, design.matrix = ours, speedup = stats / ours)
+row <- function(task, stats, ours) res[[length(res) + 1L]] <<- data.frame(task, stats = stats, xtx = ours, speedup = stats / ours)
 
 cat("dense model matrix, n = 1e6 (seconds)\n")
 for (fo in list(y ~ x1 * f1 + f2, y ~ x1 * f1 + poly(z, 3))) {
@@ -55,5 +55,5 @@ row("plan on new data, then X %*% b", us(ref() %*% b), us(design_matrix(P, d100)
 stopifnot(identical(as.matrix(design_matrix(P, d100)), ref(), num.eq = FALSE))
 
 out <- do.call(rbind, res)
-out$stats <- signif(out$stats, 3); out$design.matrix <- signif(out$design.matrix, 3); out$speedup <- round(out$speedup, 1)
+out$stats <- signif(out$stats, 3); out$xtx <- signif(out$xtx, 3); out$speedup <- round(out$speedup, 1)
 print(out, row.names = FALSE)

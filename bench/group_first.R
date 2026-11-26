@@ -1,7 +1,7 @@
 # Grouping identical rows before building designs: a marginaleffects-style
 # average comparison with delta-method SEs. Run with: Rscript bench/group_first.R
-suppressMessages({library(design.matrix); library(marginaleffects)})
-design_row_groups <- design.matrix:::design_row_groups
+suppressMessages({library(xtx); library(marginaleffects)})
+design_row_groups <- xtx:::design_row_groups
 set.seed(1); N <- 1e6
 d <- data.frame(f1 = factor(sample(sprintf("r%02d", 1:20), N, TRUE)), age = sample(18:90, N, TRUE),
                 sex = sample(c("m", "f"), N, TRUE), edu = factor(sample(1:5, N, TRUE)))
@@ -23,8 +23,8 @@ workflow <- function(data, w = NULL) {        # w: weights per row (counts) or N
   unit_se <- sqrt(quadratic_diagonal(J, V))
   list(est = est, se = se, unit_se = unit_se)
 }
-options(design.matrix.dedup = FALSE); A <- el(function() workflow(d))
-options(design.matrix.dedup = "auto"); B <- el(function() workflow(d))
+options(xtx.dedup = FALSE); A <- el(function() workflow(d))
+options(xtx.dedup = "auto"); B <- el(function() workflow(d))
 C <- el(function() {
   g <- design_row_groups(design_matrix(P, d))                 # group the data once
   r <- workflow(d[g$first, ], w = g$counts)               # everything on distinct rows

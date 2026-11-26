@@ -4,7 +4,7 @@
 ##
 ##   R_LIBS=$PWD/.rlib Rscript bench/compression/explain.R [n]
 ##
-## Wraps the package's internal dm_query()/dm_execute() in this R session
+## Wraps the package's internal xtx_query()/xtx_execute() in this R session
 ## only (assignInNamespace(); the package code is unchanged) to time each
 ## statement. Writes results/queries.csv (one row per statement) and
 ## results/explain/*.txt (EXPLAIN ANALYZE plans).
@@ -12,7 +12,7 @@
 suppressMessages({
     library(DBI)
     library(duckdb)
-    library(design.matrix)
+    library(xtx)
 })
 args <- commandArgs(trailingOnly = TRUE)
 n <- if (length(args)) as.numeric(args[1L]) else 5e6
@@ -32,7 +32,7 @@ dbExecute(con, sprintf(paste("CREATE TABLE d AS SELECT 'l' || %s AS f1, 'l' || %
                              "1 + %s AS w, %s AS g FROM range(%.0f) t(i)"),
                        h(1, 5), h(2, 4), h(3, K), h(4, K), sig, u(101), u(102), sig, h(103, 3), h(104, 10), n))
 
-ns <- asNamespace("design.matrix")
+ns <- asNamespace("xtx")
 log <- new.env()
 log$rows <- list()
 log$explain <- NULL   # a function(sql) -> file name, or NULL
@@ -42,7 +42,7 @@ wrap <- function(fun) {
         if (!is.null(log$explain) && grepl("^\\s*(SELECT|WITH)", sql)) {
             f <- log$explain(sql)
             if (!is.null(f)) {
-                pl <- DBI::dbGetQuery(ns$dm_con(D), paste("EXPLAIN ANALYZE", sql))
+                pl <- DBI::dbGetQuery(ns$xtx_con(D), paste("EXPLAIN ANALYZE", sql))
                 writeLines(c(sql, "", pl[[2L]]), f)
             }
         }
@@ -52,10 +52,10 @@ wrap <- function(fun) {
         out
     }
 }
-orig_q <- ns$dm_query
-orig_e <- ns$dm_execute
-utils::assignInNamespace("dm_query", wrap(orig_q), "design.matrix")
-utils::assignInNamespace("dm_execute", wrap(orig_e), "design.matrix")
+orig_q <- ns$xtx_query
+orig_e <- ns$xtx_execute
+utils::assignInNamespace("xtx_query", wrap(orig_q), "xtx")
+utils::assignInNamespace("xtx_execute", wrap(orig_e), "xtx")
 
 ## a label for a statement
 label <- function(sql) {
@@ -89,7 +89,7 @@ ops <- list(
 res <- list()
 for (op in names(ops)) for (m in list(TRUE, FALSE, "auto")) {
     mode <- if (isTRUE(m)) "compressed" else if (isFALSE(m)) "uncompressed" else "auto"
-    oo <- options(design.matrix.remote_compress = m)
+    oo <- options(xtx.remote_compress = m)
     suppressMessages(ops[[op]](m))           # warm-up
     ## the plans of the first scans of a few kinds (one file per label)
     seen <- character()

@@ -3,7 +3,7 @@
 ## mode "formula": every method starts from the formula and the data;
 ## mode "prebuilt": the matrix is built before timing, only the fit is timed.
 ## Fairness: one thread everywhere (the caller sets OPENBLAS_NUM_THREADS and
-## OMP_NUM_THREADS to 1 and pins the process to a core); design.matrix's
+## OMP_NUM_THREADS to 1 and pins the process to a core); xtx's
 ## na.omit-copy shortcut off; the result is checked against lm().
 ## Memory: peak resident memory of the first call (every allocation, R or
 ## C++), in a fresh process. Time: gc() before each timed call, so that
@@ -14,10 +14,10 @@ here <- dirname(sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value =
 source(file.path(here, "designs.R"))
 family <- args[1]; width <- as.integer(args[2]); n <- as.numeric(args[3])
 iters <- as.integer(args[4]); mode <- args[5]; outdir <- args[6]; mi <- as.integer(args[7])
-suppressWarnings(suppressMessages({library(design.matrix); library(fixest); library(speedglm)}))
+suppressWarnings(suppressMessages({library(xtx); library(fixest); library(speedglm)}))
 stopifnot(Sys.getenv("OPENBLAS_NUM_THREADS") == "1", Sys.getenv("OMP_NUM_THREADS") == "1")
 design_threads(1); setFixest_nthreads(1); data.table::setDTthreads(1)
-options(design.matrix.dedup = FALSE, design.matrix.skip_na_copy = FALSE)
+options(xtx.dedup = FALSE, xtx.skip_na_copy = FALSE)
 dd <- make_data(family, width, n)
 d <- dd$data; fo <- dd$formula; y <- d$y
 lmfit_coef <- function(X, y) {
@@ -26,10 +26,10 @@ lmfit_coef <- function(X, y) {
 }
 method_names <- if (mode == "formula") {
     c("lm()", ".lm.fit()", "RcppEigen QR", "RcppEigen Cholesky", "RcppArmadillo",
-      "speedglm", "MatrixModels", "fixest", "design.matrix qr()")
+      "speedglm", "MatrixModels", "fixest", "xtx qr()")
 } else {
     c(".lm.fit()", "RcppEigen QR", "RcppEigen Cholesky", "RcppArmadillo",
-      "speedglm", "MatrixModels", "fixest", "design.matrix qr()")
+      "speedglm", "MatrixModels", "fixest", "xtx qr()")
 }
 m <- method_names[mi]
 if (mode == "formula") {
@@ -42,11 +42,11 @@ if (mode == "formula") {
         "speedglm" = function() coef(speedlm(fo, d)),
         "MatrixModels" = function() MatrixModels::glm4(fo, data = d, sparse = TRUE)@pred@coef,
         "fixest" = function() coef(feols(fo, d, notes = FALSE, warn = FALSE)),
-        "design.matrix qr()" = function() qr.coef(qr(design_matrix(fo, d)), y))
+        "xtx qr()" = function() qr.coef(qr(design_matrix(fo, d)), y))
 } else {
     ## build only the matrix this method uses, before timing
     if (m == "MatrixModels") SX <- Matrix::sparse.model.matrix(fo, d)
-    else if (m == "design.matrix qr()") D <- design_matrix(fo, d)
+    else if (m == "xtx qr()") D <- design_matrix(fo, d)
     else X <- model.matrix(fo, d)
     f <- switch(m,
         ".lm.fit()" = function() lmfit_coef(X, y),
@@ -56,7 +56,7 @@ if (mode == "formula") {
         "speedglm" = function() coef(speedlm.fit(y, X, intercept = FALSE)),
         "MatrixModels" = function() MatrixModels:::lm.fit.sparse(SX, y),
         "fixest" = function() coef(feols.fit(y, X, notes = FALSE, warn = FALSE)),
-        "design.matrix qr()" = function() qr.coef(qr(D), y))
+        "xtx qr()" = function() qr.coef(qr(D), y))
 }
 ref <- readRDS(file.path(outdir, sprintf("ref_%s_%d.rds", family, width)))
 status_kb <- function(key) {
