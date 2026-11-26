@@ -66,7 +66,8 @@ response of its formula).}
 cluster variable (\code{~firm}). Without fixed effects only \code{"iid"}.}
 
 \item{fixef.rm}{With fixed effects: \code{"singleton"} (drop singletons
-iteratively, as \code{\link[fixest:feols]{fixest::feols()}}) or \code{"none"}.}
+iteratively, as \code{\link[fixest:feols]{fixest::feols()}}; \code{"perfect_fit"} is the same for a
+linear model) or \code{"none"}.}
 
 \item{...}{For remote data (a DuckDB connection or Parquet paths as
 \code{data}, or as \code{newdata} in \code{predict()}): \code{table}, \code{sql}, \code{engine} and
@@ -198,7 +199,10 @@ largest (differences within a connected set are those of fixest).
 (\code{NA} for levels not in the fit). With remote data, \code{fitted()} and
 \code{predict()} return tables and \code{residuals()} a remote design, as for
 remote fits without FE.
-\item Not supported with FE: \code{subset}, offsets, \code{compress = TRUE}, \code{se.fit}
+\item Offsets (the \code{offset} argument and \code{offset()} terms) are subtracted
+from the response, as in \code{\link[fixest:feols]{fixest::feols()}}; \code{fitted()} and \code{predict()}
+include them.
+\item Not supported with FE: \code{subset}, \code{compress = TRUE}, \code{se.fit}
 and intervals in \code{predict()}, clustering by more than one variable.
 For remote data, the response and \code{weights} are column names,
 \code{DBI::SQL()} or R expressions, as without FE (expressions with no SQL

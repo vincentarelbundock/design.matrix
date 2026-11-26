@@ -11,7 +11,8 @@
 ##       value, one column per key part), the key has one column per part
 ##       and a row's level is the row of `levels` with the same values. Keys
 ##       with no level (codes out of range, new values, NA) give NA (SQL
-##       NULL).
+##       NULL). `values` can be a G x k matrix: k columns, from one lookup
+##       table (one join remotely).
 ##       In memory: values[codes] (C), or values[match(keys)] (key: a vector,
 ##       or a list or data frame of vectors, one per part).
 ##       Remotely: the lookup table is written to a temporary table and
@@ -45,44 +46,56 @@
 ##       design is a new design: re-make columns with dmc_on().
 
 dmc_lookup <- function(values, key, levels = NULL, along = list()) {
-    values <- as.double(values)
+    mat <- is.matrix(values)
+    values <- if (mat) {
+        storage.mode(values) <- "double"
+        values
+    } else {
+        as.double(values)
+    }
     if (dm_is_codes(key)) key <- key$codes
     if (!dm_is_rcols(key)) {
         if (is.null(levels)) {
             if (!is.integer(key)) key <- as.integer(key)
-            return(.Call(C_dm_fe_lookup, values, key))
+            if (!mat) return(.Call(C_dm_fe_lookup, values, key))
+            return(matrix(vapply(seq_len(ncol(values)), function(j) .Call(C_dm_fe_lookup, values[, j], key),
+                                 numeric(length(key))), length(key)))
         }
         kd <- if (is.data.frame(key) || is.list(key)) as.data.frame(key, stringsAsFactors = FALSE)
               else data.frame(key, stringsAsFactors = FALSE)
         if (ncol(kd) != ncol(levels)) stop("`key` and `levels` have different numbers of columns.", call. = FALSE)
         for (j in seq_along(kd)) if (is.factor(kd[[j]])) kd[[j]] <- as.character(kd[[j]])
-        return(values[match(dm_lookup_keys(kd), dm_lookup_keys(levels))])
+        i <- match(dm_lookup_keys(kd), dm_lookup_keys(levels))
+        return(if (mat) values[i, , drop = FALSE] else values[i])
     }
+    vm <- if (mat) values else matrix(values, ncol = 1L)
+    vcols <- paste0("v", seq_len(ncol(vm)))
     frame <- do.call(dm_rcols_frame, c(list(key), as.list(along)))
     con <- dm_con(frame)
     q <- function(x) dm_qi(frame, x)
     ksql <- unclass(key)$sql
     if (is.null(levels)) {
-        tab <- data.frame(code = seq_along(values), v = values)
+        tab <- data.frame(code = seq_len(nrow(vm)))
         on <- sprintf("CAST(%s AS BIGINT) = l.code", ksql[1L])
     } else {
         if (length(ksql) != ncol(levels)) stop("`key` and `levels` have different numbers of columns.", call. = FALSE)
         lcols <- paste0("k", seq_along(ksql))
         tab <- stats::setNames(as.data.frame(levels, stringsAsFactors = FALSE), lcols)
         for (j in seq_along(tab)) if (is.factor(tab[[j]])) tab[[j]] <- as.character(tab[[j]])
-        tab$v <- values
         on <- vapply(seq_along(ksql), function(j) {
             if (is.character(tab[[j]])) sprintf("CAST(%s AS VARCHAR) = l.%s", ksql[j], lcols[j])
             else sprintf("%s = l.%s", ksql[j], lcols[j])
         }, "")
         on <- paste(on, collapse = " AND ")
     }
+    for (j in seq_along(vcols)) tab[[vcols[j]]] <- vm[, j]
     tn <- dm_tmp_name("dm_lookup")
     DBI::dbWriteTable(con, tn, tab, temporary = TRUE)
-    col <- paste0("__dm_lk", substr(tn, 11L, 18L))
+    col <- paste0("__dm_lk", substr(tn, 11L, 18L), if (mat) paste0("_", seq_along(vcols)))
     fr <- dm_remote_unscaled(frame)
-    fr$src$select <- sprintf("SELECT s.*, l.v AS %s FROM (%s) AS s LEFT JOIN %s AS l ON %s",
-                             q(col), frame$src$select, q(tn), on)
+    fr$src$select <- sprintf("SELECT s.*, %s FROM (%s) AS s LEFT JOIN %s AS l ON %s",
+                             paste(sprintf("l.%s AS %s", vcols, q(col)), collapse = ", "),
+                             frame$src$select, q(tn), on)
     fr$src$base_table <- NULL
     fr$src$proto <- DBI::dbGetQuery(con, sprintf("SELECT * FROM (%s) AS s LIMIT 0", fr$src$select))
     fr$src$types <- vapply(fr$src$proto, dm_col_type, "")

@@ -18,6 +18,8 @@ design_glm(
   compress = "auto",
   model = TRUE,
   y = NULL,
+  vcov = "iid",
+  fixef.rm = "perfect_fit",
   ...
 )
 
@@ -55,6 +57,12 @@ names, \code{DBI::SQL()} expressions or R expressions over the columns
 vector, a factor, or a two-column matrix of successes and failures (as
 in \code{\link[=glm.fit]{glm.fit()}}). With a remote design, the name of the response column,
 or the names of two columns (successes and failures).}
+
+\item{vcov}{With fixed effects: \code{"iid"} or a one-sided formula naming a
+cluster variable (\code{~firm}). Without fixed effects only \code{"iid"}.}
+
+\item{fixef.rm}{With fixed effects: \code{"perfect_fit"} (default),
+\code{"singleton"}, \code{"infinite_coef"} or \code{"none"}; see \emph{Fixed effects}.}
 
 \item{...}{For remote data: \code{table}, \code{sql}, \code{engine} and \code{chunk_size}; see
 \link{design_remote}. Otherwise not used.}
@@ -125,6 +133,45 @@ linear predictor, working weights) are SQL expressions, and its products
 with the design run in the database or in batches. See the section
 \emph{GLMs} of \link{design_remote}.
 
+\strong{Fixed effects.} A formula \code{y ~ x | fe1 + fe2} absorbs fixed effects
+(FE), as \code{\link[fixest:feglm]{fixest::feglm()}} and \code{\link[fixest:fepois]{fixest::fepois()}}: each FE is a variable
+or an interaction \code{a^b}. The iterations are those of \code{glm.fit()} (same
+starting values, step halving, deviance convergence rule and warnings),
+with the slopes and the FE values as parameters; the weighted least
+squares step of each iteration is the estimator of linear models with
+FE of \code{\link[=design_lm]{design_lm()}} (sums over rows, the largest FE eliminated exactly,
+the others solved densely or by conjugate gradients), so the dummies are
+never formed. The same code fits data in memory and remote data.
+\itemize{
+\item Rows: rows with a missing value in the model, FE or cluster variables,
+or a zero weight, are dropped; then, iteratively, rows whose FE level
+the FE fit perfectly, as fixest's \code{fixef.rm}: \code{"perfect_fit"}
+(default) drops singletons and, when the inverse link maps onto
+(0, Inf) or (0, 1) (fixest's rule: log, logit, probit, cloglog links),
+levels whose response is all 0 or all 1 (their FE would be infinite);
+\code{"singleton"}, \code{"infinite_coef"} and \code{"none"} drop only the first, only
+the second, or nothing. \code{fit$nsingletons} and \code{fit$nperfect} count the
+rows dropped.
+\item Coefficients: the intercept is absorbed; a column collinear with the
+FE or earlier columns is \code{NA} (fixest's rule, \code{collin.tol = 1e-9}).
+\item Standard errors: \code{vcov = "iid"} (default: the inverse information of
+the last weighted least squares step, times the dispersion) or
+\code{vcov = ~cl} (clustered by one variable), with fixest's default small
+sample corrections, \code{(n - 1) / (n - K)} with \code{K} the number of slopes
+and FE parameters, and \code{G / (G - 1)} for clusters (FE nested in the
+clusters not counted in \code{K}).
+\item Methods: those of a \code{design_glm} fit (class \code{c("design_glm_fe", "design_glm")}); \code{logLik()}, \code{AIC()} and \code{BIC()} count the FE
+parameters; \code{fixef()} (the generic of fixest or nlme, when loaded)
+returns the FE values, also in \code{fit$fixef}, normalized as for
+\code{\link[=design_lm]{design_lm()}}; \code{predict()} gives the link or the response (\code{NA} for
+levels not in the fit); remotely, per-row results are tables.
+\code{fit$fe_iter} holds the iterations of conjugate gradients of each
+step (0 for a direct solve).
+\item Not supported with FE: \code{start}, \code{compress = TRUE} (compression is
+turned off), \code{na.action = na.fail}, clustering by more than one
+variable, a design matrix as first argument.
+}
+
 \strong{What is kept.} As in \code{\link[=design_lm]{design_lm()}}: the coefficients, the factor \code{R}
 of the last weighted least squares problem (which gives the covariance
 matrix, as in \code{\link[=summary.glm]{summary.glm()}}), the deviances, AIC, degrees of freedom,
@@ -170,4 +217,10 @@ fit$patterns
 all.equal(deviance(fit), deviance(glm(k ~ f * g, poisson, d)))
 
 predict(fit, newdata = d[1:3, ], type = "response")
+
+## fixed effects
+panel <- data.frame(id = rep(1:100, each = 10), t = rep(1:10, 100), x = rnorm(1000))
+panel$y <- rpois(1000, exp(0.5 * panel$x + panel$id / 100))
+fe <- design_glm(y ~ x | id + t, poisson, panel, vcov = ~id)
+summary(fe)
 }

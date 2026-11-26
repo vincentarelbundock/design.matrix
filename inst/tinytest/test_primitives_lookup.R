@@ -33,6 +33,15 @@ expect_equal(dmc_lookup(c(7, 8), c("p", "q", "r"), data.frame(k = c("q", "p"))),
 expect_equal(dmc_cbind(1:3, 4:6), cbind(1:3, 4:6))
 expect_equal(dmc_const(1:4, 2), rep(2, 4))
 expect_error(dmc_lookup(lvals, d["a"], lv), "numbers of columns")
+## several columns of values: one lookup
+vm <- cbind(vals, -vals)
+expect_equal(dmc_lookup(vm, d$code), cbind(ref_codes, -ref_codes), check.attributes = FALSE)
+expect_equal(dmc_lookup(cbind(lvals, 2 * lvals), d[c("a", "b")], lv), cbind(ref_lv, 2 * ref_lv),
+             check.attributes = FALSE)
+## dmp_materialize() and dmc_freeze(table = TRUE) are identities in memory
+Dm <- design_matrix(~ x, d)
+expect_identical(design.matrix:::dmp_materialize(Dm), Dm)
+expect_identical(design.matrix:::dmc_freeze(d$x, table = TRUE), d$x)
 
 if (requireNamespace("duckdb", quietly = TRUE)) {
     con <- DBI::dbConnect(duckdb::duckdb())
@@ -50,6 +59,25 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     lk2 <- dmc_lookup(lvals, dmc_cbind(rc("s.a"), rc("s.b")), lv)
     got <- dmp_collect(dmc_cbind(row, lk2))
     expect_equal(got[order(got[, 1]), 2], ref_lv)
+    ## several columns of values
+    lkm <- dmc_lookup(vm, rc("s.code"))
+    got <- dmp_collect(dmc_cbind(row, lkm))
+    expect_equal(unname(got[order(got[, 1]), 2:3]), unname(cbind(ref_codes, -ref_codes)))
+    lkm2 <- dmc_lookup(cbind(lvals, 2 * lvals), dmc_cbind(rc("s.a"), rc("s.b")), lv)
+    got <- dmp_collect(dmc_cbind(row, lkm2))
+    expect_equal(unname(got[order(got[, 1]), 2:3]), unname(cbind(ref_lv, 2 * ref_lv)))
+    ## a design and its columns over a table of its rows: the same values
+    Ds <- design.matrix:::dmp_subset(D, DBI::SQL("s.code > 2"))
+    Dt <- design.matrix:::dmp_materialize(Ds)
+    expect_true(grepl("^SELECT \\* FROM", Dt$src$select))
+    expect_equal(design.matrix:::dm_nrows(Dt), sum(d$code > 2))
+    expect_equal(crossprod(Dt), crossprod(Ds))
+    xt <- design.matrix:::dmc_on(rc("s.x * 2"), Dt)
+    expect_equal(dm_colsum(xt), 2 * sum(d$x[d$code > 2]))
+    ## a frozen column as a table: same sums, rows of the design only
+    fz <- design.matrix:::dmc_freeze(design.matrix:::dmc_on(rc("s.x + 1"), Ds), table = TRUE)
+    expect_equal(dm_colsum(fz), sum(d$x[d$code > 2] + 1))
+    expect_true(grepl("^SELECT \\* FROM", unclass(fz)$frame$src$select))
     ## chained on a product: the lookup keeps the columns of the later frame
     b <- c(0.5, 2)
     xb <- dmp_mult(D, b)

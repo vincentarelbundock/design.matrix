@@ -42,7 +42,9 @@
 ##   dmc_is_finite (NaN-safe) dmc_notnan (not NA or NaN)
 ##   dmc_on(col, x) (same SQL, rows of x)
 ##   dmc_count(cond, negate) (1 where cond is TRUE, to sum)
-##   dmc_freeze(col) (computed once: remotely, columns of a new frame)
+##   dmc_freeze(col, table) (computed once: remotely, columns of a new
+##                         frame; with table = TRUE, a temporary table of the
+##                         rows used with every column of the frame)
 ##   dmc_pnorm dmc_qnorm dmc_dnorm dmc_pcauchy dmc_qcauchy
 ##   dmc_logit_inv dmc_logit_mu_eta dmc_binomial_dev(y, mu, w)
 ##                         (in memory the C code of binomial())
@@ -124,6 +126,12 @@
 ##                            `keys` (a column, k columns), patterns are also
 ##                            split by their values, returned as `keys`
 ##                            (one row per pattern).
+##   dmp_materialize(x)       the design over a copy of its rows: remotely a
+##                            temporary table of the rows used with every
+##                            column of its frame (later queries scan it
+##                            instead of recomputing the frame's views and
+##                            joins); a new design (re-make columns with
+##                            dmc_on()); in memory x
 ##   dmp_subset(x, keep)      the design of the rows where the logical column
 ##                            keep is TRUE (remotely also a DBI::SQL()
 ##                            predicate); a new remote design
@@ -890,15 +898,42 @@ dmc_count <- function(cond, negate = FALSE) {
 ## repeating them (DuckDB expands macros such as dm_qnorm() inline, and
 ## nested expressions would grow without bound). Columns frozen separately
 ## from one frame live on sibling frames, which cannot be combined: freeze
-## them together (dmc_cbind()). In memory, the column itself.
-dmc_freeze <- function(col) {
+## them together (dmc_cbind()). In memory, the column itself. With table =
+## TRUE, the new frame is a temporary table of the rows used (computed once
+## for all later queries, which then scan it: for columns that many queries
+## read, such as the working weights and responses of a GLM with fixed
+## effects); its rows keep the filter of the design.
+dmc_freeze <- function(col, table = FALSE) {
     if (!dm_is_rcols(col)) return(col)
     fr <- unclass(col)$frame
     sql <- unclass(col)$sql
     nm <- paste0("__dm_f", substr(dm_tmp_name("f"), 3L, 10L), "_", seq_along(sql))
     x <- dm_remote_extend(dm_remote_unscaled(fr), stats::setNames(sql, nm), "column")
+    if (table) x <- dm_remote_to_table(x)
     x$depth <- dm_frame_depth(fr) + 1L
     dm_rcols(x, sprintf("s.%s", dm_qi(x, nm)))
+}
+
+## The frame of a remote design as a temporary table of its rows used (with
+## every column of the frame; the design's filter stays valid on them).
+dm_remote_to_table <- function(x) {
+    tn <- dm_qi(x, dm_tmp_name("dm_mat"))
+    dm_execute(x, sprintf("CREATE TEMPORARY TABLE %s AS SELECT * FROM (%s) AS s WHERE %s", tn, x$src$select, x$filter))
+    x$src$select <- sprintf("SELECT * FROM %s", tn)
+    x$src$base_table <- tn
+    x
+}
+
+dmp_materialize <- function(x) {
+    if (!inherits(x, "dm_remote")) return(x)
+    sc <- x$scale
+    x <- dm_remote_to_table(dm_remote_unscaled(x))
+    x$filter <- "TRUE"
+    x$depth <- 0L
+    x$cache <- new.env(parent = emptyenv())
+    x$id <- dm_tmp_name("dm")
+    x$scale <- sc
+    x
 }
 
 ## ---- inputs of the methods of a design ----

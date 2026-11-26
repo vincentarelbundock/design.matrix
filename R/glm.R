@@ -73,6 +73,44 @@
 #' with the design run in the database or in batches. See the section
 #' *GLMs* of [design_remote].
 #'
+#' **Fixed effects.** A formula `y ~ x | fe1 + fe2` absorbs fixed effects
+#' (FE), as [fixest::feglm()] and [fixest::fepois()]: each FE is a variable
+#' or an interaction `a^b`. The iterations are those of `glm.fit()` (same
+#' starting values, step halving, deviance convergence rule and warnings),
+#' with the slopes and the FE values as parameters; the weighted least
+#' squares step of each iteration is the estimator of linear models with
+#' FE of [design_lm()] (sums over rows, the largest FE eliminated exactly,
+#' the others solved densely or by conjugate gradients), so the dummies are
+#' never formed. The same code fits data in memory and remote data.
+#' * Rows: rows with a missing value in the model, FE or cluster variables,
+#'   or a zero weight, are dropped; then, iteratively, rows whose FE level
+#'   the FE fit perfectly, as fixest's `fixef.rm`: `"perfect_fit"`
+#'   (default) drops singletons and, when the inverse link maps onto
+#'   (0, Inf) or (0, 1) (fixest's rule: log, logit, probit, cloglog links),
+#'   levels whose response is all 0 or all 1 (their FE would be infinite);
+#'   `"singleton"`, `"infinite_coef"` and `"none"` drop only the first, only
+#'   the second, or nothing. `fit$nsingletons` and `fit$nperfect` count the
+#'   rows dropped.
+#' * Coefficients: the intercept is absorbed; a column collinear with the
+#'   FE or earlier columns is `NA` (fixest's rule, `collin.tol = 1e-9`).
+#' * Standard errors: `vcov = "iid"` (default: the inverse information of
+#'   the last weighted least squares step, times the dispersion) or
+#'   `vcov = ~cl` (clustered by one variable), with fixest's default small
+#'   sample corrections, `(n - 1) / (n - K)` with `K` the number of slopes
+#'   and FE parameters, and `G / (G - 1)` for clusters (FE nested in the
+#'   clusters not counted in `K`).
+#' * Methods: those of a `design_glm` fit (class `c("design_glm_fe",
+#'   "design_glm")`); `logLik()`, `AIC()` and `BIC()` count the FE
+#'   parameters; `fixef()` (the generic of fixest or nlme, when loaded)
+#'   returns the FE values, also in `fit$fixef`, normalized as for
+#'   [design_lm()]; `predict()` gives the link or the response (`NA` for
+#'   levels not in the fit); remotely, per-row results are tables.
+#'   `fit$fe_iter` holds the iterations of conjugate gradients of each
+#'   step (0 for a direct solve).
+#' * Not supported with FE: `start`, `compress = TRUE` (compression is
+#'   turned off), `na.action = na.fail`, clustering by more than one
+#'   variable, a design matrix as first argument.
+#'
 #' **What is kept.** As in [design_lm()]: the coefficients, the factor `R`
 #' of the last weighted least squares problem (which gives the covariance
 #' matrix, as in [summary.glm()]), the deviances, AIC, degrees of freedom,
@@ -120,6 +158,10 @@
 #'   vector, a factor, or a two-column matrix of successes and failures (as
 #'   in [glm.fit()]). With a remote design, the name of the response column,
 #'   or the names of two columns (successes and failures).
+#' @param vcov With fixed effects: `"iid"` or a one-sided formula naming a
+#'   cluster variable (`~firm`). Without fixed effects only `"iid"`.
+#' @param fixef.rm With fixed effects: `"perfect_fit"` (default),
+#'   `"singleton"`, `"infinite_coef"` or `"none"`; see *Fixed effects*.
 #' @param ... For remote data: `table`, `sql`, `engine` and `chunk_size`; see
 #'   [design_remote]. Otherwise not used.
 #' @return An object of class `"design_glm"`: a list with, among others,
@@ -144,16 +186,26 @@
 #' all.equal(deviance(fit), deviance(glm(k ~ f * g, poisson, d)))
 #'
 #' predict(fit, newdata = d[1:3, ], type = "response")
+#'
+#' ## fixed effects
+#' panel <- data.frame(id = rep(1:100, each = 10), t = rep(1:10, 100), x = rnorm(1000))
+#' panel$y <- rpois(1000, exp(0.5 * panel$x + panel$id / 100))
+#' fe <- design_glm(y ~ x | id + t, poisson, panel, vcov = ~id)
+#' summary(fe)
 #' @export
 design_glm <- function(formula, family = stats::gaussian, data, weights, na.action,
                        start = NULL, offset, control = list(),
-                       contrasts = NULL, compress = "auto", model = TRUE, y = NULL, ...) {
+                       contrasts = NULL, compress = "auto", model = TRUE, y = NULL,
+                       vcov = "iid", fixef.rm = "perfect_fit", ...) {
     family <- dmglm_family(family, parent.frame())
     dmglm_kind(family)
     control <- do.call(stats::glm.control, as.list(control))
     dmfit_check_compress(compress)
     checkmate::assert_flag(model)
     cl <- match.call()
+    fe <- dm_fe_has_bar(formula)
+    if (!fe && !identical(vcov, "iid"))
+        stop("`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", call. = FALSE)
     if (inherits(formula, c("design_matrix", "dm_remote"))) {
         if (!missing(data) || !missing(na.action) || !is.null(contrasts))
             stop("With a design matrix, give the response as `y`; `data`, ",
@@ -173,6 +225,11 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
     }
     if (!is.null(y)) stop("`y` applies only when the first argument is a design matrix.", call. = FALSE)
     na_kind <- if (missing(na.action)) "omit" else dm_na_kind(na.action, c("omit", "exclude", "fail"))
+    ## fixed effects (fe_glm.R)
+    if (fe) {
+        return(dm_fe_glm(cl, parent.frame(), formula, family, if (missing(data)) NULL else data, start, control,
+                         contrasts, compress, model, vcov, fixef.rm, list(...), na_kind))
+    }
     ## remote data: the response, weights and offset as SQL (remote_fit.R)
     if (!missing(data) && dm_is_remote_source(data)) {
         return(dm_remote_glm(formula, data, family, if (missing(weights)) NULL else substitute(weights),
@@ -461,7 +518,14 @@ dmglm_checks <- function(cols, k, start, wmsg) {
 ## not depend on the coefficients. The first iteration starts from per-row
 ## values, so it always runs on the rows.
 
-dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg) {
+## `solver`: NULL (the weighted least squares steps are qr() of the scaled
+## design), or the steps of another problem with the same loop: list(lin,
+## wls, np), lin(theta, along) the linear predictor (without offset) at
+## parameters theta (a vector, or a matrix with one column per parameter
+## vector: several columns), wls(w2, z) the weighted least squares step
+## (as dmglm_wls_design()), np the number of parameters (fixed effects:
+## dm_fe_solver()). The fit is then not compressed and has no `start`.
+dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg, solver = NULL) {
     k <- dmglm_kind(family)
     cf <- dmglm_cf(k)
     ck <- dmglm_checks(cols, k, start, wmsg)
@@ -473,7 +537,12 @@ dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg
     y <- cols$y
     w <- cols$w
     off <- cols$off %||% 0
-    rows <- list(lin = function(b) dmp_mult(x, b), wls = dmglm_wls_design(x, tol), y = y, W = w, off = off, C = 0)
+    lin <- if (is.null(solver)) function(b, along = list()) dmp_mult(x, b, along = along) else solver$lin
+    ## (with another solver, whose steps read the working columns many
+    ## times, they are a table remotely: `materialize`)
+    rows <- list(lin = lin, wls = if (is.null(solver)) dmglm_wls_design(x, tol) else solver$wls,
+                 y = y, W = w, off = off, C = 0, materialize = !is.null(solver))
+    np <- if (is.null(solver)) p else solver$np
     ## starting values, on the rows
     eta0 <- dmc_freeze(if (!is.null(start)) dmp_mult(x, start) + off
                          else cf$linkfun(cf$mustart(y, w, cols$n, cols$cbind)))
@@ -484,7 +553,8 @@ dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg
         stop("cannot find valid starting values: please specify some", call. = FALSE)
     devold <- s0[1L]
 
-    pt <- if (p > 0L && !isFALSE(compress)) dmp_patterns(x, y, if (isTRUE(cols$weighted)) w, compress, keys = cols$off)
+    pt <- if (p > 0L && is.null(solver) && !isFALSE(compress))
+        dmp_patterns(x, y, if (isTRUE(cols$weighted)) w, compress, keys = cols$off)
     units <- rows
     if (!is.null(pt)) {
         W <- pt$w %||% rep(1, length(pt$z))
@@ -499,7 +569,7 @@ dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg
     }
     B <- dmglm_units(units, cf, k, first = if (!is.null(pt)) c(rows, list(eta = eta0, mu = mu0)),
                      eta = eta0, mu = mu0)
-    if (p == 0L) {
+    if (np == 0L) {
         res <- list(coef = numeric(0), fit = list(rank = 0L, pivot = integer(0), R = matrix(0, 0, 0)),
                     iter = 0L, conv = TRUE, boundary = TRUE, dev = devold)
     } else {
@@ -509,13 +579,14 @@ dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg
     beta <- res$coef
     beta[is.na(beta)] <- 0
     old <- B$state$wls_beta
-    fin <- dmglm_final(x, cols, cf, k, ck, beta, old, eta0, res$dev, intercept)
-    if (!is.null(cols$off) && intercept && p > 0L)
+    fin <- dmglm_final(if (np == 0L) NULL else lin, cols, cf, k, ck, beta, old, eta0, res$dev, intercept)
+    if (!is.null(cols$off) && intercept && np > 0L)
         fin$nulldev <- dmglm_null_refit(cols, cf, k, control, ck$n, fin$mu)
     nobs <- ck$nz
     if (nobs < .Machine$integer.max) nobs <- as.integer(nobs)
     rank <- res$fit$rank
-    out <- list(coefficients = stats::setNames(res$coef, colnames(x)), rank = rank, pivot = res$fit$pivot,
+    out <- list(coefficients = if (is.null(solver)) stats::setNames(res$coef, colnames(x)) else res$coef,
+                rank = rank, pivot = res$fit$pivot,
                 R = res$fit$R, tol = tol, deviance = res$dev, null.deviance = fin$nulldev,
                 aic = dmglm_aic(k, ck, res$dev, fin$ll) + 2 * rank, iter = res$iter, converged = res$conv,
                 boundary = res$boundary, df.residual = nobs - rank, df.null = nobs - as.integer(intercept),
@@ -525,6 +596,8 @@ dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg
                 method = if (!is.null(pt)) "patterns" else switch(dm_engine(x), sql = "SQL iterations",
                                                                  chunked = "iterations in batches", NULL),
                 data = list(design = x, y = y, weights = w, offset = cols$off))
+    ## (the last weighted least squares step of another solver)
+    if (!is.null(solver)) out$solver_fit <- res$fit
     class(out) <- "design_glm"
     out
 }
@@ -559,7 +632,8 @@ dmglm_working <- function(u, eta, mu, cf) {
     me <- cf$mu.eta(eta)
     good <- (W > 0) & (me != 0)
     wz <- dmc_freeze(dmc_cbind(dmc_ifelse(good, W * me * me / v, 0),
-                                 dmc_ifelse(good, (eta - u$off) + (u$y - mu) / me, 0)))
+                                 dmc_ifelse(good, (eta - u$off) + (u$y - mu) / me, 0)),
+                     table = isTRUE(u$materialize))
     w2 <- dmc_col(wz, 1L)
     z <- dmc_col(wz, 2L)
     s <- dmc_sums(dmc_count((W > 0) & !dmc_notnan(v)), dmc_count((W > 0) & v == 0),
@@ -691,7 +765,11 @@ dmglm_loop <- function(B, k, control, nobs, devold, coefold = NULL) {
     if (k$family == "poisson" && B$extreme())
         warning("glm.fit: fitted rates numerically 0 occurred", call. = FALSE)
     p <- length(coef)
-    if (fit$rank < p) coef[fit$pivot[seq.int(fit$rank + 1L, p)]] <- NA
+    if (!is.null(fit$aliased)) {
+        coef[fit$aliased] <- NA
+    } else if (fit$rank < p) {
+        coef[fit$pivot[seq.int(fit$rank + 1L, p)]] <- NA
+    }
     list(coef = coef, fit = fit, iter = iter, conv = conv, boundary = boundary, dev = dev)
 }
 
@@ -699,19 +777,20 @@ dmglm_loop <- function(B, k, control, nobs, devold, coefold = NULL) {
 ## (working weights of the last weighted least squares step, at `old`, or
 ## at the starting values eta0 when that step was the first; working
 ## residuals at beta), the null deviance (without the refit), the sum of
-## weighted log densities of the AIC, and the fitted means.
-dmglm_final <- function(x, cols, cf, k, ck, beta, old, eta0, dev, intercept) {
+## weighted log densities of the AIC, and the fitted means. `lin`: the
+## linear predictor at parameters (see dmglm_fit()), NULL without any.
+dmglm_final <- function(lin, cols, cf, k, ck, beta, old, eta0, dev, intercept) {
     y <- cols$y
     w <- cols$w
     off <- cols$off %||% 0
-    if (ncol(x) == 0L) {
+    if (is.null(lin)) {
         eta <- 0 * y + off
         eta_old <- eta
     } else if (is.null(old)) {
-        eta <- dmp_mult(x, beta, along = list(eta0)) + off
+        eta <- lin(beta, along = list(eta0)) + off
         eta_old <- eta0
     } else {
-        P <- dmp_mult(x, cbind(beta, old))
+        P <- lin(cbind(beta, old))
         eta <- dmc_col(P, 1L) + off
         eta_old <- dmc_col(P, 2L) + off
     }
@@ -818,7 +897,7 @@ dmglm_response <- function(cf, eta) dmc_ifelse(dmc_notnan(eta), cf$linkinv(eta),
 fitted.design_glm <- function(object, ...) {
     d <- dmglm_rows(object, "fitted()")
     cf <- dmglm_cf(dmglm_kind(object$family))
-    eta <- dmp_mult(d$design, dmfit_beta(object)) + (d$offset %||% 0)
+    eta <- dmglm_eta(object, d$design, d$offset, d$codes)
     dmglm_output(d$design, list(.fitted = cf$linkinv(eta)), object$na.action)
 }
 
@@ -827,7 +906,7 @@ residuals.design_glm <- function(object, type = c("deviance", "pearson", "workin
     type <- match.arg(type)
     d <- dmglm_rows(object, "residuals()")
     cf <- dmglm_cf(dmglm_kind(object$family))
-    eta <- dmp_mult(d$design, dmfit_beta(object)) + (d$offset %||% 0)
+    eta <- dmglm_eta(object, d$design, d$offset, d$codes)
     mu <- cf$linkinv(eta)
     y <- d$y
     w <- d$weights
@@ -859,16 +938,23 @@ predict.design_glm <- function(object, newdata = NULL, type = c("link", "respons
         d <- dmglm_rows(object, "predict() without `newdata`")
         x <- d$design
         off <- d$offset
+        keys <- d$codes
+        levels <- NULL
         na_act <- object$na.action
     } else {
+        ## (with fixed effects, every row of newdata is kept)
+        if (!is.null(object$fixef) && !identical(na.action, stats::na.pass))
+            stop("With fixed effects, predict() keeps every row of `newdata` (na.action = na.pass).", call. = FALSE)
         nd <- dmfit_newdata(object, newdata, na.action, list(...))
         x <- nd$D
         off <- nd$off
+        keys <- if (!is.null(object$fixef)) dm_fe_new_keys(object, x, newdata)
+        levels <- object$fe_levels
         na_act <- NULL
         if (object$rank < length(object$coefficients))
             warning("prediction from rank-deficient fit; consider predict(., rankdeficient=\"NA\")", call. = FALSE)
     }
-    eta <- dmp_mult(x, dmfit_beta(object)) + (off %||% 0)
+    eta <- dmglm_eta(object, x, off, keys, levels)
     dmglm_output(x, list(.fitted = if (type == "response") dmglm_response(cf, eta) else eta), na_act)
 }
 
