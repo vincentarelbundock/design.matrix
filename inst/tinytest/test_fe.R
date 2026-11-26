@@ -2,11 +2,12 @@
 # coefficients, iid and clustered covariance matrices, residuals, number of
 # observations and predictions, with feols()'s default small sample
 # corrections and singleton removal. Every case runs in memory and on
-# remote data (a DuckDB table, and
-# Parquet). feols() demeans iteratively; a tight fixef.tol makes its results
-# exact enough for a 1e-8 comparison.
+# remote data (a DuckDB table, and Parquet in the full tier; the default
+# tier fits about half the cases remotely). feols() demeans iteratively; a
+# tight fixef.tol makes its results exact enough for a 1e-8 comparison.
 
 if (!requireNamespace("fixest", quietly = TRUE)) exit_file("fixest not installed")
+source("helpers.R")
 library(design.matrix)
 remote <- requireNamespace("DBI", quietly = TRUE) && requireNamespace("duckdb", quietly = TRUE)
 
@@ -42,24 +43,25 @@ put <- function(d, name) {
     list(table = name, parquet = path)
 }
 
-# Fits of the same model in memory and on remote data.
-fe_fits <- function(fml, d, src, vcov = "iid", weights = NULL, ...) {
+# Fits of the same model in memory and on remote data (`modes`: the remote
+# modes).
+fe_fits <- function(fml, d, src, vcov = "iid", weights = NULL, ..., modes = remote_modes) {
     fits <- list(memory = do.call(design_lm, list(fml, d, vcov = vcov, ...,
                                                   weights = if (!is.null(weights)) d[[weights]])))
     if (remote && !is.null(src)) {
         ## (do.call: `weights` names a column, as a string)
         rfit <- function(source, ...) suppressMessages(do.call(design_lm, list(fml, source, vcov = vcov,
                                                                                weights = weights, ...)))
-        fits$sql <- rfit(con, table = src$table, ...)
-        fits$parquet <- rfit(src$parquet, ...)
+        if ("sql" %in% modes) fits$sql <- rfit(con, table = src$table, ...)
+        if ("parquet" %in% modes) fits$parquet <- rfit(src$parquet, ...)
     }
     fits
 }
 
 # Compare the fits of a model with a feols() fit.
-check_fe <- function(fml, d, src, cluster = NULL, weights = NULL, ..., info = "") {
+check_fe <- function(fml, d, src, cluster = NULL, weights = NULL, ..., modes = remote_modes, info = "") {
     vc <- if (is.null(cluster)) "iid" else cluster
-    fits <- fe_fits(fml, d, src, vc, weights, ...)
+    fits <- fe_fits(fml, d, src, vc, weights, ..., modes = modes)
     b <- fx_fit(fml, d, weights = if (is.null(weights)) NULL else stats::as.formula(paste0("~", weights)))
     fb <- unname(predict(b, d))
     for (nm in names(fits)) {
@@ -99,22 +101,25 @@ d <- data.frame(
     w = runif(n, 0.2, 3))
 d$y <- d$x1 - 0.5 * d$x2 + d$a / 300 + d$b / 20 + as.integer(d$f) + rnorm(n)
 src <- put(d, "d")
+# cases fitted remotely in the full tier only (the default tier keeps one
+# of each kind remotely)
+full_modes <- if (full_tests) remote_modes else character()
 
 # One-way ------------------------------------------------------------------
 check_fe(y ~ x1 + x2 | a, d, src, info = "one-way")
-check_fe(y ~ x1 + x2 | a, d, src, cluster = ~a, info = "one-way, cluster nested")
-check_fe(y ~ x1 + x2 | a, d, src, cluster = ~b, info = "one-way, cluster not nested")
+check_fe(y ~ x1 + x2 | a, d, src, cluster = ~a, modes = full_modes, info = "one-way, cluster nested")
+check_fe(y ~ x1 + x2 | a, d, src, cluster = ~b, modes = full_modes, info = "one-way, cluster not nested")
 check_fe(y ~ x1 + x2 | b, d, src, cluster = ~b, weights = "w", info = "one-way weighted")
 
 # Two-way and three-way ------------------------------------------------------
 check_fe(y ~ x1 + x2 | a + b, d, src, cluster = ~a, info = "two-way")
-check_fe(y ~ x1 + x2 | a + b, d, src, cluster = ~c, info = "two-way, cluster not nested")
-check_fe(y ~ x1 + x2 | a + b + c, d, src, cluster = ~a, info = "three-way")
+check_fe(y ~ x1 + x2 | a + b, d, src, cluster = ~c, modes = full_modes, info = "two-way, cluster not nested")
+check_fe(y ~ x1 + x2 | a + b + c, d, src, cluster = ~a, modes = full_modes, info = "three-way")
 check_fe(y ~ x1 + x2 | a + b + c, d, src, cluster = ~c, weights = "w", info = "three-way weighted")
 check_fe(y ~ x1 + x2 | a^c + b, d, src, cluster = ~b, info = "interacted FE")
 
 # Factor regressors and interactions --------------------------------------
-check_fe(y ~ x1 * f + x2 | a + b, d, src, cluster = ~a, info = "factor interaction")
+check_fe(y ~ x1 * f + x2 | a + b, d, src, cluster = ~a, modes = full_modes, info = "factor interaction")
 check_fe(y ~ f:h + x1 | a + c, d, src, cluster = ~c, weights = "w", info = "factor x factor")
 check_fe(y ~ poly(x1, 2) + log(w) | b, d, src, cluster = ~b, info = "transformations")
 
@@ -153,7 +158,7 @@ options(op)
 du <- d
 du$a <- ifelse(runif(n) < 0.5, sample(3, n, TRUE), du$a)
 du$b <- ifelse(runif(n) < 0.3, 1L, du$b)
-check_fe(y ~ x1 + x2 | a + b, du, put(du, "du"), cluster = ~a, info = "unbalanced")
+check_fe(y ~ x1 + x2 | a + b, du, put(du, "du"), cluster = ~a, modes = full_modes, info = "unbalanced")
 
 # Disconnected components of the FE graph -----------------------------------
 dd <- d
@@ -162,7 +167,7 @@ dd$b <- ifelse(half, dd$b + 100L, dd$b) # a in 1:300 only meets b in 1:40, a > 3
 sdd <- put(dd, "dd")
 fits <- check_fe(y ~ x1 + x2 | a + b, dd, sdd, cluster = ~a, info = "disconnected")
 expect_equal(fits$memory$fe_info$ncomp, 2L)
-check_fe(y ~ x1 + x2 | a + b + c, dd, sdd, cluster = ~b, info = "disconnected three-way")
+check_fe(y ~ x1 + x2 | a + b + c, dd, sdd, cluster = ~b, modes = full_modes, info = "disconnected three-way")
 
 # Collinear regressors --------------------------------------------------------
 dc <- d
@@ -170,9 +175,9 @@ dc$x3 <- dc$x1 + 2 * dc$x2                    # collinear with x1, x2
 dc$xa <- (dc$a %% 13) / 7                     # constant within a: absorbed
 dc$xb <- dc$b / 3 - (dc$a %% 5)              # sum of an a and a b effect
 sdc <- put(dc, "dc")
-fits <- check_fe(y ~ x1 + x2 + x3 | a + b, dc, sdc, cluster = ~a, info = "collinear x")
+fits <- check_fe(y ~ x1 + x2 + x3 | a + b, dc, sdc, cluster = ~a, modes = full_modes, info = "collinear x")
 for (a in fits) expect_true(is.na(coef(a)[["x3"]]))
-fits <- check_fe(y ~ x1 + xa + x2 | a + b, dc, sdc, cluster = ~a, info = "collinear with FE")
+fits <- check_fe(y ~ x1 + xa + x2 | a + b, dc, sdc, cluster = ~a, modes = full_modes, info = "collinear with FE")
 for (a in fits) expect_true(is.na(coef(a)[["xa"]]))
 fits <- check_fe(y ~ xb + x1 | a + b, dc, sdc, cluster = ~b, info = "collinear with two FE")
 for (a in fits) expect_true(is.na(coef(a)[["xb"]]))
@@ -364,7 +369,8 @@ if (remote) {
     fo$sql <- design_lm(y ~ x1 + offset(0.5 * x2) | a + b, con, table = "d", offset = log(w), vcov = ~c)
     fo$sqlexpr <- design_lm(y ~ x1 + offset(0.5 * x2) | a + b, con, table = "d", offset = DBI::SQL("ln(w)"),
                             vcov = ~c)
-    fo$parquet <- design_lm(y ~ x1 + offset(0.5 * x2) | a + b, src$parquet, offset = log(w), vcov = ~c)
+    if ("parquet" %in% remote_modes)
+        fo$parquet <- design_lm(y ~ x1 + offset(0.5 * x2) | a + b, src$parquet, offset = log(w), vcov = ~c)
 }
 for (nm in names(fo)) {
     a <- fo[[nm]]

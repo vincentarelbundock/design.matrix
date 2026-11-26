@@ -69,7 +69,7 @@ rownames(dd) <- NULL
 
 ## random formulas: computed in SQL, or with variables evaluated in R
 checked <- c(sql = 0, evaluated = 0)
-for (i in 1:40) {
+for (i in seq_len(if (full_tests) 40 else 30)) {
     fo <- fuzz_formula()
     ## (a remote design needs a plan, which refuses the response on the right)
     if ("m" %in% all.vars(fo) || "y" %in% all.vars(fo[[3L]])) next
@@ -98,7 +98,7 @@ for (i in 1:40) {
 expect_true(all(checked > 5))
 
 ## fit in R, score in the database: a specification from part of the data
-for (i in 1:25) {
+for (i in seq_len(if (full_tests) 25 else 10)) {
     fo <- fuzz_formula(response = FALSE)
     if ("m" %in% all.vars(fo)) next
     train <- dd[1:120, ]
