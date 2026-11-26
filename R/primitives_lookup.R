@@ -48,8 +48,10 @@
 ##       the design with numeric variables shifted by their mean (in a
 ##       sample of rows), when that design is X T with T unit upper
 ##       triangular: list(x = the shifted design, T), or NULL. In memory the
-##       design is rebuilt from its model frame; remotely the variables'
-##       SQL (or the chunks' shift) changes, as in dm_center(). The shifted
+##       design is rebuilt from its model frame, its columns as stored (a
+##       column I(x^2) or log(x) is shifted on its own, not rebuilt from a
+##       shifted x); remotely the variables' SQL (or the chunks' shift)
+##       changes, as in dm_center(), each variable on its own. The shifted
 ##       design is a new design: re-make columns with dmc_on().
 
 dmc_lookup <- function(values, key, levels = NULL, along = list()) {
@@ -297,8 +299,10 @@ dmp_center <- function(x) {
     mt <- x$training_terms
     mf <- x$vars
     if (is.null(mt) || is.null(mf)) return(NULL)
-    ctr <- dm_fe_center(mt, mf, x$contrasts)
+    ctr <- dm_center_memory(mt, mf, x$contrasts)
     if (is.null(ctr)) return(NULL)
+    ## (the columns as stored, as T was found: design.matrix#r6g7)
+    attr(mf, "terms") <- mt
     for (nm in names(ctr$shift)) mf[[nm]] <- mf[[nm]] - ctr$shift[[nm]]
     list(x = design_matrix(mt, mf, contrasts.arg = x$contrasts), T = ctr$T)
 }

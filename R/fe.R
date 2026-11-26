@@ -841,28 +841,6 @@ dm_fe_uncenter <- function(est, Tm, icol) {
 }
 
 
-## Centering of numeric variables (in memory; see dmp_center()): list(shift, T), with the
-## design of the shifted frame X~ = X T and T unit upper triangular, or
-## NULL. As dm_center() does for remote designs: only variables whose mean
-## is large compared with their spread, and only when such a T exists
-## (checked on prototype rows).
-dm_fe_center <- function(mt, mf, contrasts) {
-    if (!isTRUE(getOption("design.matrix.fe_center", TRUE))) return(NULL)
-    if (attr(mt, "intercept") == 0L) return(NULL)
-    ## the decision and the shift from a systematic sample of rows (any
-    ## shift is exact; a shift near the mean keeps the sums accurate)
-    tv <- dm_terms_vars(mt)$names
-    nr <- nrow(mf)
-    idx <- if (nr > 1e5) unique(round(seq(1, nr, length.out = 1e5))) else seq_len(nr)
-    st <- mf[idx, intersect(tv, names(mf)), drop = FALSE]
-    attr(st, "terms") <- mt
-    m0 <- mf[seq_len(min(nrow(mf), 2000L)), , drop = FALSE]
-    attr(m0, "terms") <- NULL
-    p <- tryCatch(ncol(design_matrix(mt, m0, contrasts.arg = contrasts)), error = function(e) NA)
-    if (is.na(p) || p > 2000L) return(NULL)
-    dm_center_shift(st, m0, function(fr) design_matrix(mt, fr, contrasts.arg = contrasts), p)
-}
-
 ## ---------------------------------------------------------------------------
 ## design_lm() with fixed effects
 ##

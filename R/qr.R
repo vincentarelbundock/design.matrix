@@ -156,29 +156,11 @@ dmqr_center_design <- function(x) {
         ctr <- hit$value
     } else {
         ctr <- dmqr_keep_seed(tryCatch(dmp_center(x), error = function(e) NULL))
-        if (!is.null(ctr) && !dmqr_center_ok(x, ctr)) ctr <- NULL
         x$cache$qr_center <- list(key = key, value = ctr)
     }
     if (is.null(ctr)) return(NULL)
     if (!is.null(sc)) ctr$x <- dm_scale(ctr$x, sc)
     ctr
-}
-
-## Is the shifted design of dmp_center() X T? Checked on up to 1000 rows,
-## column by column against the scale of the sums in X T: the prototype
-## rows on which T was found rebuild variables such as I(x^2) from x, while
-## a model frame can hold them as columns, shifted on their own.
-dmqr_center_ok <- function(x, ctr) {
-    if (!identical(dim(ctr$x), dim(x)) || !identical(colnames(ctr$x), colnames(x))) return(FALSE)
-    n <- nrow(x)
-    i <- unique(round(seq(1, n, length.out = min(n, 1000L))))
-    ## (dm_rows(): `[` without its checks, the rows being distinct)
-    X <- as.matrix(dm_rows(x, i, FALSE))
-    Xs <- as.matrix(dm_rows(ctr$x, i, FALSE))
-    if (!all(is.finite(X)) || !all(is.finite(Xs))) return(FALSE)
-    err <- apply(abs(X %*% ctr$T - Xs), 2L, max)
-    scale <- apply(abs(X) %*% abs(ctr$T), 2L, max)
-    all(err <= 1e-8 * pmax(scale, .Machine$double.xmin))
 }
 
 ## The value of expr, leaving .Random.seed as it was.
@@ -333,7 +315,10 @@ dm_center_sample <- function(D) {
 ## from `proto_frame` (levels and logical values at random, numeric values
 ## near zero, which keeps the prototype design well conditioned), the
 ## designs built by build(frame) with p columns: list(shift, T), or NULL.
-## (For remote designs, dm_center(); in memory, dm_fe_center().)
+## The columns of the frames are taken as stored (I(x^2), log(x): columns,
+## shifted on their own when far from zero), in the prototypes as in the
+## shifted design (dm_shifted() remotely, dmp_center() in memory).
+## (For remote designs, dm_center(); in memory, dm_center_memory().)
 dm_center_shift <- function(stats_frame, proto_frame, build, p) {
     tt <- attr(stats_frame, "terms")
     resp <- if (!is.null(tt) && attr(tt, "response") > 0L) dm_terms_vars(tt)$names[attr(tt, "response")]
@@ -360,6 +345,11 @@ dm_center_shift <- function(stats_frame, proto_frame, build, p) {
             proto[[nm]] <- stats::rnorm(m)
         }
     }
+    ## The designs are built from the columns of the frames as they are
+    ## stored (a model frame: its "terms"), as the shifted design is: a
+    ## variable such as I(x^2) or log(x) is a column of the frame, shifted
+    ## on its own, not rebuilt from a shifted x (design.matrix#r6g7).
+    if (!is.null(tt)) attr(proto, "terms") <- tt
     shifted <- proto
     for (nm in names(shift)) shifted[[nm]] <- proto[[nm]] - shift[[nm]]
     X0 <- tryCatch(as.matrix(build(proto)), error = function(e) NULL)
@@ -379,6 +369,30 @@ dm_center_shift <- function(stats_frame, proto_frame, build, p) {
     Tm[abs(Tm) < 1e-10 * ts] <- 0
     diag(Tm) <- 1
     list(shift = shift, T = Tm)
+}
+
+## Centering of the numeric variables of an in-memory design (see
+## dmp_center()), from its terms mt and model frame mf: list(shift, T), with
+## the design of the shifted frame X~ = X T and T unit upper triangular, or
+## NULL. As dm_center() does for remote designs: only variables whose mean
+## is large compared with their spread, and only when such a T exists
+## (checked on prototype rows built, like the shifted design, from the
+## frame's columns as stored).
+dm_center_memory <- function(mt, mf, contrasts) {
+    if (!isTRUE(getOption("design.matrix.fe_center", TRUE))) return(NULL)
+    if (attr(mt, "intercept") == 0L) return(NULL)
+    ## the decision and the shift from a systematic sample of rows (any
+    ## shift is exact; a shift near the mean keeps the sums accurate)
+    tv <- dm_terms_vars(mt)$names
+    nr <- nrow(mf)
+    idx <- if (nr > 1e5) unique(round(seq(1, nr, length.out = 1e5))) else seq_len(nr)
+    st <- mf[idx, intersect(tv, names(mf)), drop = FALSE]
+    attr(st, "terms") <- mt
+    m0 <- mf[seq_len(min(nrow(mf), 2000L)), , drop = FALSE]
+    attr(m0, "terms") <- mt
+    p <- tryCatch(ncol(design_matrix(mt, m0, contrasts.arg = contrasts)), error = function(e) NA)
+    if (is.na(p) || p > 2000L) return(NULL)
+    dm_center_shift(st, m0, function(fr) design_matrix(mt, fr, contrasts.arg = contrasts), p)
 }
 
 ## The in-memory design of a model frame of the plan's terms.
