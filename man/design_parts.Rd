@@ -79,7 +79,8 @@ See Details.}
 }
 \value{
 A list with elements \code{terms}, \code{xlevels} and \code{contrasts}, and
-optionally \code{drop_intercept}.
+optionally \code{drop_intercept} (see the section \emph{Methods for other
+classes}).
 }
 \description{
 \code{design_parts()} extracts from a fitted model the pieces that
@@ -111,14 +112,60 @@ instrumental-variable models (\code{ivreg}, \code{iv_robust}), the parts are tho
 the regressors. For \code{coxph}, \code{strata()} and \code{cluster()} terms are removed
 and the intercept column is dropped, as in \code{model.matrix()} for these
 models.
-
-Other packages can add methods for their classes. A method returns a list
-with elements \code{terms} (a \code{terms} object whose \code{"predvars"} attribute keeps
-the parameters of transformations such as \code{\link[stats:poly]{stats::poly()}}), \code{xlevels} (a
-named list of character vectors, or \code{NULL}) and \code{contrasts} (a named list
-as in the \code{contrasts.arg} argument of \code{\link[stats:model.matrix]{stats::model.matrix()}}, or \code{NULL}).
-An optional element \code{drop_intercept = TRUE} removes the intercept column
-after the matrix is built, so that the factors are still coded as in a
-model with an intercept.
 }
-\keyword{internal}
+\section{Methods for other classes}{
+
+\code{design_parts()} is an S3 generic: a package (or a user) adds support for
+its own model class by writing a method \verb{design_parts.<class>()} and
+registering it (with \verb{S3method(design.matrix::design_parts, <class>)} in
+the NAMESPACE of a package that only suggests \pkg{design.matrix}, or
+\verb{S3method(design_parts, <class>)} when it imports it). \code{\link[=design_plan]{design_plan()}},
+and therefore \code{design_matrix(fit, newdata = ...)}, then work for that
+class. A method returns a list with elements:
+\itemize{
+\item \code{terms}: a \code{terms} object, with the response or without. Its
+\code{"predvars"} attribute must keep the parameters of data-dependent
+transformations such as \code{\link[stats:poly]{stats::poly()}}, \code{\link[splines:ns]{splines::ns()}} or \code{\link[=scale]{scale()}},
+as the \code{terms} of a model frame do; its environment is where the
+variables and functions of the formula are looked up.
+\item \code{xlevels}: a named list of character vectors, the levels of the
+factors (as in the \code{xlev} argument of \code{\link[stats:model.frame]{stats::model.frame()}}), or
+\code{NULL}. Levels of variables that are not in \code{terms} are ignored.
+\item \code{contrasts}: a named list as in the \code{contrasts.arg} argument of
+\code{\link[stats:model.matrix]{stats::model.matrix()}} (contrast names or matrices), or \code{NULL}.
+\item \code{drop_intercept} (optional): \code{TRUE} removes the intercept column after
+the matrix is built, so that the factors are still coded as in a model
+with an intercept (as \code{model.matrix()} does for \code{coxph}).
+}
+
+The method reads these pieces from the fitted object, as its \code{predict()}
+method does; it does not need the training data. Before writing one,
+check whether the default method already works: it does for most classes
+that store \code{terms}, \code{xlevels} and \code{contrasts}, or have
+\code{\link[stats:terms]{stats::terms()}}, \code{\link[stats:model.frame]{stats::model.frame()}} and \code{\link[stats:model.matrix]{stats::model.matrix()}}
+methods.
+}
+
+\examples{
+fit <- lm(mpg ~ poly(hp, 2) + factor(cyl), data = mtcars)
+parts <- design_parts(fit)
+names(parts)
+parts$xlevels
+
+# a method for a new class: a fit that stores its formula and levels
+toy <- structure(list(formula = mpg ~ wt + factor(gear),
+                      levels = list(`factor(gear)` = c("3", "4", "5"))),
+                 class = "toyfit")
+design_parts.toyfit <- function(model, ...) {
+    list(terms = terms(model$formula), xlevels = model$levels,
+         contrasts = list(`factor(gear)` = "contr.treatment"))
+}
+# (in a package: S3method(design.matrix::design_parts, toyfit))
+.S3method("design_parts", "toyfit", design_parts.toyfit)
+p <- design_plan(toy)
+as.matrix(design_matrix(p, head(mtcars)))
+}
+\seealso{
+\code{\link[=design_plan]{design_plan()}}, which compiles these pieces into a reusable
+plan.
+}

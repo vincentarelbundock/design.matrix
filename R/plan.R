@@ -36,8 +36,40 @@
 #' @param contrasts.arg,xlev As in [stats::model.matrix()], for a formula.
 #' @param ... Passed to [design_parts()] for a fitted model, for example
 #'   `component = "precision"` for a `betareg` model.
-#' @return A `design_plan` object.
-#' @keywords internal
+#' @section Methods:
+#' `design_plan()` is an S3 generic with two methods: one for formulas (and
+#' `terms` objects), and a default method for fitted models, which calls
+#' [design_parts()] and checks what it returns. To support a new model
+#' class, write a [design_parts()] method rather than a `design_plan()`
+#' method: the default method then builds and caches the plan. A
+#' `design_plan()` method for a class that is not a fitted model must return
+#' a `design_plan` object, as one of the two methods does.
+#'
+#' Plans of fitted models are cached: two calls on models with identical
+#' terms (with their environment), levels and contrasts return the same plan,
+#' so that the fast path learned by the first call is reused.
+#'
+#' @return A `design_plan` object: a list whose elements `terms` (the terms
+#'   without the response), `xlevels`, `contrasts` and `drop_intercept` are
+#'   those of the reference computation above. Other elements are internal.
+#'   Apply it with [design_matrix()].
+#' @seealso [design_parts()], to support a new class of fitted models.
+#' @examples
+#' train <- data.frame(y = rnorm(20), x = runif(20), f = gl(4, 5))
+#' newdata <- data.frame(x = c(0.2, 0.8), f = factor(c("b", "d"), levels = levels(train$f)))
+#'
+#' # from a formula and training data
+#' p <- design_plan(y ~ poly(x, 2) + f, train)
+#' p
+#' X <- as.matrix(design_matrix(p, newdata))
+#' X
+#'
+#' # from a fitted model: the same columns as predict() uses
+#' fit <- lm(y ~ poly(x, 2) + f, train)
+#' pf <- design_plan(fit)
+#' all.equal(drop(as.matrix(design_matrix(pf, newdata)) %*% coef(fit)),
+#'           predict(fit, newdata), check.attributes = FALSE)
+#' @export
 design_plan <- function(object, ...) {
     UseMethod("design_plan")
 }

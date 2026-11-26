@@ -29,22 +29,63 @@
 #' and the intercept column is dropped, as in `model.matrix()` for these
 #' models.
 #'
-#' Other packages can add methods for their classes. A method returns a list
-#' with elements `terms` (a `terms` object whose `"predvars"` attribute keeps
-#' the parameters of transformations such as [stats::poly()]), `xlevels` (a
-#' named list of character vectors, or `NULL`) and `contrasts` (a named list
-#' as in the `contrasts.arg` argument of [stats::model.matrix()], or `NULL`).
-#' An optional element `drop_intercept = TRUE` removes the intercept column
-#' after the matrix is built, so that the factors are still coded as in a
-#' model with an intercept.
+#' @section Methods for other classes:
+#' `design_parts()` is an S3 generic: a package (or a user) adds support for
+#' its own model class by writing a method `design_parts.<class>()` and
+#' registering it (with `S3method(design.matrix::design_parts, <class>)` in
+#' the NAMESPACE of a package that only suggests \pkg{design.matrix}, or
+#' `S3method(design_parts, <class>)` when it imports it). [design_plan()],
+#' and therefore `design_matrix(fit, newdata = ...)`, then work for that
+#' class. A method returns a list with elements:
+#' * `terms`: a `terms` object, with the response or without. Its
+#'   `"predvars"` attribute must keep the parameters of data-dependent
+#'   transformations such as [stats::poly()], [splines::ns()] or [scale()],
+#'   as the `terms` of a model frame do; its environment is where the
+#'   variables and functions of the formula are looked up.
+#' * `xlevels`: a named list of character vectors, the levels of the
+#'   factors (as in the `xlev` argument of [stats::model.frame()]), or
+#'   `NULL`. Levels of variables that are not in `terms` are ignored.
+#' * `contrasts`: a named list as in the `contrasts.arg` argument of
+#'   [stats::model.matrix()] (contrast names or matrices), or `NULL`.
+#' * `drop_intercept` (optional): `TRUE` removes the intercept column after
+#'   the matrix is built, so that the factors are still coded as in a model
+#'   with an intercept (as `model.matrix()` does for `coxph`).
+#'
+#' The method reads these pieces from the fitted object, as its `predict()`
+#' method does; it does not need the training data. Before writing one,
+#' check whether the default method already works: it does for most classes
+#' that store `terms`, `xlevels` and `contrasts`, or have
+#' [stats::terms()], [stats::model.frame()] and [stats::model.matrix()]
+#' methods.
 #'
 #' @param model A fitted model.
 #' @param component For models with several linear predictors, which one.
 #'   See Details.
 #' @param ... Passed to methods.
 #' @return A list with elements `terms`, `xlevels` and `contrasts`, and
-#'   optionally `drop_intercept`.
-#' @keywords internal
+#'   optionally `drop_intercept` (see the section *Methods for other
+#'   classes*).
+#' @seealso [design_plan()], which compiles these pieces into a reusable
+#'   plan.
+#' @examples
+#' fit <- lm(mpg ~ poly(hp, 2) + factor(cyl), data = mtcars)
+#' parts <- design_parts(fit)
+#' names(parts)
+#' parts$xlevels
+#'
+#' # a method for a new class: a fit that stores its formula and levels
+#' toy <- structure(list(formula = mpg ~ wt + factor(gear),
+#'                       levels = list(`factor(gear)` = c("3", "4", "5"))),
+#'                  class = "toyfit")
+#' design_parts.toyfit <- function(model, ...) {
+#'     list(terms = terms(model$formula), xlevels = model$levels,
+#'          contrasts = list(`factor(gear)` = "contr.treatment"))
+#' }
+#' # (in a package: S3method(design.matrix::design_parts, toyfit))
+#' .S3method("design_parts", "toyfit", design_parts.toyfit)
+#' p <- design_plan(toy)
+#' as.matrix(design_matrix(p, head(mtcars)))
+#' @export
 design_parts <- function(model, ...) {
     UseMethod("design_parts")
 }

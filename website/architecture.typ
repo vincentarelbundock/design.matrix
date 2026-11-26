@@ -52,7 +52,7 @@ A `design_matrix` is the result of the setup plus the variables. The fill perfor
 
 == Plans
 
-A `design_plan` keeps what a fitted design fixes for later data: the terms, the data-dependent transformations (`poly()`, `ns()`, `scale()`) with their training parameters, the factor levels and the contrasts (`R/plan.R`). `design_matrix(plan, batch)` applies it to new rows without repeating the checks. Remote designs carry a plan too: it fixes their terms, levels and contrasts, so that their columns are those of `model.matrix()`.
+A `design_plan` keeps what a fitted design fixes for later data: the terms, the data-dependent transformations (`poly()`, `ns()`, `scale()`) with their training parameters, the factor levels and the contrasts (`R/plan.R`). `design_matrix(plan, batch)` applies it to new rows without repeating the checks. Remote designs carry a plan too: it fixes their terms, levels and contrasts, so that their columns are those of `model.matrix()`. `design_plan()` and `design_parts()` are exported generics: a package supports its own model class with a `design_parts()` method that returns the terms, levels and contrasts its `predict()` method uses (`R/parts.R`).
 
 = Products from the structure
 
@@ -77,7 +77,7 @@ Both can run on several threads (`design_threads()`; as in fixest, the default i
 
 == Patterns
 
-Rows with the same factor codes and the same numeric values give the same design row. When a design has far fewer such patterns than rows, the kernels compute once per pattern and expand, or sum the weights within patterns first (`R/algebra.R`, option `design.matrix.dedup`). The fits use the same idea as compression: a weighted least squares fit on the patterns, with the sum of the weights and the weighted mean response of each, is the fit on the rows, and the within-pattern sum of squares completes the residual sum of squares (`R/lm.R`). For a GLM, the iterations on the patterns are those on the rows for every supported family (`R/glm.R`).
+Rows with the same factor codes and the same numeric values give the same design row. When a design has far fewer such patterns than rows, the kernels compute once per pattern and expand, or sum the weights within patterns first (`R/algebra.R`, option `design.matrix.dedup`). The fits use the same idea as compression: a weighted least squares fit on the patterns, with the sum of the weights and the weighted mean response of each, is the fit on the rows, and the within-pattern sum of squares completes the residual sum of squares (`R/lm.R`). For a GLM, the iterations on the patterns are those on the rows for every supported family (`R/glm.R`). `design_patterns()` exports this compression, in memory and in a database, as one list: the pattern design, the mean response and summed weights of each pattern, and the within-pattern sum of squares (`R/exports.R`).
 
 = Least squares
 
