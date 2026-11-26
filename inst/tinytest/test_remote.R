@@ -236,7 +236,9 @@ expect_true(same(crossprod(D2), crossprod(design_matrix(M, dd, na.action = stats
 beta <- seq_len(ncol(D))
 col <- D %*% beta
 expect_inherits(col, "design_column")
-expect_equal(length(col), 1L)
+expect_equal(ncol(col), 1)
+expect_equal(length(col), nrow(D))
+expect_equal(dim(col), c(nrow(D), 1))
 p <- as.data.frame(col_compute(col), keep = "id")
 p <- p[order(p$id), ]
 expect_identical(names(p), c("id", ".fitted"))

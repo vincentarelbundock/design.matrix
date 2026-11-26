@@ -435,7 +435,7 @@ col_sums <- function(..., na.rm = FALSE) {
         ## (one query: the aggregates of every SQL expression of every
         ## remote argument; a column with k columns gives k rows)
         s <- dm_column_aggregates(args[remote], "sum")
-        idx <- rep(which(remote), vapply(args[remote], length, 1L))
+        idx <- rep(which(remote), vapply(args[remote], dm_ncols, 1L))
         out[remote] <- vapply(which(remote), function(i) {
             r <- s[idx == i, , drop = FALSE]
             if (!na.rm && sum(r$na) > 0) return(NA_real_)

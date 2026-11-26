@@ -163,7 +163,7 @@ all.equal(within_slope(D_mem, g_mem), within_slope(D_db, g_db))
 
 = Columns are lazy
 
-Printing a remote column shows its SQL, without reading a row. Arithmetic builds a new expression, and the values are computed only when a summary, a product or `as.vector()` needs them:
+Printing a remote column shows its dimensions ($n times k$, as `dim()`) and its SQL, without reading a row. Arithmetic builds a new expression, and the values are computed only when a summary, a product or `as.vector()` needs them:
 
 ```r
 y <- design_column(D_db, "y")

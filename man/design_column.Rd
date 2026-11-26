@@ -154,9 +154,11 @@ package, join on a key column of the data (such as \code{id}). In memory
 \item \code{x[, j]}: the columns \code{j} of a column with several columns (as for the
 matrix in memory), for instance of \code{D \%*\% cbind(b1, b2)}. Rows cannot
 be selected: remote rows have no order.
-\item \code{print()} and \code{format()} show the number of columns and rows, the SQL
-and the connection, without reading any row. \code{length(x)} is the number
-of columns of \code{x} (not of rows: remotely, use \code{nrow(D)}).
+\item \code{dim(x)} is \code{c(n, k)}: the rows of the design and the number of
+columns of \code{x}, so \code{nrow()}, \code{ncol()}, \code{NROW()} and \code{NCOL()} work, and
+\code{length(x)} is \code{n * k}, as for a matrix in memory (\code{n} is the row
+count kept with the design: no query). \code{print()} and \code{format()} show
+\verb{n x k}, the SQL and the connection, without reading any row.
 }
 }
 

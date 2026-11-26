@@ -694,7 +694,7 @@ dmqr_out <- function(out, yy, rows = yy$rows) {
 ## a matrix or vector like `y` in memory (dmqr_out()), a table with columns
 ## `prefix` (or prefix1, prefix2, ...) remotely (dmp_output()).
 dmqr_result <- function(qr, cols, prefix, yy, rows = yy$rows) {
-    k <- dmc_ncol(cols)
+    k <- dm_ncols(cols)
     nm <- if (k == 1L) prefix else paste0(prefix, seq_len(k))
     dmp_output(qr$design, stats::setNames(lapply(seq_len(k), function(j) dmc_col(cols, j)), nm),
                memory = function(d) dmqr_out(unname(as.matrix(d)), yy, rows))

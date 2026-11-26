@@ -43,7 +43,7 @@
 ##   is.na is.nan is.finite is.infinite (R's semantics; never NA)
 ##   exp log sqrt abs log1p expm1 log2 log10 cos sin tan floor ceiling sign
 ##                         (Math group; log has one argument)
-##   dmc_pmin dmc_pmax dmc_ifelse dmc_rowsums dmc_cbind dmc_col(x, j) dmc_ncol
+##   dmc_pmin dmc_pmax dmc_ifelse dmc_rowsums dmc_cbind dmc_col(x, j) dm_ncols
 ##   dmc_const(like, value) dmc_lgamma dmc_round (half to even)
 ##   dmc_is_finite (NaN-safe) dmc_present (not NA or NaN: !is.na)
 ##   dmc_on(col, x) (same SQL, rows of x)
@@ -257,9 +257,32 @@ dm_column <- function(frame, sql, notnull = FALSE) {
 
 dm_is_column <- function(x) inherits(x, "design_column")
 
-## (the number of columns k, not of rows; the fitting core relies on it)
+## The number of columns k of a column: of a remote column its number of
+## SQL expressions, in memory NCOL(). (dim() of a remote column is c(n, k)
+## and length() is n * k, as for a matrix in memory: the fitting core counts
+## columns with dm_ncols(), never with length().)
+dm_ncols <- function(x) if (dm_is_column(x)) length(unclass(x)$sql) else NCOL(x)
+
+## The number of rows of a remote column: the row count cached with its
+## design (every frame keeps it), else one COUNT query, cached thereafter.
+dm_column_nrows <- function(x) {
+    fr <- unclass(x)$frame
+    n <- dm_nrows(fr)
+    if (!is.null(n)) return(n)
+    dm_column_valid(x)
+    ## (the rows of the settled frame: binding recipes adds columns, not rows)
+    fr$pend <- NULL
+    n <- as.numeric(dm_query(fr, sprintf("SELECT COUNT(*) AS n FROM (%s) AS s WHERE %s",
+                                         fr$src$select, fr$filter))$n)
+    if (is.environment(fr$cache)) fr$cache$n <- n
+    n
+}
+
 #' @export
-length.design_column <- function(x) length(unclass(x)$sql)
+dim.design_column <- function(x) c(dm_column_nrows(x), dm_ncols(x))
+
+#' @export
+length.design_column <- function(x) prod(dim.design_column(x))
 
 dm_frame_depth <- function(D) D$depth %||% 0L
 
@@ -845,7 +868,7 @@ dmp_groupsum <- function(col, group) {
     ug <- sort(unique(res$g1), na.last = TRUE, method = "quick")
     if (anyNA(ug)) warning("missing values for 'group'", call. = FALSE)
     i <- match(res$g1, ug)
-    k <- length(col)
+    k <- dm_ncols(col)
     out <- matrix(0, length(ug), k, dimnames = list(as.character(ug), NULL))
     for (j in seq_len(k)) {
         v <- as.double(res[[paste0("v", j)]])
@@ -1077,7 +1100,7 @@ dmp_groupsum_codes <- function(col, group) {
         return(.Call(C_dm_fe_gsum, group$codes, G, W, design_threads()))
     }
     res <- dm_group_query(list(group$codes), list(col), nulls = TRUE)
-    k <- length(col)
+    k <- dm_ncols(col)
     out <- matrix(0, G, k)
     i <- as.integer(res$g1)
     for (j in seq_len(k)) {
@@ -1293,9 +1316,6 @@ dm_colsums_struct_ok <- function(D, G) {
 
 ## ---- more column functions (requested by the GLM work) ----
 
-## the number of columns of a column
-dmc_ncol <- function(x) if (dm_is_column(x)) length(x) else NCOL(x)
-
 ## one column of a multi-column column
 dmc_col <- function(x, j) {
     if (!dm_is_column(x)) return(if (is.matrix(x)) x[, j] else x)
@@ -1485,7 +1505,7 @@ dmp_min_nonzero <- function(x) {
 dmp_y <- function(x, y) {
     if (!inherits(x, "dm_remote")) return(dmqr_y(y, nrow(x)))
     D <- dm_remote_unscaled(x)
-    if (dm_is_column(y)) return(list(Y = y, vec = length(y) == 1L, cols = NULL))
+    if (dm_is_column(y)) return(list(Y = y, vec = dm_ncols(y) == 1L, cols = NULL))
     if (inherits(y, "SQL")) return(list(Y = dm_column(D, as.character(y)), vec = TRUE, cols = NULL))
     if (is.character(y)) {
         dm_remote_column(D, y, "y", several = TRUE)

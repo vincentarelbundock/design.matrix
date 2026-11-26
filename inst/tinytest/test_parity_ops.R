@@ -68,7 +68,8 @@ for (fname in names(formulas)) for (src in names(sources)) {
     expect_true(same(by_id(D %*% B[, 1], ".fitted"), drop(X %*% B[, 1])), info = paste(info, "%*% vector"))
     pB <- D %*% B
     expect_inherits(pB, "design_column")
-    expect_equal(length(pB), 2L)
+    expect_equal(dim(pB), c(nrow(D), 2), info = paste(info, "dim of a column"))
+    expect_equal(length(pB), 2 * nrow(D), info = paste(info, "length of a column"))
     expect_true(same(cbind(by_id(pB, "b1"), by_id(pB, "b2")), X %*% B), info = paste(info, "%*% matrix"))
     ## crossprod in every form
     expect_true(same(crossprod(D), crossprod(X)), info = paste(info, "crossprod"))

@@ -784,7 +784,7 @@ dm_sql_times <- function(...) {
 ## columns Y, X'Y, from one scan: list(xtx, xty). (Without Y,
 ## crossprod(x), and xty NULL.)
 dm_remote_gram_xty <- function(x, Y = NULL) {
-    if (is.null(Y) || !length(Y)) return(list(xtx = crossprod(x), xty = NULL))
+    if (is.null(Y) || (!dm_is_column(Y) && !length(Y))) return(list(xtx = crossprod(x), xty = NULL))
     yc <- dm_remote_cols(x, Y, "y")
     sc <- yc$D$scale
     dm_remote_moments(dm_remote_unscaled(yc$D), yc$sql, dm_sql_times(sc, sc), wy = sc, compress = FALSE)[c("xtx", "xty")]
@@ -894,7 +894,7 @@ Ops.dm_remote <- function(e1, e2) {
         ## (a remote column of the design, as `e * D` or `D / w`: the design
         ## moves to the column's frame, see dmp_scale(); tapx)
         if (dm_is_column(s)) {
-            if (length(s) != 1L) stop("A remote design is scaled by a column with one column.", call. = FALSE)
+            if (dm_ncols(s) != 1L) stop("A remote design is scaled by a column with one column.", call. = FALSE)
             return(dmp_scale(D, if (op == "/") 1 / s else s))
         }
         D$scale <- dm_remote_scale_sql(D, s, op)

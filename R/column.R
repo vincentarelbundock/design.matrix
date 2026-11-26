@@ -92,9 +92,11 @@
 #' * `x[, j]`: the columns `j` of a column with several columns (as for the
 #'   matrix in memory), for instance of `D %*% cbind(b1, b2)`. Rows cannot
 #'   be selected: remote rows have no order.
-#' * `print()` and `format()` show the number of columns and rows, the SQL
-#'   and the connection, without reading any row. `length(x)` is the number
-#'   of columns of `x` (not of rows: remotely, use `nrow(D)`).
+#' * `dim(x)` is `c(n, k)`: the rows of the design and the number of
+#'   columns of `x`, so `nrow()`, `ncol()`, `NROW()` and `NCOL()` work, and
+#'   `length(x)` is `n * k`, as for a matrix in memory (`n` is the row
+#'   count kept with the design: no query). `print()` and `format()` show
+#'   `n x k`, the SQL and the connection, without reading any row.
 #'
 #' @section Lifetime:
 #' A remote column is valid while its connection is open. The views and
@@ -209,7 +211,7 @@ dm_column_valid <- function(x) {
 #' @rdname design_column
 #' @export
 as.vector.design_column <- function(x, mode = "any") {
-    k <- length(unclass(x)$sql)
+    k <- dm_ncols(x)
     if (k != 1L)
         stop(sprintf(paste("This remote column has %d columns: as.vector() reads a column with one column;",
                            "use as.matrix() for several, or x[, j] for one of them."), k), call. = FALSE)
@@ -303,7 +305,7 @@ as.data.frame.design_column <- function(x, row.names = NULL, optional = FALSE, .
     if (missing(j)) return(x)
     if (!is.numeric(j) && !is.logical(j))
         stop("Select the columns of a remote column by number or with a logical vector.", call. = FALSE)
-    idx <- seq_len(length(x))[j]
+    idx <- seq_len(dm_ncols(x))[j]
     if (!length(idx) || anyNA(idx)) stop("Column index out of range.", call. = FALSE)
     u <- unclass(x)
     out <- dm_column(u$frame, u$sql[idx], notnull = u$notnull[idx])
@@ -317,11 +319,10 @@ format.design_column <- function(x, ...) {
     sql <- unclass(x)$sql
     con <- dm_con(fr)
     open <- tryCatch(DBI::dbIsValid(con), error = function(e) FALSE)
+    ## (the cached row count only: printing reads no row and runs no query)
     n <- dm_nrows(fr)
-    top <- sprintf("<design_column: %d column%s, %s rows, on <%s>%s>", length(sql),
-                    if (length(sql) == 1L) "" else "s",
-                    if (is.null(n)) "?" else dm_fmt_count(n), class(con)[1L],
-                    if (open) "" else " (closed)")
+    top <- sprintf("<design_column: %s x %d, on <%s>%s>", if (is.null(n)) "?" else dm_fmt_count(n),
+                   length(sql), class(con)[1L], if (open) "" else " (closed)")
     shown <- utils::head(sql, 3L)
     lab <- unclass(x)$label
     pre <- if (is.null(lab)) "" else paste0(utils::head(lab, 3L), ": ")

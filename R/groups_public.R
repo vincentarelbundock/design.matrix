@@ -227,7 +227,7 @@ group_crosstab <- function(g1, g2, w = NULL) {
     dm_groups_same(g1, g2)
     if (!is.null(w)) {
         w <- dm_groups_col(w, g1, "w")
-        if (dmc_ncol(w) != 1L) stop("`w` must be one column.", call. = FALSE)
+        if (dm_ncols(w) != 1L) stop("`w` must be one column.", call. = FALSE)
         if (is.matrix(w)) w <- w[, 1L]
     }
     a <- dm_groups_codes(g1)
@@ -311,8 +311,8 @@ dm_groups_parts <- function(key) {
     one <- function(v, nm = NULL, in_df = FALSE) {
         if (dm_is_column(v)) {
             lab <- unclass(v)$label
-            return(lapply(seq_len(length(v)), function(j) list(v = v[, j], name = if (!is.null(nm) && nzchar(nm)) {
-                if (length(v) == 1L) nm else paste0(nm, j)
+            return(lapply(seq_len(dm_ncols(v)), function(j) list(v = v[, j], name = if (!is.null(nm) && nzchar(nm)) {
+                if (dm_ncols(v) == 1L) nm else paste0(nm, j)
             } else lab[j], is_name = FALSE)))
         }
         if (inherits(v, "SQL"))
@@ -423,7 +423,7 @@ dm_groups_check <- function(g, what) {
         stop(sprintf("`%s` is not a valid grouping (G and levels).", what), call. = FALSE)
     cd <- g$codes
     if (dm_is_column(cd)) {
-        if (!inherits(g$design, "dm_remote") || is.null(g$lookup) || length(cd) != 1L)
+        if (!inherits(g$design, "dm_remote") || is.null(g$lookup) || dm_ncols(cd) != 1L)
             stop(sprintf("`%s` is not a valid grouping (remote codes).", what), call. = FALSE)
         dm_column_valid(cd)
         return(invisible(g))
