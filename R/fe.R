@@ -13,8 +13,8 @@
 ## never demeaned and the dense design is never formed. The same estimator
 ## (dm_fe_core()) runs on data in memory (C kernels, one pass for all
 ## grouped sums: dm_fe_struct_gsum() in src/fe.c) and on remote data
-## (GROUP BY queries and the products of remote designs, fe_remote.R); the
-## two differ only in how they compute these sums (a "backend").
+## (the remote methods of the same primitives): one code path, see
+## dm_fe_core().
 ##
 ## The solve with K eliminates the largest FE (diagonal block D_1)
 ## analytically and works on the Schur complement over the other FEs,
@@ -187,14 +187,6 @@ dm_fe_code_term <- function(d, vars) {
     }
     names(lv) <- vars
     list(codes = comb$codes, G = comb$G, levels = as.data.frame(lv, stringsAsFactors = FALSE))
-}
-
-## Keys of FE levels, for matching new data: one string per row of `lv`
-## (a data frame of level values).
-dm_fe_keys <- function(lv) {
-    v <- lapply(lv, function(x) if (is.double(x)) format(x, digits = 17, trim = TRUE) else as.character(x))
-    if (length(v) == 1L) return(v[[1L]])
-    do.call(paste, c(v, sep = "\r"))
 }
 
 ## Labels of FE levels, as fixest names them (a_b for interactions).
@@ -391,46 +383,63 @@ dm_fe_pivchol <- function(M, scale, tol) {
 }
 
 ## ---------------------------------------------------------------------------
-## The estimator, on a backend
+## The estimator, on the primitives
 ##
-## A backend is a list:
-##   n (rows), p (design columns), icol (the intercept column, or empty),
-##   G (levels per FE);
-##   moments: list(xtx, xty, yty, tss) for the whole design (tss: weighted
-##       sum of squares of y around its weighted mean);
-##   gs: per FE, list(nk = weighted counts, S = G_k x p grouped sums of w X,
-##       s = grouped sums of w y);
-##   crosstab(a, b): t(N_ab), weighted, a G_b x G_a dgCMatrix;
-##   resid(beta, fe): residuals e = y - X beta - sum_k fe_k[level], kept
-##       for cluster(); returns list(xte = X'We, Be = per FE, grouped sums
-##       of w e, rss = sum w e^2);
-##   cluster(): after resid(), list(G = number of clusters,
-##       U = colSums(w e X, group = cl), nested = per FE, whether it is
-##       nested in the clusters, E(k) = t(crosstab(cl, FE_k, w e)),
-##       a G_k x G dgCMatrix).
+## One implementation for designs in memory and remote designs: every sum
+## is a primitive of the fitting core (primitives.R, primitives_lookup.R)
+## or one of the three sums below, whose in-memory methods use the C
+## kernels of src/fe.c and whose remote methods are primitives:
+##
+##   dm_fe_groupsums(x, w, z, codes, G)  per FE: weighted counts, F_k'WX
+##                                       and F_k'Wz (in memory: one pass
+##                                       for every FE; remotely
+##                                       dmp_colsums(group =) and
+##                                       dmp_groupsum())
+##   dm_fe_groupsum(col, code, G)        F_k'col (dmp_groupsum())
+##   dm_fe_crosstab(a, b, w, Ga, Gb)     t(N_ab), a G_b x G_a dgCMatrix
+##                                       (dmp_crosstab())
+##
+## Arguments of dm_fe_core(): the design x, and `cols`, the columns of the
+## problem for that design: z (response), w (weights or NULL), codes (per
+## FE, integer codes 1..G_k), G, and for clustered standard errors cl (the
+## cluster codes 1..Gc) and Gc.
 
-dm_fe_core <- function(be, tol, opts, cluster = FALSE) {
-    p <- be$p
-    xcols <- setdiff(seq_len(p), be$icol)
+dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE) {
+    z <- cols$z
+    w <- cols$w
+    codes <- cols$codes
+    G <- cols$G
+    p <- ncol(x)
+    icol <- which(colnames(x) == "(Intercept)")
+    xcols <- setdiff(seq_len(p), icol)
     px <- length(xcols)
-    G <- be$G
     nfe <- length(G)
-    mom <- be$moments
-    gs <- be$gs
+    n <- dm_nrows(x)
+    ## moments
+    wz <- if (is.null(w)) z else w * z
+    xtx <- unname(if (is.null(w)) dmp_crossprod(x) else dmp_crossprod(x, dmp_scale(x, w)))
+    xty <- unname(dmp_crossprod(x, wz))[, 1L]
+    yty <- dm_colsum(wz * z)
+    sw <- if (is.null(w)) n else dm_colsum(w)
+    ybar <- dm_colsum(wz) / sw
+    tss <- dm_colsum(if (is.null(w)) (z - ybar)^2 else w * (z - ybar)^2)
+    if (!all(is.finite(xtx)) || !all(is.finite(xty))) stop("NA/NaN/Inf in 'x'", call. = FALSE)
+    ## grouped sums and the FE system
+    gs <- dm_fe_groupsums(x, w, z, codes, G)
     nk <- lapply(gs, `[[`, "nk")
-    B <- lapply(gs, function(g) cbind(g$S[, xcols, drop = FALSE], g$s))
     if (any(vapply(nk, function(v) any(!(v > 0)), NA)))
         stop("internal error: a fixed-effect level without weight", call. = FALSE)
-    sys <- dm_fe_system(G, nk, be$crosstab, opts)
+    B <- lapply(gs, function(g) cbind(g$S[, xcols, drop = FALSE], g$s))
+    crosstab <- function(a, b) dm_fe_crosstab(codes[[a]], codes[[b]], w, G[a], G[b])
+    sys <- dm_fe_system(G, nk, crosstab, opts)
     ab <- dm_fe_apply(sys, B)
-    XtX <- mom$xtx[xcols, xcols, drop = FALSE]
-    Xty <- mom$xty[xcols]
-    Mfull <- rbind(cbind(XtX, Xty), c(Xty, mom$yty)) - ab$Q
+    XtX <- xtx[xcols, xcols, drop = FALSE]
+    Xty <- xty[xcols]
+    Mfull <- rbind(cbind(XtX, Xty), c(Xty, yty)) - ab$Q
     Mxx <- Mfull[seq_len(px), seq_len(px), drop = FALSE]
     Mxy <- Mfull[seq_len(px), px + 1L]
-    sw <- sum(nk[[1L]])
     sx <- colSums(B[[1L]])[seq_len(px)]
-    scale <- diag(XtX) - sx^2 / sw
+    scale <- diag(XtX) - sx^2 / sum(nk[[1L]])
     pc <- dm_fe_pivchol(Mxx, scale, tol)
     kp <- pc$keep
     b <- rep(NA_real_, px)
@@ -438,12 +447,18 @@ dm_fe_core <- function(be, tol, opts, cluster = FALSE) {
     b0 <- b
     b0[is.na(b0)] <- 0
     fe <- lapply(ab$A, function(Ak) drop(Ak[, px + 1L] - Ak[, seq_len(px), drop = FALSE] %*% b0))
-    full <- function(b0) {
-        bf <- numeric(p)
-        bf[xcols] <- b0
-        bf
+    ## residuals e = z - X b - sum_k fe_k[code_k], and their sums
+    resid <- function(b0, fe) {
+        beta <- numeric(p)
+        beta[xcols] <- b0
+        f <- dm_fe_fitted(x, beta, fe, codes)
+        e <- z - f
+        we <- if (is.null(w)) e else w * e
+        list(xte = unname(dmp_crossprod(x, we))[, 1L],
+             Be = lapply(seq_len(nfe), function(k) dm_fe_groupsum(we, codes[[k]], G[k])),
+             rss = dm_colsum(we * e), we = we)
     }
-    r <- be$resid(full(b0), fe)
+    r <- resid(b0, fe)
     ## iterative refinement: the normal equations X'M e = 0 from residuals
     ## computed row by row correct the rounding of the one-pass aggregates
     for (it in seq_len(opts$refine)) {
@@ -458,9 +473,8 @@ dm_fe_core <- function(be, tol, opts, cluster = FALSE) {
         }
         for (k in seq_len(nfe))
             fe[[k]] <- fe[[k]] + Ae[[k]][, 1L] - drop(ab$A[[k]][, kp, drop = FALSE] %*% delta)
-        r <- be$resid(full(b0), fe)
+        r <- resid(b0, fe)
     }
-    n <- be$n
     ## degrees of freedom (fixest: K.fixef = "nonnested", K.exact = FALSE)
     fe_dof <- sum(G) - (nfe - 1L)
     ## the exact rank of K (fixest's K.exact = TRUE): with two FE, one level
@@ -475,22 +489,29 @@ dm_fe_core <- function(be, tol, opts, cluster = FALSE) {
         NA_integer_
     }
     rank <- length(kp)
-    K <- rank + fe_dof
     bread <- matrix(NA_real_, px, px)
     if (rank) bread[kp, kp] <- chol2inv(pc$R)
     out <- list(b = b, kp = kp, xcols = xcols, bread = bread, rss = r$rss, fe = fe,
                 rank = rank, G = G, fe_dof = fe_dof, fe_dof_exact = fe_dof_exact,
-                df.residual = n - K, nobs = n, tss = mom$tss,
+                df.residual = n - rank - fe_dof, nobs = n, tss = tss,
                 tss_within = max(Mfull[px + 1L, px + 1L], 0), info = ab$info)
     if (cluster) {
-        cl <- be$cluster()
-        U <- cl$U[, xcols, drop = FALSE]
-        for (k in which(!cl$nested))
-            U <- U - as.matrix(Matrix::crossprod(cl$E(k), ab$A[[k]][, seq_len(px), drop = FALSE]))
+        cl <- cols$cl
+        Gc <- cols$Gc
+        U <- dm_fe_groupsums(x, r$we, NULL, list(cl), Gc)[[1L]]$S[, xcols, drop = FALSE]
+        ## an FE is nested in the clusters when each of its levels is in one
+        ## cluster; otherwise its scores need a correction
+        nested <- vapply(seq_len(nfe), function(k) {
+            ct <- dm_fe_crosstab(cl, codes[[k]], NULL, Gc, G[k]) # G_k x Gc
+            all(diff(ct@p) == 1L)
+        }, NA)
+        for (k in which(!nested)) {
+            E <- dm_fe_crosstab(cl, codes[[k]], r$we, Gc, G[k])
+            U <- U - as.matrix(Matrix::crossprod(E, ab$A[[k]][, seq_len(px), drop = FALSE]))
+        }
         U <- U[, kp, drop = FALSE]
-        nn <- !cl$nested
+        nn <- !nested
         K_cl <- rank + if (any(nn)) sum(G[nn]) - (sum(nn) - 1L) else 1L
-        Gc <- cl$G
         adj <- Gc / (Gc - 1) * (n - 1) / (n - K_cl)
         Vc <- matrix(NA_real_, px, px)
         if (rank) {
@@ -501,6 +522,16 @@ dm_fe_core <- function(be, tol, opts, cluster = FALSE) {
         out$G_cluster <- Gc
     }
     out
+}
+
+## X beta plus the FE values of the rows' levels, as a column (codes: per
+## FE, integer codes, or, with `levels`, key columns matched to levels).
+dm_fe_fitted <- function(x, beta, fe, codes, levels = NULL) {
+    f <- dmp_mult(x, beta)
+    if (!dm_is_rcols(f)) f <- drop(f)
+    for (k in seq_along(fe))
+        f <- f + dmc_lookup(fe[[k]], codes[[k]], levels[[k]], along = list(f))
+    f
 }
 
 ## Map a fit on the centered design X~ = X T back to X: b = T b~ (but the
@@ -529,57 +560,65 @@ dm_fe_uncenter <- function(est, Tm, icol) {
     est
 }
 
-## ---------------------------------------------------------------------------
-## In-memory backend
+## The fit of a problem (see dm_fe_lm()): on the centered design when that
+## is exact, else on the design.
+dm_fe_estimate <- function(prob, tol, cluster) {
+    opts <- dm_fe_opts()
+    if (!is.null(prob$ctr)) {
+        xc <- prob$x_centered
+        est <- dm_fe_core(xc, prob$cols(xc), tol, opts, cluster)
+        est <- dm_fe_uncenter(est, prob$ctr$T, which(colnames(xc) == "(Intercept)"))
+        if (!is.null(est)) return(est)
+    }
+    dm_fe_core(prob$x, prob$cols(prob$x), tol, opts, cluster)
+}
 
-dm_fe_mem_backend <- function(D, y, w, codes, G, clcodes = NULL, Gc = NULL) {
-    n <- nrow(D)
-    p <- ncol(D)
-    cn <- colnames(D)
-    wy <- if (is.null(w)) y else w * y
-    xtx <- if (is.null(w)) crossprod(D) else crossprod(D, w * D)
-    xty <- drop(crossprod(D, wy))
-    sw <- if (is.null(w)) n else sum(w)
-    ybar <- sum(wy) / sw
-    tss <- if (is.null(w)) sum((y - ybar)^2) else sum(w * (y - ybar)^2)
-    mom <- list(xtx = unname(xtx), xty = unname(xty), yty = sum(wy * y), tss = tss)
-    gs <- dm_fe_gsums(D, w, y, codes, G)
-    state <- new.env(parent = emptyenv())
-    be <- list(n = n, p = p, icol = which(cn == "(Intercept)"), G = G, moments = mom, gs = gs)
-    be$crosstab <- function(a, b) dm_fe_crosstab_t(codes[[a]], codes[[b]], G[a], G[b], w)
-    be$resid <- function(beta, fe) {
-        e <- y - drop(D %*% beta)
-        for (k in seq_along(codes)) e <- e - fe[[k]][codes[[k]]]
-        we <- if (is.null(w)) e else w * e
-        state$we <- we
-        Be <- dm_fe_gsums(NULL, we, NULL, codes, G)
-        list(xte = drop(crossprod(D, we)), Be = lapply(Be, `[[`, "nk"), rss = sum(we * e))
+## ---------------------------------------------------------------------------
+## The three sums with in-memory kernels (see above)
+
+dm_fe_groupsums <- function(x, w, z, codes, G) {
+    if (!inherits(x, "dm_remote")) return(dm_fe_gsums(x, w, z, codes, G))
+    one <- if (is.null(w)) dmc_const(codes[[1L]], 1) else w
+    xs <- if (is.null(w)) x else dmp_scale(x, w)
+    lapply(seq_along(codes), function(k) {
+        S <- dm_fe_place(dmp_colsums(xs, group = codes[[k]]), G[k])
+        ns <- dm_fe_place(dmp_groupsum(if (is.null(z)) one else dmc_cbind(one, one * z), codes[[k]]), G[k])
+        list(nk = ns[, 1L], S = S, s = if (is.null(z)) NULL else ns[, 2L])
+    })
+}
+
+dm_fe_groupsum <- function(col, code, G) {
+    if (!dm_is_rcols(col)) {
+        return(.Call(C_dm_fe_struct_gsum, NULL, NULL, as.double(col), list(code), as.integer(G),
+                     NULL, FALSE)[[1L]][1L, ])
     }
-    be$cluster <- function() {
-        we <- state$we
-        U <- dm_fe_gsums(D, we, NULL, list(clcodes), Gc)[[1L]]$S
-        nested <- vapply(seq_along(codes), function(k) {
-            cd <- codes[[k]]
-            first <- clcodes[match(seq_len(G[k]), cd)]
-            all(first[cd] == clcodes)
-        }, NA)
-        list(G = Gc, U = U, nested = nested,
-             E = function(k) dm_fe_crosstab_t(clcodes, codes[[k]], Gc, G[k], we))
-    }
-    be
+    dm_fe_place(dmp_groupsum(col, code), G)[, 1L]
+}
+
+dm_fe_crosstab <- function(a, b, w, Ga, Gb) {
+    if (!dm_is_rcols(a) && !dm_is_rcols(b) && !dm_is_rcols(w))
+        return(dm_fe_crosstab_t(a, b, Ga, Gb, w))
+    ct <- dmp_crosstab(a, b, w)
+    st <- Matrix::summary(ct)
+    ia <- as.integer(rownames(ct))[st$i]
+    ib <- as.integer(colnames(ct))[st$j]
+    Matrix::sparseMatrix(i = ib, j = ia, x = st$x, dims = c(as.integer(Gb), as.integer(Ga)), repr = "C")
+}
+
+## Rows of grouped sums labelled by codes 1..G, in code order.
+dm_fe_place <- function(S, G) {
+    out <- matrix(0, G, ncol(S))
+    out[as.integer(rownames(S)), ] <- unname(S)
+    out
 }
 
 ## For each FE k: list(nk = sums of w by level, S = grouped sums of w X
-## (G_k x p; NULL when D is NULL), s = grouped sums of w y (NULL when y is
-## NULL)). One pass over the rows with the structured kernel when the
-## design allows it, the generic row kernel otherwise.
+## (G_k x p), s = grouped sums of w z (NULL when z is NULL)), in memory:
+## one pass over the rows with the structured kernel when the design
+## allows it, the generic row kernel otherwise.
 dm_fe_gsums <- function(D, w, y, codes, G) {
     nfe <- length(codes)
     wd <- if (is.null(w)) NULL else as.double(w)
-    if (is.null(D)) {
-        M <- .Call(C_dm_fe_struct_gsum, NULL, NULL, wd, codes, as.integer(G), NULL, FALSE)
-        return(lapply(M, function(m) list(nk = m[1L, ])))
-    }
     p <- ncol(D)
     Y <- if (is.null(y)) NULL else matrix(as.double(y), ncol = 1L)
     if (dm_fe_struct_ok(D, G)) {
@@ -698,19 +737,84 @@ dm_center_T <- function(X0, X1, shift) {
     list(shift = shift, T = Tm)
 }
 
-## Fit on a backend built by make_be(design), centered when exact.
-dm_fe_estimate <- function(make_be, D, ctr, D_centered, tol, cluster) {
-    opts <- dm_fe_opts()
-    if (!is.null(ctr)) {
-        be <- make_be(D_centered)
-        est <- dm_fe_uncenter(dm_fe_core(be, tol, opts, cluster), ctr$T, be$icol)
-        if (!is.null(est)) return(est)
-    }
-    dm_fe_core(make_be(D), tol, opts, cluster)
-}
-
 ## ---------------------------------------------------------------------------
 ## design_lm() with fixed effects
+##
+## Preparing the problem differs between data in memory and remote data,
+## as it does without FE: the rows used (model frame, missing values,
+## weights), the FE codes and the iterative removal of singletons (in
+## memory: integer codes and a C loop before the design is built;
+## remotely: a temporary table of the rows used with dense-rank codes, and
+## DELETE ... HAVING COUNT(*) = 1 until no row goes). Both give a problem:
+## list(x, x_centered, ctr, cols(x), levels, nsingle, nall, ...), and the
+## estimator, the methods and predictions are one code path.
+
+#' @section Fixed effects:
+#' A formula `y ~ x | fe1 + fe2` absorbs fixed effects, as
+#' [fixest::feols()]: each FE is a variable (a factor, character, integer or
+#' numeric column) or an interaction `a^b`. The fit never builds the FE
+#' dummies or demeans the rows: it solves the normal equations from sums
+#' over rows (the design's products, sums within FE levels and crosstabs of
+#' the FE), eliminating the largest FE exactly and solving for the others
+#' densely (up to 3000 levels) or by conjugate gradients with an incomplete
+#' Cholesky preconditioner. The same code fits data in memory and remote
+#' data (DuckDB tables or queries, Parquet), with identical results up to
+#' rounding.
+#'
+#' * Rows: rows with a missing value in the model, FE or cluster variables
+#'   are dropped, as are rows with zero weight and, with `fixef.rm =
+#'   "singleton"` (default), singletons (rows alone in a level of some FE),
+#'   iteratively, as `feols()` does. `fit$nsingletons` counts them.
+#' * Coefficients: the intercept is absorbed; a column collinear with the
+#'   FE or earlier columns is `NA` (fixest's rule: its residual variance is
+#'   below `tol` times its variance; `tol` defaults to `1e-10` with FE, as
+#'   `collin.tol`). One step of iterative refinement from the residuals is
+#'   taken, and numeric variables far from zero are centered when that is
+#'   an exact transform of the design, so that coefficients and standard
+#'   errors stay accurate.
+#' * Standard errors: `vcov = "iid"` (default) or `vcov = ~cl` (clustered by
+#'   one variable), with fixest's default small sample corrections
+#'   (`ssc(K.adj = TRUE, K.fixef = "nonnested", G.adj = TRUE)`); clustered
+#'   tests in `summary()` use `t(G - 1)`. The cluster scores are corrected
+#'   for FE not nested in the clusters. `fit$fe_dof` is the number of FE
+#'   parameters counted (`sum(levels) - (number of FE - 1)`); `fit$fe_dof_exact`
+#'   the exact rank of the FE (fixest's `K.exact = TRUE`), exact for one or
+#'   two FE and for three or more when the reduced system was factored
+#'   (otherwise `NA`).
+#' * Methods: those of a `design_lm` fit (class `c("design_lm_fe",
+#'   "design_lm")`); `summary()` reports R-squared and within R-squared.
+#'   `fixef()` (the generic of fixest or nlme, when loaded) returns the FE
+#'   values, also in `fit$fixef`: one named vector per FE, normalized with
+#'   one level per connected set of levels at zero in every FE but the
+#'   largest (differences within a connected set are those of fixest).
+#'   `predict(fit, newdata)` is `X b` plus the FE values of the rows' levels
+#'   (`NA` for levels not in the fit). With remote data, `fitted()` and
+#'   `predict()` return tables and `residuals()` a remote design, as for
+#'   remote fits without FE.
+#' * Not supported with FE: `subset`, offsets, `compress = TRUE`, `se.fit`
+#'   and intervals in `predict()`, clustering by more than one variable.
+#'   For remote data, `weights` names a column, and the response must have
+#'   a SQL translation.
+#' * Options: `design.matrix.fe_solver` (`"auto"`, `"dense"`, `"pcg"`, or
+#'   `"chol"` for a sparse Cholesky factor), `design.matrix.fe_precond`
+#'   (`"ichol"` or `"jacobi"`), `design.matrix.fe_refine` (refinement steps,
+#'   default 1) and `design.matrix.fe_center` (default `TRUE`).
+#' @param vcov With fixed effects: `"iid"` or a one-sided formula naming a
+#'   cluster variable (`~firm`). Without fixed effects only `"iid"`.
+#' @param fixef.rm With fixed effects: `"singleton"` (drop singletons
+#'   iteratively, as [fixest::feols()]) or `"none"`.
+#' @examples
+#' ## fixed effects (examples below: without)
+#' set.seed(2)
+#' panel <- data.frame(id = rep(1:100, each = 10), t = rep(1:10, 100), x = rnorm(1000))
+#' panel$y <- panel$x + panel$id / 50 + rnorm(1000)
+#' fe <- design_lm(y ~ x | id + t, panel, vcov = ~id)
+#' summary(fe)
+#' head(fe$fixef$id)
+#'
+#' @rdname design_lm
+#' @name design_lm
+NULL
 
 ## Entry point from design_lm(): `call` is its matched call, `env` its
 ## parent frame.
@@ -718,6 +822,7 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
                      vcov, fixef.rm, dots) {
     if (isTRUE(compress)) stop("`compress = TRUE` is not supported with fixed effects.", call. = FALSE)
     if (!is.null(call$offset)) stop("Offsets are not supported with fixed effects.", call. = FALSE)
+    if (!is.null(call$subset)) stop("`subset` is not supported with fixed effects.", call. = FALSE)
     checkmate::assert_number(tol, lower = 0, finite = TRUE)
     checkmate::assert_flag(model)
     ## aliasing: fixest's criterion (residual variance below tol times the
@@ -727,18 +832,37 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     clv <- dm_fe_vcov_arg(vcov)
     fixef.rm <- dm_fe_rm_arg(fixef.rm)
     data <- if (is.null(call$data)) NULL else eval(call$data, env)
-    if (!is.null(data) && dm_is_remote_source(data)) {
-        if (!is.null(call$subset)) stop("`subset` is not supported for remote data.", call. = FALSE)
+    prob <- if (!is.null(data) && dm_is_remote_source(data)) {
         if (!is.null(call$na.action) && dm_remote_na(eval(call$na.action, env)) != "omit")
             stop("For remote data, `na.action` must be na.omit.", call. = FALSE)
         w <- call$weights
         if (is.name(w)) w <- as.character(w)
         if (!is.null(w) && !checkmate::test_string(w))
             stop("For remote data, `weights` must name a column.", call. = FALSE)
-        fit <- dm_fe_remote(pf, data, w, contrasts, tol, clv, fixef.rm, dots)
+        dm_fe_remote_problem(pf, data, w, contrasts, clv, fixef.rm, dots)
     } else {
         if (length(dots)) stop("Unknown arguments: ", paste(names(dots), collapse = ", "), call. = FALSE)
-        fit <- dm_fe_memory(pf, call, env, contrasts, tol, clv, fixef.rm, model)
+        dm_fe_memory_problem(pf, call, env, contrasts, clv, fixef.rm)
+    }
+    est <- dm_fe_estimate(prob, tol, !is.null(clv))
+    fit <- dm_fe_finish(est, colnames(prob$x), pf, prob$levels, clv, prob$nsingle, prob$nall)
+    fit$weighted <- prob$weighted
+    fit$sumlogw <- prob$sumlogw
+    fit$x <- prob$x
+    fit$cols <- prob$cols(prob$x)
+    fit$terms <- prob$terms
+    fit$contrasts <- prob$contrasts
+    fit$xlevels <- prob$xlevels
+    fit$spec <- prob$spec
+    fit$na.action <- prob$na.action
+    if (inherits(prob$x, "dm_remote")) {
+        fit$remote <- TRUE
+        fit$remote_design <- prob$x
+        fit$method <- if (prob$x$engine == "sql") "SQL aggregates" else "aggregates computed in batches"
+    } else if (model) {
+        fit$model <- prob$mf
+    } else {
+        fit$x <- fit$cols <- NULL
     }
     fit$call <- call
     fit
@@ -751,7 +875,7 @@ dm_fe_frame <- function(pf, call, env, clv) {
     fe_vars <- unique(unlist(pf$fe, use.names = FALSE))
     aug <- dm_fe_augment(pf$main, unique(c(fe_vars, clv)))
     environment(aug) <- environment(pf$main)
-    mf <- call[c(1L, match(c("data", "subset", "weights", "na.action"), names(call), 0L))]
+    mf <- call[c(1L, match(c("data", "weights", "na.action"), names(call), 0L))]
     mf$formula <- aug
     mf$drop.unused.levels <- TRUE
     mf[[1L]] <- quote(design.matrix::design_frame)
@@ -774,7 +898,7 @@ dm_fe_frame <- function(pf, call, env, clv) {
     list(mf = mf, mt = mt, fe_vars = fe_vars)
 }
 
-dm_fe_memory <- function(pf, call, env, contrasts, tol, clv, fixef.rm, model) {
+dm_fe_memory_problem <- function(pf, call, env, contrasts, clv, fixef.rm) {
     fr <- dm_fe_frame(pf, call, env, clv)
     mf <- fr$mf
     mt <- fr$mt
@@ -820,11 +944,11 @@ dm_fe_memory <- function(pf, call, env, contrasts, tol, clv, fixef.rm, model) {
     }
     codes <- lapply(cd, `[[`, "codes")
     G <- vapply(cd, `[[`, 0L, "G")
-    clcodes <- Gc <- NULL
+    cl <- Gc <- NULL
     if (!is.null(clv)) {
         same <- match(clv, names(pf$fe))
         ccd <- if (is.na(same)) dm_fe_code(mf[[clv]]) else cd[[same]]
-        clcodes <- ccd$codes
+        cl <- ccd$codes
         Gc <- ccd$G
         if (Gc < 2L) stop("Clustered standard errors need at least two clusters.", call. = FALSE)
     }
@@ -836,19 +960,135 @@ dm_fe_memory <- function(pf, call, env, contrasts, tol, clv, fixef.rm, model) {
         for (nm in names(ctr$shift)) mf2[[nm]] <- mf[[nm]] - ctr$shift[[nm]]
         D2 <- design_matrix(mt, mf2, contrasts.arg = contrasts)
     }
-    est <- dm_fe_estimate(function(X) dm_fe_mem_backend(X, y, w, codes, G, clcodes, Gc),
-                          D, ctr, D2, tol, !is.null(clv))
-    fit <- dm_fe_finish(est, colnames(D), pf, lapply(cd, `[[`, "levels"), clv, nsingle, w, nall)
-    fit$terms <- mt
-    fit$contrasts <- D$contrasts
-    fit$xlevels <- stats::.getXlevels(mt, mf)
-    fit$spec <- dmfit_spec(D)
-    fit$na.action <- dm_fe_na_action(na_act, rows, nall)
-    if (model) {
-        fit$model <- mf
-        fit$data <- list(design = D, y = y, weights = w, codes = codes)
+    list(x = D, x_centered = D2, ctr = ctr,
+         cols = function(x) list(z = y, w = w, codes = codes, G = G, cl = cl, Gc = Gc),
+         levels = lapply(cd, `[[`, "levels"), nsingle = nsingle, nall = nall,
+         weighted = !is.null(w), sumlogw = if (is.null(w)) 0 else sum(log(w)),
+         terms = mt, contrasts = D$contrasts, xlevels = stats::.getXlevels(mt, mf),
+         spec = dmfit_spec(D), na.action = dm_fe_na_action(na_act, rows, nall), mf = mf)
+}
+
+dm_fe_remote_problem <- function(pf, source, w, contrasts, clv, fixef.rm, dots) {
+    dm_need_duckdb()
+    nms <- names(dots)
+    if (is.null(nms)) nms <- rep("", length(dots))
+    keys <- c("table", "sql", "engine", "chunk_size")
+    if (any(!nms %in% keys))
+        stop("Unknown arguments: ", paste(nms[!nms %in% keys], collapse = ", "), call. = FALSE)
+    if (length(attr(stats::terms(pf$main), "offset")))
+        stop("Offsets are not supported with fixed effects.", call. = FALSE)
+    ## the rows used by the main formula (and the weights)
+    D0 <- suppressMessages(dm_remote(pf$main, source, contrasts, NULL, dots, weights = w, drop_unused = TRUE))
+    if (is.null(D0$response)) stop("The formula has no response.", call. = FALSE)
+    if (D0$vars[[D0$response]]$kind != "numeric")
+        stop("The response of a remote fit must be one numeric variable with a SQL translation.", call. = FALSE)
+    fe_vars <- unique(unlist(pf$fe, use.names = FALSE))
+    miss <- setdiff(c(fe_vars, clv), names(D0$src$types))
+    if (length(miss)) stop(sprintf("No column `%s` in the remote data.", miss[1L]), call. = FALSE)
+    tab <- dm_fe_remote_table(D0, pf, fe_vars, w, clv, fixef.rm)
+    rest <- dots[!nms %in% c("table", "sql")]
+    D <- dm_remote(pf$main, dm_con(D0), contrasts, NULL, c(list(table = tab$name), rest),
+                   weights = w, drop_unused = TRUE)
+    ## the temporary table lives on D0's connection (a private one for Parquet)
+    D$src$holder$parent <- D0$src$holder
+    q <- function(x) dm_qi(D, x)
+    nfe <- length(pf$fe)
+    fecols <- paste0("__dm_fe", seq_len(nfe))
+    clcol <- NULL
+    if (!is.null(clv)) {
+        m <- match(clv, names(pf$fe))
+        clcol <- if (is.na(m)) "__dm_cl" else fecols[m]
     }
-    fit
+    gmax <- function(col) as.integer(dm_query(D, sprintf("SELECT MAX(%s) AS g FROM %s", q(col), q(tab$name)))$g)
+    G <- vapply(fecols, gmax, 0L, USE.NAMES = FALSE)
+    Gc <- NULL
+    if (!is.null(clcol)) {
+        Gc <- gmax(clcol)
+        if (Gc < 2L) stop("Clustered standard errors need at least two clusters.", call. = FALSE)
+    }
+    levels <- lapply(seq_len(nfe), function(k) {
+        vars <- pf$fe[[k]]
+        r <- dm_query(D, sprintf("SELECT DISTINCT %s, %s FROM %s ORDER BY 1", q(fecols[k]),
+                                 paste(q(vars), collapse = ", "), q(tab$name)))
+        out <- r[vars]
+        for (v in vars) if (is.factor(out[[v]])) out[[v]] <- as.character(out[[v]])
+        out
+    })
+    ## centering (as dm_remote_lm_moments())
+    ctr <- if (isTRUE(getOption("design.matrix.fe_center", TRUE)) &&
+               isTRUE(getOption("design.matrix.remote_center", TRUE))) dm_center(D) else NULL
+    D2 <- NULL
+    if (!is.null(ctr)) {
+        D2 <- D
+        D2$cache <- new.env(parent = emptyenv())
+        D2$id <- dm_tmp_name("dm")
+        if (D$engine == "sql") {
+            for (nm in names(ctr$shift))
+                D2$vars[[nm]]$sql <- sprintf("(%s - %s)", D$vars[[nm]]$sql, dm_sql_double(ctr$shift[[nm]]))
+        } else {
+            D2$shift <- ctr$shift
+        }
+    }
+    ysql <- D$vars[[D$response]]$sql
+    wsql <- if (is.null(w)) NULL else sprintf("CAST(s.%s AS DOUBLE)", q(w))
+    cols <- function(x) list(z = dmp_column(x, ysql), w = dmp_column(x, wsql),
+                             codes = lapply(fecols, function(col) dmp_column(x, sprintf("s.%s", q(col)))),
+                             G = G, cl = if (!is.null(clcol)) dmp_column(x, sprintf("s.%s", q(clcol))), Gc = Gc)
+    sumlogw <- if (is.null(w)) 0 else as.double(dm_query(D, sprintf("SELECT SUM(ln(%s)) AS s FROM %s AS s",
+                                                                       wsql, q(tab$name)))$s)
+    list(x = D, x_centered = D2, ctr = ctr, cols = cols, levels = levels, nsingle = tab$nsingle,
+         nall = D0$n, weighted = !is.null(w), sumlogw = sumlogw, terms = D$terms_full,
+         contrasts = D$plan$contrasts, xlevels = D$plan$xlevels, spec = D$plan, na.action = NULL)
+}
+
+## The temporary table of the rows used: the columns the model reads, the
+## FE codes __dm_fe<k> (dense ranks of the FE variables) and, for a cluster
+## variable that is not an FE, its codes __dm_cl; singletons deleted
+## iteratively, then the codes ranked again.
+dm_fe_remote_table <- function(D0, pf, fe_vars, w, clv, fixef.rm) {
+    q <- function(x) dm_qi(D0, x)
+    cols <- unique(c(dm_remote_inputs(D0), fe_vars, clv, w))
+    types <- D0$src$types
+    present <- vapply(unique(c(fe_vars, clv)), function(col) {
+        if (types[[col]] == "double") sprintf("s.%s IS NOT NULL AND NOT isnan(s.%s)", q(col), q(col))
+        else sprintf("s.%s IS NOT NULL", q(col))
+    }, "")
+    where <- c(sprintf("(%s)", D0$filter), present,
+               if (!is.null(w)) sprintf("CAST(s.%s AS DOUBLE) <> 0", q(w)))
+    nfe <- length(pf$fe)
+    fecols <- paste0("__dm_fe", seq_len(nfe))
+    ranks <- vapply(seq_len(nfe), function(k) {
+        sprintf("DENSE_RANK() OVER (ORDER BY %s) AS %s", paste0("s.", q(pf$fe[[k]]), collapse = ", "), q(fecols[k]))
+    }, "")
+    clrank <- if (!is.null(clv) && is.na(match(clv, names(pf$fe))))
+        sprintf("DENSE_RANK() OVER (ORDER BY s.%s) AS %s", q(clv), q("__dm_cl"))
+    name <- dm_tmp_name("dm_fe")
+    dm_execute(D0, sprintf("CREATE TEMPORARY TABLE %s AS SELECT %s FROM (%s) AS s WHERE %s",
+                           q(name), paste(c(paste0("s.", q(cols)), ranks, clrank), collapse = ", "),
+                           D0$src$select, paste(where, collapse = " AND ")))
+    nsingle <- 0
+    if (fixef.rm == "singleton") {
+        conds <- vapply(fecols, function(col) {
+            sprintf("%s IN (SELECT %s FROM %s GROUP BY %s HAVING COUNT(*) = 1)", q(col), q(col), q(name), q(col))
+        }, "")
+        repeat {
+            k <- dm_execute(D0, sprintf("DELETE FROM %s WHERE %s", q(name), paste(conds, collapse = " OR ")))
+            if (!k) break
+            nsingle <- nsingle + k
+        }
+        if (nsingle) {
+            rr <- c(sprintf("DENSE_RANK() OVER (ORDER BY %s) AS %s", q(fecols), q(fecols)),
+                    if (!is.null(clrank)) sprintf("DENSE_RANK() OVER (ORDER BY %s) AS %s", q("__dm_cl"), q("__dm_cl")))
+            name2 <- dm_tmp_name("dm_fe")
+            dm_execute(D0, sprintf("CREATE TEMPORARY TABLE %s AS SELECT * REPLACE (%s) FROM %s",
+                                   q(name2), paste(rr, collapse = ", "), q(name)))
+            dm_execute(D0, sprintf("DROP TABLE %s", q(name)))
+            name <- name2
+        }
+    }
+    n <- as.numeric(dm_query(D0, sprintf("SELECT COUNT(*) AS n FROM %s", q(name)))$n)
+    if (n == 0) stop("No observation left after removing singletons.", call. = FALSE)
+    list(name = name, nsingle = as.integer(nsingle))
 }
 
 ## The na.action of the fit: rows dropped for missing values (those of the
@@ -865,7 +1105,7 @@ dm_fe_na_action <- function(na_act, rows, nall) {
 }
 
 ## The design_lm object of an FE fit.
-dm_fe_finish <- function(est, cn, pf, lv, clv, nsingle, w, nall) {
+dm_fe_finish <- function(est, cn, pf, lv, clv, nsingle, nall) {
     nm <- cn[est$xcols]
     b <- est$b
     names(b) <- nm
@@ -886,9 +1126,8 @@ dm_fe_finish <- function(est, cn, pf, lv, clv, nsingle, w, nall) {
                 fe_vars = pf$fe, fe_sizes = G, fe_dof = est$fe_dof,
                 fe_dof_exact = est$fe_dof_exact, nsingletons = nsingle,
                 cov.unscaled = cu, tss = est$tss, tss_within = est$tss_within,
-                weighted = !is.null(w), compressed = FALSE, patterns = est$nobs,
-                rows = nall, fe_info = est$info, intercept = TRUE,
-                sumlogw = if (is.null(w)) 0 else sum(log(w)))
+                compressed = FALSE, patterns = est$nobs, rows = nall, fe_info = est$info,
+                intercept = TRUE)
     if (!is.null(clv)) {
         Vc <- est$vcov_cluster
         dimnames(Vc) <- list(nm, nm)
@@ -985,55 +1224,41 @@ print.summary.design_lm_fe <- function(x, digits = max(3L, getOption("digits") -
     invisible(x)
 }
 
-## Sum of the FE values of the rows: codes as a list (one integer vector per
-## FE), NA for unseen levels.
-dm_fe_sum <- function(fe, codes) {
-    out <- 0
-    for (k in seq_along(fe)) out <- out + fe[[k]][codes[[k]]]
-    out
+## The fitted values and residuals of the rows used, as columns.
+dm_fe_columns <- function(object) {
+    x <- object$x
+    if (is.null(x))
+        stop("This needs the fit's data: refit with `model = TRUE`, or use `predict(fit, newdata)`.",
+             call. = FALSE)
+    cols <- object$cols
+    f <- dm_fe_fitted(x, dm_fe_beta(object, x), object$fixef, cols$codes)
+    list(fitted = f, resid = cols$z - f)
+}
+
+## Coefficients for the columns of design x (0 for the intercept, absorbed,
+## and for aliased columns).
+dm_fe_beta <- function(object, x) {
+    b <- object$coefficients
+    b[is.na(b)] <- 0
+    beta <- numeric(ncol(x))
+    beta[match(names(b), colnames(x))] <- b
+    beta
 }
 
 #' @export
 residuals.design_lm_fe <- function(object, ...) {
-    if (isTRUE(object$remote)) return(dm_fe_remote_residuals(object))
-    dat <- dmfit_data(object, "residuals()")
-    r <- dat$y - dmfit_linpred_fe(object, dat$design) - dm_fe_sum(object$fixef, dat$codes)
-    stats::naresid(object$na.action, as.vector(r))
+    r <- dm_fe_columns(object)
+    ## remote: the remote design with the columns .fitted and .resid
+    if (isTRUE(object$remote)) return(dm_with_columns(object$x, dmc_cbind(r$fitted, r$resid), c(".fitted", ".resid")))
+    stats::naresid(object$na.action, as.vector(r$resid))
 }
 
 #' @export
 fitted.design_lm_fe <- function(object, ...) {
-    if (isTRUE(object$remote)) stop("For a remote fit, use residuals(fit): its `.fitted` column.", call. = FALSE)
-    dat <- dmfit_data(object, "fitted()")
-    f <- dmfit_linpred_fe(object, dat$design) + dm_fe_sum(object$fixef, dat$codes)
-    stats::napredict(object$na.action, as.vector(f))
-}
-
-## X b for the design columns but the intercept (absorbed).
-dmfit_linpred_fe <- function(object, D) {
-    b <- object$coefficients
-    b[is.na(b)] <- 0
-    beta <- numeric(ncol(D))
-    beta[match(names(b), colnames(D))] <- b
-    if (!ncol(D)) return(rep(0, nrow(D)))
-    drop(D %*% beta)
-}
-
-## Codes of new data's FE levels in the fit's levels (NA when unseen).
-dm_fe_match <- function(object, newdata) {
-    lapply(seq_along(object$fe_vars), function(k) {
-        vars <- object$fe_vars[[k]]
-        miss <- setdiff(vars, names(newdata))
-        if (length(miss))
-            stop(sprintf("`newdata` has no fixed-effect variable `%s`.", miss[1L]), call. = FALSE)
-        lv <- object$fe_levels[[k]]
-        nd <- as.data.frame(lapply(vars, function(v) {
-            x <- newdata[[v]]
-            if (is.factor(x)) as.character(x) else x
-        }), stringsAsFactors = FALSE)
-        names(nd) <- vars
-        match(dm_fe_keys(nd), dm_fe_keys(lv))
-    })
+    r <- dm_fe_columns(object)
+    ## remote: a table with .fitted and .resid
+    if (isTRUE(object$remote)) return(dmp_output(object$x, list(.fitted = r$fitted, .resid = r$resid)))
+    stats::napredict(object$na.action, as.vector(r$fitted))
 }
 
 #' @export
@@ -1043,17 +1268,31 @@ predict.design_lm_fe <- function(object, newdata, se.fit = FALSE,
     interval <- match.arg(interval)
     if (isTRUE(se.fit) || interval != "none")
         stop("With fixed effects, predict() gives the fit only (no `se.fit` or intervals).", call. = FALSE)
-    if (missing(newdata) || is.null(newdata)) {
-        if (isTRUE(object$remote)) stop("For a remote fit, give `newdata`, or use residuals(fit).", call. = FALSE)
-        return(fitted(object))
-    }
-    if (dm_is_remote_source(newdata)) return(dm_fe_remote_predict(object, newdata, list(...)))
+    if (missing(newdata) || is.null(newdata)) return(fitted(object))
     if (is.null(object$spec)) stop("This design cannot be applied to new data.", call. = FALSE)
     if (!identical(na.action, stats::na.pass))
         stop("With fixed effects, predict() keeps every row of `newdata` (na.action = na.pass).", call. = FALSE)
-    D <- design_matrix(object$spec, newdata, na.action = stats::na.pass)
-    f <- dmfit_linpred_fe(object, D) + dm_fe_sum(object$fixef, dm_fe_match(object, newdata))
-    names(f) <- dimnames(D)[[1L]]
+    remote <- dm_is_remote_source(newdata)
+    Dn <- if (remote) {
+        do.call(design_matrix, c(list(object$spec, newdata, na.action = stats::na.pass), list(...)))
+    } else {
+        design_matrix(object$spec, newdata, na.action = stats::na.pass)
+    }
+    have <- if (remote) names(Dn$src$types) else names(newdata)
+    keys <- lapply(object$fe_vars, function(vars) {
+        miss <- setdiff(vars, have)
+        if (length(miss))
+            stop(sprintf("`newdata` has no fixed-effect variable `%s`.", miss[1L]), call. = FALSE)
+        if (remote) dmp_column(Dn, sprintf("s.%s", dm_qi(Dn, vars))) else newdata[vars]
+    })
+    f <- dm_fe_fitted(Dn, dm_fe_beta(object, Dn), object$fixef, keys, object$fe_levels)
+    if (remote) {
+        if (".fitted" %in% names(Dn$src$types))
+            stop("The remote data already has a column `.fitted`.", call. = FALSE)
+        return(dmp_output(Dn, list(.fitted = f)))
+    }
+    f <- as.vector(f)
+    names(f) <- dimnames(Dn)[[1L]]
     f
 }
 
@@ -1066,4 +1305,3 @@ predict.design_lm_fe <- function(object, newdata, se.fit = FALSE,
 #' @rawNamespace S3method(nlme::fixef, design_lm_fe)
 fixef.design_lm_fe <- function(object, ...) object$fixef
 
-## (remote fits: fe_remote.R)

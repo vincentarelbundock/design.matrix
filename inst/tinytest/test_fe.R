@@ -300,6 +300,10 @@ if (remote) {
     R <- residuals(fits$sql)
     rr <- DBI::dbGetQuery(con, sprintf("SELECT SUM(\".resid\" * \".resid\") AS rss FROM (%s) AS s", R$src$select))
     expect_equal(rr$rss, b$ssr, tolerance = 1e-8)
+    # fitted() of a remote fit: a table with .fitted and .resid
+    ft <- as.data.frame(fitted(fits$chunked))
+    expect_equal(sum(ft$.resid^2), b$ssr, tolerance = 1e-8)
+    expect_equal(sort(ft$.fitted), sort(unname(fitted(b))), tolerance = TOL)
 }
 # interacted FE: levels named a_c, as fixest names them
 a <- design_lm(y ~ x1 | a^c, d)
@@ -331,6 +335,7 @@ expect_error(design_lm(y ~ x1 | a, d, vcov = "hc1"), "vcov")
 expect_error(design_lm(y ~ x1, d, vcov = ~a), "fixed effects")
 expect_error(design_lm(y ~ x1 | a, d, fixef.rm = "perfect"), "fixef.rm")
 expect_error(design_lm(y ~ x1 | a, d, offset = x2), "Offsets")
+expect_error(design_lm(y ~ x1 | a, d, subset = x2 > 0), "subset")
 expect_error(design_lm(y ~ x1 | log(a), d), "variable names")
 expect_error(predict(design_lm(y ~ x1 | a, d), d[1:3, ], se.fit = TRUE), "fit only")
 expect_error(predict(design_lm(y ~ x1 | a, d), d[1:3, c("x1", "b")]), "fixed-effect variable")
