@@ -199,17 +199,6 @@ dmfit_design <- function(x, y, weights = NULL, offset = NULL,
     fit
 }
 
-## The model frame of a fit, as lm() and glm() build it: design_frame() on
-## the formula (or `formula`), `data` and the arguments `args` of the
-## matched call, with unused levels dropped.
-dmfit_model_frame <- function(cl, args, env, formula = NULL) {
-    mf <- cl[c(1L, match(c("formula", "data", args), names(cl), 0L))]
-    if (!is.null(formula)) mf$formula <- formula
-    mf$drop.unused.levels <- TRUE
-    mf[[1L]] <- quote(design.matrix::design_frame)
-    eval(mf, env)
-}
-
 dmfit_check_compress <- function(compress) {
     if (!(isTRUE(compress) || isFALSE(compress) || identical(compress, "auto")))
         stop("`compress` must be \"auto\", TRUE or FALSE.", call. = FALSE)
