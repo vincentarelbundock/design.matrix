@@ -7,7 +7,13 @@
 # and writes one row to <out.csv>: the median time in seconds, the extra peak
 # resident memory of the warmup call in MB, and the coefficients. When the
 # warmup takes more than <limit> seconds, its time is reported alone (reps =
-# 0) instead of three more runs.
+# 0) instead of three more runs. If the warmup fails, the row says so
+# (fit_status = "error") with the seconds it took to fail.
+#
+# For feols, the row is written before the reference fit at a tight
+# tolerance (ref_status = "pending"), then rewritten with its coefficients
+# (ref_status = "ok") or without (ref_status = "error"): a reference that
+# fails, or is stopped by the driver, never loses the timed result.
 args <- commandArgs(trailingOnly = TRUE)
 package <- args[1]
 dgp_type <- args[2]
@@ -101,10 +107,30 @@ status_mb <- function(field) {
     as.numeric(gsub("\\D", "", line)) / 1024
 }
 
+# One row of results, written to a temporary file then renamed, so that a
+# process stopped while writing never leaves a truncated <out.csv>.
+save_row <- function(...) {
+    row <- data.frame(package = package, dgp = dgp_type, n = nrow(d), nfe = nfe, k = k, ...)
+    part <- paste0(out, ".part")
+    write.csv(row, part, row.names = FALSE)
+    invisible(file.rename(part, out))
+}
+
 invisible(gc())
 writeLines("5", "/proc/self/clear_refs")
 rss0 <- status_mb("VmRSS")
-t0 <- system.time(model <- fit())[["elapsed"]]
+start <- Sys.time()
+t0 <- tryCatch(system.time(model <- fit())[["elapsed"]], error = function(e) {
+    message("fit failed: ", conditionMessage(e))
+    NULL
+})
+if (is.null(t0)) {
+    save_row(seconds = NA_real_, reps = NA_integer_, mem_mb = NA_real_,
+             coef = NA_character_, ref_coef = NA_character_, fit_status = "error",
+             fit_seconds = as.numeric(difftime(Sys.time(), start, units = "secs")),
+             ref_status = NA_character_)
+    quit(save = "no", status = 1)
+}
 mem_mb <- status_mb("VmHWM") - rss0
 b <- coef(model)[xs]
 
@@ -118,16 +144,22 @@ if (t0 > limit) {
     reps <- 3L
 }
 
-# feols also gives the reference coefficients, with a tight tolerance
-ref <- if (package == "feols") {
-    coef(feols(f, d, vcov = "iid", notes = FALSE, fixef.tol = 1e-11, fixef.iter = 1e5))[xs]
-} else {
-    NA
-}
+timed <- list(seconds = seconds, reps = reps, mem_mb = round(mem_mb, 1),
+              coef = paste(sprintf("%.17g", b), collapse = ";"))
+reference <- package == "feols"
+do.call(save_row, c(timed, list(ref_coef = NA_character_, fit_status = "ok", fit_seconds = t0,
+                                ref_status = if (reference) "pending" else NA_character_)))
 
-row <- data.frame(
-    package = package, dgp = dgp_type, n = nrow(d), nfe = nfe, k = k,
-    seconds = seconds, reps = reps, mem_mb = round(mem_mb, 1),
-    coef = paste(sprintf("%.17g", b), collapse = ";"),
-    ref_coef = paste(sprintf("%.17g", ref), collapse = ";"))
-write.csv(row, out, row.names = FALSE)
+# feols also gives the reference coefficients, with a tight tolerance
+if (reference) {
+    ref <- tryCatch(
+        coef(feols(f, d, vcov = "iid", notes = FALSE, fixef.tol = 1e-11, fixef.iter = 1e5))[xs],
+        error = function(e) {
+            message("reference fit failed: ", conditionMessage(e))
+            NULL
+        })
+    ok <- !is.null(ref) && length(ref) == length(xs) && all(is.finite(ref))
+    do.call(save_row, c(timed, list(
+        ref_coef = if (ok) paste(sprintf("%.17g", ref), collapse = ";") else NA_character_,
+        fit_status = "ok", fit_seconds = t0, ref_status = if (ok) "ok" else "error")))
+}
