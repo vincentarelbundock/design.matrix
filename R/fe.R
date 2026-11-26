@@ -101,6 +101,10 @@ dm_fe_parse <- function(formula) {
     rhs <- formula[[length(formula)]]
     if (!dm_fe_has_bar(formula))
         stop("The formula must have a fixed-effect part: y ~ x | fe.", call. = FALSE)
+    ## (which variables `.` stands for is not defined with FE, in memory or
+    ## remotely)
+    if ("." %in% all.vars(formula))
+        stop("`.` is not supported in a formula with fixed effects: name the variables.", call. = FALSE)
     main <- formula
     main[[length(formula)]] <- rhs[[2L]]
     split_plus <- function(e) {
@@ -907,8 +911,10 @@ dm_fe_center <- function(mt, mf, contrasts) {
 #' * Offsets (the `offset` argument and `offset()` terms) are subtracted
 #'   from the response, as in [fixest::feols()]; `fitted()` and `predict()`
 #'   include them.
-#' * Not supported with FE: `subset`, `compress = TRUE`, `se.fit`
-#'   and intervals in `predict()`, clustering by more than one variable.
+#' * Not supported with FE: `subset`, `compress = TRUE`, `na.action`
+#'   other than `na.omit` and `na.exclude` (in memory and remotely),
+#'   `.` in the formula, `se.fit` and intervals in `predict()`, clustering
+#'   by more than one variable.
 #'   For remote data, the response and `weights` are column names,
 #'   `DBI::SQL()` or R expressions, as without FE (expressions with no SQL
 #'   translation are evaluated in R, in batches).
@@ -943,6 +949,8 @@ NULL
 ## parent frame.
 dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, model,
                      vcov, fixef.rm, dots) {
+    if (!is.null(call$na.action)) dm_fe_na_kind(eval(call$na.action, env))
+    dmfit_check_compress(compress)
     if (isTRUE(compress)) stop("`compress = TRUE` is not supported with fixed effects.", call. = FALSE)
     if (!is.null(call$subset)) stop("`subset` is not supported with fixed effects.", call. = FALSE)
     checkmate::assert_number(tol, lower = 0, finite = TRUE)
@@ -974,7 +982,7 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     fit$cols <- prob$cols
     fit$cols$off <- prob$more$off
     fit$offset_call <- call$offset
-    fit$env <- env
+    fit$env <- base$env
     fit$terms <- base$terms
     fit$contrasts <- base$contrasts
     fit$xlevels <- base$xlevels
@@ -1038,6 +1046,7 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
         if (dm_nrows(x) == 0) stop("0 (non-NA) cases", call. = FALSE)
         nd
     }
+    if (dm_nrows(x) == 0) stop("0 (non-NA) cases", call. = FALSE)
     keep <- dmc_is_finite(z)
     if (!is.null(w)) keep <- keep & dmc_is_finite(w) & w != 0
     for (k in c(keys, list(clkey))) if (!is.null(k)) keep <- keep & dmc_not_na(k)

@@ -200,7 +200,8 @@ columns of the remote data to a temporary table, on which the fit runs
 (one more pass over the data, with a message naming the expression;
 \code{engine = "sql"} refuses). Compression stays exact, since the computed values are columns
 of that table. \code{na.action} can be \code{\link[=na.omit]{na.omit()}} (default), \code{\link[=na.exclude]{na.exclude()}},
-\code{\link[=na.fail]{na.fail()}} or \code{\link[=na.pass]{na.pass()}}, with the results or errors of \code{\link[=lm]{lm()}}. The
+\code{\link[=na.fail]{na.fail()}} or \code{\link[=na.pass]{na.pass()}}, with the results or errors of \code{\link[=lm]{lm()}} (with
+fixed effects, \code{na.omit} or \code{na.exclude}, as in memory). The
 rows used are those with no missing model variable, response, weight or
 offset, and factor levels are those of these rows, as in memory.
 

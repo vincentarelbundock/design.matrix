@@ -154,7 +154,7 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
     ## fixed effects (fe.R)
     if (dm_fe_has_bar(formula))
         return(dm_fe_lm(match.call(), parent.frame(), formula, contrasts, compress, tol, missing(tol),
-                        model, vcov, fixef.rm, list(...)))
+                        model, vcov, fixef.rm, dm_dots(...)))
     if (!identical(vcov, "iid"))
         stop("`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", call. = FALSE)
     dmfit_check_compress(compress)
@@ -162,7 +162,7 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
     checkmate::assert_flag(model)
     cl <- match.call()
     ## the design and columns of a data frame or remote data (remote_fit.R)
-    P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, list(...))
+    P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, dm_dots(...))
     fit <- dmfit_lm(P$x, P$y, P$w, P$off, compress, tol, intercept = attr(P$terms, "intercept") > 0L)
     fit$call <- cl
     fit$terms <- P$terms
