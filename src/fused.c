@@ -63,7 +63,7 @@ SEXP dm_notnan(SEXP x_)
 }
 
 /* f + fe_1[codes_1] + ... + fe_K[codes_K] (in that order), NA for a code
-   outside 1..G_k: dm_fe_fitted() in memory, with one column. */
+   outside 1..G_k: dmc_fe_add() in memory, with one column. */
 SEXP dm_fe_fitted_add(SEXP f_, SEXP fe_, SEXP codes_)
 {
     R_xlen_t n = XLENGTH(f_);
@@ -88,7 +88,7 @@ SEXP dm_fe_fitted_add(SEXP f_, SEXP fe_, SEXP codes_)
     return out;
 }
 
-/* The residuals of dm_fe_core() in memory: f = Xb + fe_1[codes_1] + ...
+/* The residuals of dm_fe_core() in memory (dmc_fe_resid()): f = Xb + fe_1[codes_1] + ...
    + fe_K[codes_K] (as dm_fe_fitted(), in that order), e = z - f, we = w e
    (e without weights), and in the same pass the sums of we within the
    levels of each FE (as dm_fe_gsum()) and sum(we e) (as sum()).
@@ -144,7 +144,7 @@ SEXP dm_fe_resid(SEXP z_, SEXP xb_, SEXP w_, SEXP fe_, SEXP codes_, SEXP G_)
     return out;
 }
 
-/* The moments of dm_fe_core() in memory, as its R code sums them:
+/* The moments of dm_fe_core() in memory (dmc_moments()), as its R code sums them:
    c(sum(wz z), sum(w), sum(wz), sum(w (z - ybar)^2)) with wz = w z (z
    without weights; then sum(w) is n) and ybar = sum(wz) / sum(w). */
 SEXP dm_fe_moments(SEXP z_, SEXP w_)

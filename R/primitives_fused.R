@@ -1,4 +1,5 @@
-## Fused primitives of the fitting code (Kata design.matrix#b89r): each
+## Fused primitives of the fitting code (Kata design.matrix#b89r, FE
+## design.matrix#xyk5): each
 ## computes, from columns, what the fit needs in one call. In memory, on
 ## plain double vectors (no attributes), one pass in C (src/fused.c, whose
 ## arithmetic is that of the R code below, to the last bit); otherwise

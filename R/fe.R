@@ -509,11 +509,11 @@ dm_fe_pivchol <- function(M, scale, tol) {
 ## The estimator, on the primitives
 ##
 ## One implementation for designs in memory and remote designs: every sum
-## is a primitive of the fitting core (primitives.R, primitives_lookup.R):
-## X'WX and X'Wz (dmp_crossprod), F_k'WX, F_k'W1 and F_k'Wz for all FE
-## and the crosstabs N_kl (dmp_fe_sums, two passes in memory),
-## the residual column (dmp_mult and lookups of the FE values), F_k'We
-## (dmp_groupsum), sums over rows (dm_colsum).
+## is a primitive of the fitting core (primitives.R, primitives_lookup.R,
+## primitives_fused.R): X'WX and X'Wz (dmp_crossprod), the moments of z
+## (dmc_moments), F_k'WX, F_k'W1 and F_k'Wz for all FE and the crosstabs
+## N_kl (dmp_fe_sums, two passes in memory), the residuals, F_k'We and
+## the rss (dmp_mult and dmc_fe_resid, one pass in memory).
 ##
 ## Arguments of dm_fe_core(): the design x, and `cols`, the columns of the
 ## problem for that design: z (response), w (weights or NULL), codes (per
