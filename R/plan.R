@@ -146,7 +146,8 @@ dm_plan_for_design <- function(design) {
     ## model.matrix converts logicals to factors after building the model frame.
     classes <- attr(frame, "dataClasses")
     xlevels <- xlevels[!names(xlevels) %in% names(classes)[classes == "logical"]]
-    plan <- dm_new_plan(tt, xlevels, design$contrasts, data = NULL)
+    plan <- dm_new_plan(tt, xlevels, design$contrasts, data = NULL,
+                        data_classes = classes)
     design$cache$plan <- plan
     plan
 }
@@ -155,7 +156,11 @@ dm_plan_for_design <- function(design) {
 ## NULL to prepare it from the first data the plan is applied to.
 ## `drop_intercept`: remove the intercept column after the matrix is built,
 ## as model.matrix() does for coxph models.
-dm_new_plan <- function(tt, xlevels, contrasts, data, drop_intercept = FALSE) {
+## `data_classes`: the classes of the training variables (the "dataClasses"
+## attribute of the training model frame's terms), which new data must
+## match as in predict.lm(); NULL when unknown (no check).
+dm_new_plan <- function(tt, xlevels, contrasts, data, drop_intercept = FALSE,
+                        data_classes = attr(tt, "dataClasses")) {
     ttx <- stats::delete.response(tt)
     ## With the response also on the right-hand side (y ~ y + x),
     ## delete.response() leaves a term with no variables. R's C routine
@@ -169,7 +174,8 @@ dm_new_plan <- function(tt, xlevels, contrasts, data, drop_intercept = FALSE) {
     }
     plan <- structure(list(terms = ttx, xlevels = xlevels,
                            contrasts = contrasts, fast = NULL, lazy = NULL,
-                           drop_intercept = drop_intercept),
+                           drop_intercept = drop_intercept,
+                           data_classes = data_classes),
                       class = "design_plan")
     if (is.null(data)) {
         plan$lazy <- new.env(parent = emptyenv())
@@ -222,6 +228,11 @@ dm_apply_general <- function(plan, newdata, na.action, vals = NULL) {
         class(data) <- "data.frame"
     }
     mf <- design_frame(tt, data, xlev = plan$xlevels, na.action = na.action)
+    ## variables of another type than in training (a numeric variable
+    ## supplied as a factor, say): the error of predict.lm(). The fast path
+    ## needs no check: it accepts a variable only with the kind it had in
+    ## training, and hands anything else to this path.
+    if (!is.null(plan$data_classes)) stats::.checkMFClasses(plan$data_classes, mf)
     d <- design_matrix(plan$terms, mf, contrasts.arg = plan$contrasts)
     ## the fast path reuses this set-up, so it drops the column too
     if (isTRUE(plan$drop_intercept)) d <- dm_drop_intercept(d)

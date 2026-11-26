@@ -794,6 +794,35 @@ cat("\n", paste(readLines("bench/ols/machine.txt"), collapse = "; "), "\n")
 
 </details>
 
+### Fitting linear models
+
+`design_lm()` takes the arguments of `lm()` (`formula`, `data`, `subset`, `weights`, `na.action`, `offset`, `contrasts`) and fits the model on a design matrix, without forming the dense matrix. Coefficients, `vcov()` and `sigma()` agree with `lm()`, including the `NA` coefficients of aliased columns, and the usual methods work: `summary()`, `predict()` (with standard errors and intervals), `residuals()`, `fitted()`, `nobs()`, `logLik()`, `AIC()`. `design_lm_fit(D, y, weights, offset)` fits a design matrix you already have.
+
+When many rows share a design pattern, as with categorical predictors, the fit only needs the count, the weighted mean and the sum of squares of the response in each pattern. `design_lm()` finds the patterns with the machinery of [repeated rows](#repeated-rows) and fits on them: here, 15 patterns instead of 100,000 rows. `compress = FALSE` turns this off.
+
+```{r}
+library(design.matrix)
+set.seed(1)
+n <- 1e5
+d <- data.frame(
+    x = rnorm(n),
+    f = factor(sample(letters[1:5], n, TRUE)),
+    g = factor(sample(c("lo", "mid", "hi"), n, TRUE)),
+    w = runif(n))
+d$y <- rnorm(n, mean = as.integer(d$f))
+
+fit <- design_lm(y ~ f * g, d, weights = w)
+fit$patterns
+ref <- lm(y ~ f * g, d, weights = w)
+all.equal(coef(fit), coef(ref))
+all.equal(vcov(fit), vcov(ref))
+all.equal(sigma(fit), sigma(ref))
+
+fit <- design_lm(y ~ x * f, d)
+all.equal(predict(fit, d[1:5, ], interval = "confidence"),
+          predict(lm(y ~ x * f, d), d[1:5, ], interval = "confidence"))
+```
+
 ### Predictions
 
 The predictions of a linear model are `X b`, the design matrix times the coefficients.
