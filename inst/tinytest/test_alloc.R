@@ -12,7 +12,8 @@ z[c(3, 9)] <- c(NA, NaN)
 w <- runif(n)
 w[c(5, 7)] <- c(0, NA)
 
-## dmc_ifelse() and dmc_notnan() (missing values give NA, never FALSE)
+## dmc_ifelse() (a missing test gives NA) and dmc_notnan() (a missing value
+## gives FALSE, never NA)
 test <- z > 0
 r_ifelse <- function(test, yes, no) {
     out <- rep_len(as.double(no), length(test))
@@ -23,8 +24,11 @@ r_ifelse <- function(test, yes, no) {
 }
 expect_identical(ns$dmc_ifelse(test, w, 0), r_ifelse(test, w, 0))
 expect_identical(ns$dmc_ifelse(test, 2L, w), r_ifelse(test, 2L, w))
-expect_identical(ns$dmc_notnan(z), is.finite(z) | (abs(z) == Inf))
-expect_identical(ns$dmc_notnan(c(1L, NA)), c(TRUE, NA))
+expect_identical(ns$dmc_notnan(z), !is.na(z))
+expect_identical(ns$dmc_notnan(c(1, NA, NaN, Inf, -Inf)), c(TRUE, FALSE, FALSE, TRUE, TRUE))
+expect_identical(ns$dmc_notnan(c(1L, NA)), c(TRUE, FALSE))
+expect_identical(ns$dmc_notnan(c(TRUE, NA)), c(TRUE, FALSE))
+expect_identical(ns$dmc_notnan(matrix(c(1, NaN), 1L)), matrix(c(TRUE, FALSE), 1L))
 
 ## residuals and moments of dm_fe_core()
 G <- c(7L, 4L)
@@ -73,8 +77,22 @@ k <- .Call(cl("dm_glm_working"), W, eta, mu, y, 0, v, me)
 good <- (W > 0) & (me != 0)
 expect_identical(k[[1L]], r_ifelse(good, W * me * me / v, 0))
 expect_identical(k[[2L]], r_ifelse(good, (eta - 0) + (y - mu) / me, 0))
-expect_identical(k[[3L]], c(0, sum(!is.na(W) & W > 0 & v == 0), 0, sum(good, na.rm = TRUE),
-                            sum(!(is.finite(k[[1L]]) & is.finite(k[[2L]])))))
+r_counts <- function(k, W, v, me, good) {
+    wp <- !is.na(W) & W > 0
+    as.double(c(sum(wp & is.na(v)), sum(wp & !is.na(v) & v == 0), sum(wp & is.na(me)), sum(good, na.rm = TRUE),
+      sum(!(is.finite(k[[1L]]) & is.finite(k[[2L]])))))
+}
+expect_identical(k[[3L]], r_counts(k, W, v, me, good))
+## missing variances and d mu / d eta are counted where W > 0 (as glm.fit's
+## "NAs in V(mu)" and "NAs in d(mu)/d(eta)" checks)
+v2 <- v
+v2[c(1, 2, 5, 6)] <- c(NaN, NA, NaN, NA)
+me2 <- me
+me2[c(3, 7, 8)] <- c(NaN, NaN, NA)
+k <- .Call(cl("dm_glm_working"), W, eta, mu, y, 0, v2, me2)
+good <- (W > 0) & (me2 != 0)
+expect_identical(k[[3L]], r_counts(k, W, v2, me2, good))
+expect_identical(k[[3L]][c(1L, 3L)], c(2, 2))
 expect_identical(.Call(cl("dm_poisson_dev"), y, mu, W),
                  r_ifelse(y > 0, 2 * W * (y * log(y / mu) - (y - mu)), 2 * mu * W))
 p <- runif(n, 0.01, 0.99)
