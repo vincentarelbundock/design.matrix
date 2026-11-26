@@ -124,7 +124,8 @@ for (fo in list(y ~ x + I(x^2) | f, y ~ log(x) + I(x^2) | f + g, y ~ I(x^2) | g)
     nm <- names(coef(a))
     expect_true(same(coef(a), coef(l)[nm], 1e-7), info = paste(info, "coef"))
     ## (lm()'s covariance, with fixest's small sample correction of the FE fit)
-    Vl <- vcov(l)[nm, nm] * df.residual(l) / df.residual(a)
+    ## (drop = FALSE: with one coefficient, a 1 x 1 matrix as vcov(a))
+    Vl <- vcov(l)[nm, nm, drop = FALSE] * df.residual(l) / df.residual(a)
     expect_true(same(vcov(a), Vl, 1e-7), info = paste(info, "vcov"))
 }
 
