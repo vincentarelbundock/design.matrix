@@ -145,3 +145,55 @@ D3 <- design_matrix(y ~ x:f, d3, contrasts.arg = list(f = cm3))
 expect_false(design.matrix:::dm_struct_ok(D3))
 X3 <- as.matrix(D3)
 expect_equal(qr(D3)$rank, qr(X3)$rank)
+
+# Factor x factor interactions (design.matrix#fj49): the structured kernels
+# take each factor of a pair of terms in turn (selections in place, other
+# contrasts by products), with moments by cell of the union of the two
+# terms' factors. They agree with the row kernels and with model.matrix(),
+# for 2- and 3-way interactions, with and without weights, with empty
+# cells and unused levels, and for every kind of contrast.
+set.seed(49)
+ff_data <- function(n) {
+    d <- data.frame(y = rnorm(n), x = rnorm(n), z = runif(n),
+                    f1 = factor(sample(letters[1:6], n, TRUE), levels = letters[1:7]), # unused level
+                    f2 = factor(sample(LETTERS[1:4], n, TRUE)),
+                    f3 = factor(sample(c("u", "v", "w"), n, TRUE)),
+                    lg = sample(c(TRUE, FALSE), n, TRUE))
+    ## empty cells: f1 = "a" never meets f2 = "A", f3 = "u" never meets f2 = "B"
+    d$f2[d$f1 == "a" & d$f2 == "A"] <- "C"
+    d$f3[d$f3 == "u" & d$f2 == "B"] <- "v"
+    d
+}
+sel_cm <- matrix(c(0, 2, 0, 0, 0, 0, 1, -1), 4, 2) # a selection: two levels in one column
+ff_formulas <- list(y ~ f1 * f2, y ~ f1 * f2 * f3, y ~ f1:f2, y ~ 0 + f1:f2:f3, y ~ f1 * f3 + f2,
+                    y ~ f1 + f1:f2, y ~ x * f1 * f2, y ~ x:f1:f2 + f3, y ~ poly(x, 2) * f1 * f3,
+                    y ~ f1 * lg * f3, y ~ (f1 + f2 + f3)^2 + z)
+ff_contrasts <- list(NULL,
+                     list(f1 = "contr.sum", f2 = "contr.helmert", f3 = "contr.poly"),
+                     list(f1 = "contr.SAS", f2 = "contr.sum"),
+                     list(f2 = sel_cm))
+for (n in c(30, 400)) {
+    d <- ff_data(n)
+    w <- runif(n)
+    g <- sample(1:5, n, TRUE)
+    for (fo in ff_formulas) for (ca in ff_contrasts) {
+        info <- paste(n, deparse(fo), paste(names(ca), collapse = ","))
+        D <- suppressWarnings(design_matrix(fo, d, contrasts.arg = ca))
+        X <- suppressWarnings(model.matrix(fo, d, contrasts.arg = ca))
+        expect_true(design.matrix:::dm_struct_ok(D), info = info)
+        expect_true(close_to(crossprod(D), crossprod(X)), info = paste(info, "gram"))
+        expect_true(close_to(crossprod(D), rows_only(crossprod(D))), info = paste(info, "gram vs rows"))
+        expect_true(isSymmetric(unname(crossprod(D))), info = paste(info, "symmetric"))
+        expect_true(close_to(crossprod(D, w * D), crossprod(X, w * X)), info = paste(info, "weighted"))
+        expect_true(close_to(crossprod(D, w * D), rows_only(crossprod(D, w * D))), info = paste(info, "weighted vs rows"))
+        expect_true(close_to(crossprod(sqrt(w) * D), crossprod(sqrt(w) * X)), info = paste(info, "scaled"))
+        Y <- cbind(d$y, w)
+        expect_true(close_to(crossprod(D, Y), crossprod(X, Y)), info = paste(info, "xty"))
+        B <- matrix(rnorm(2 * ncol(X)), ncol(X))
+        expect_true(close_to(D %*% B, X %*% B), info = paste(info, "mult"))
+        expect_true(close_to(colSums(D, group = g), rowsum(X, g)), info = paste(info, "group sums"))
+        gs <- design.matrix:::dmp_colsums_groups(w * D, list(design.matrix:::dmc_codes(g, 5L)))[[1L]]
+        expect_true(close_to(gs$S, rowsum(w * X, g)), info = paste(info, "structured group sums"))
+        expect_true(close_to(quadratic_diagonal(D, diag(ncol(X))), rowSums(X^2)), info = paste(info, "quad"))
+    }
+}

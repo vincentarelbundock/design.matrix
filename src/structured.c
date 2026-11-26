@@ -83,6 +83,8 @@ void build_sctx(sctx *S, SEXP setup, SEXP vars)
 		SEXP cm = VECTOR_ELT(fik == 1 ? contr1 : contr2, i);
 		int c = T->nf++;
 		T->code[c] = INTEGER(var_i);
+		T->fvar[c] = i;
+		T->fcm[c] = cm;
 		T->adj[c] = isLogical(var_i) ? 1 : 0;
 		T->cm[c] = REAL(cm);
 		T->nrc[c] = nrows(cm);
@@ -255,9 +257,12 @@ SEXP dm_struct_ok(SEXP setup, SEXP vars, SEXP cap_)
     return ScalarLogical(ok);
 }
 
-/* Term descriptions: list per term of list(off, L, C, colmap), where C is
-   the L x kc combined contrast matrix and colmap the ns x kc matrix of
-   0-based column indices within the term. */
+/* Term descriptions: list per term of list(off, colmap, fvar, fcm), where
+   colmap is the ns x kc matrix of 0-based column indices within the term,
+   fvar the 0-based variable index of each factor (first fastest in the
+   combined level) and fcm the list of their contrast matrices: the term's
+   combined contrast matrix C_t is the Kronecker product of the fcm, the
+   first factor varying fastest. */
 SEXP dm_struct_info(SEXP setup, SEXP vars)
 {
     sctx S;
@@ -265,29 +270,22 @@ SEXP dm_struct_info(SEXP setup, SEXP vars)
     SEXP out = PROTECT(allocVector(VECSXP, S.nt));
     for (int t = 0; t < S.nt; t++) {
 	const sterm *T = &S.t[t];
-	SEXP el = SET_VECTOR_ELT(out, t, allocVector(VECSXP, 3));
+	SEXP el = SET_VECTOR_ELT(out, t, allocVector(VECSXP, 4));
 	SET_VECTOR_ELT(el, 0, ScalarInteger(T->off));
-	SEXP C = SET_VECTOR_ELT(el, 1, allocMatrix(REALSXP, T->L, T->kc));
-	SEXP M = SET_VECTOR_ELT(el, 2, allocMatrix(INTSXP, T->ns, T->kc));
-	double *c = REAL(C);
+	SEXP M = SET_VECTOR_ELT(el, 1, allocMatrix(INTSXP, T->ns, T->kc));
+	SEXP fv = SET_VECTOR_ELT(el, 2, allocVector(INTSXP, T->nf));
+	SEXP fc = SET_VECTOR_ELT(el, 3, allocVector(VECSXP, T->nf));
+	for (int f = 0; f < T->nf; f++) {
+	    INTEGER(fv)[f] = T->fvar[f];
+	    SET_VECTOR_ELT(fc, f, T->fcm[f]);
+	}
 	int *m = INTEGER(M);
 	for (int k = 0; k < T->kc; k++) {
 	    /* factor columns of combined column k (first factor fastest) */
-	    int col[SMAXC], rem = k, fpart = 0;
+	    int rem = k, fpart = 0;
 	    for (int f = 0; f < T->nf; f++) {
-		col[f] = rem % T->fnc[f];
+		fpart += (rem % T->fnc[f]) * T->fstride[f];
 		rem /= T->fnc[f];
-		fpart += col[f] * T->fstride[f];
-	    }
-	    for (int a = 0; a < T->L; a++) {
-		double v = 1.0;
-		int r2 = a;
-		for (int f = 0; f < T->nf; f++) {
-		    int lev = r2 % T->nrc[f];
-		    r2 /= T->nrc[f];
-		    v *= T->cm[f][lev + (R_xlen_t) col[f] * T->nrc[f]];
-		}
-		c[a + (R_xlen_t) k * T->L] = v;
 	    }
 	    for (int u = 0; u < T->ns; u++) {
 		int r3 = u, npart = 0;
@@ -303,9 +301,400 @@ SEXP dm_struct_info(SEXP setup, SEXP vars)
     return out;
 }
 
-/* Moments for X'WX: list over pairs (s <= t, in order t = 0.., s = 0..t)
-   of arrays: s < t: [Ls, Lt, ns, nt] sums of w N_s[u] N_t[v] by level
-   pair; s == t: [Ls, ns, ns]. */
+/* The factors of term B that term A does not have: their number, their
+   positions in B and the strides of their combined level (first fastest);
+   returns the number of combined levels (Lx). */
+static int extra_factors(const sterm *A, const sterm *B, int *nx, int *pos, int *stride)
+{
+    int L = 1;
+    *nx = 0;
+    for (int g = 0; g < B->nf; g++) {
+	int shared = 0;
+	for (int f = 0; f < A->nf; f++)
+	    if (A->fvar[f] == B->fvar[g]) { shared = 1; break; }
+	if (shared) continue;
+	pos[*nx] = g;
+	stride[*nx] = L;
+	(*nx)++;
+	L *= B->nrc[g];
+    }
+    return L;
+}
+
+/* One mode of a product with a Kronecker product of contrast matrices.
+   X holds an l x R matrix (the first mode first); A is l x ka and B, if
+   not NULL, l x kb (B NULL: kb = 1, B = 1).  Writes to o the R x (ka kb)
+   matrix with entries sum_a X[a, r] A[a, i] B[a, j] (column i + ka j), so
+   that the next mode comes first.  Only the non-zero entries of A and B
+   are visited: a treatment contrast costs R per level, not R per entry.
+   x (R), ia (ka) and ib (kb) are work space. */
+static void kron_mode(const double *X, R_xlen_t R, int l, const double *A, int ka,
+		      const double *B, int kb, double *o, double *x, int *ia, int *ib)
+{
+    if (!B) kb = 1;
+    memset(o, 0, sizeof(double) * (size_t) R * ka * kb);
+    for (int a = 0; a < l; a++) {
+	int na = 0, nb = 0, any = 0;
+	for (int i = 0; i < ka; i++) if (A[a + (R_xlen_t) l * i] != 0.0) ia[na++] = i;
+	if (B) { for (int j = 0; j < kb; j++) if (B[a + (R_xlen_t) l * j] != 0.0) ib[nb++] = j; }
+	else { ib[0] = 0; nb = 1; }
+	if (na == 0 || nb == 0) continue;
+	for (R_xlen_t r = 0; r < R; r++) {
+	    x[r] = X[a + (R_xlen_t) l * r];
+	    if (x[r] != 0.0) any = 1;
+	}
+	if (!any) continue;
+	for (int jj = 0; jj < nb; jj++) {
+	    int j = ib[jj];
+	    double bj = B ? B[a + (R_xlen_t) l * j] : 1.0;
+	    for (int ii = 0; ii < na; ii++) {
+		int i = ia[ii];
+		double c = A[a + (R_xlen_t) l * i] * bj;
+		double *oc = o + R * (i + (R_xlen_t) ka * j);
+		for (R_xlen_t r = 0; r < R; r++) oc[r] += x[r] * c;
+	    }
+	}
+    }
+}
+
+/* kron_mode() from R: X an array with l = nrow(A) rows first, A, B (or
+   NULL) contrast matrices; an R x (ka kb) matrix. */
+SEXP dm_kron_mode(SEXP X_, SEXP A_, SEXP B_)
+{
+    int l = nrows(A_), ka = ncols(A_), kb = isNull(B_) ? 1 : ncols(B_);
+    if (!isNull(B_) && nrows(B_) != l) error("internal error: contrasts of different levels");
+    R_xlen_t len = XLENGTH(X_);
+    if (l == 0 || len % l) error("internal error: moments do not match the contrasts");
+    R_xlen_t R = len / l;
+    if (R > INT_MAX) error("internal error: too many moments");
+    SEXP out = PROTECT(allocMatrix(REALSXP, (int) R, ka * kb));
+    double *x = (double *) R_alloc(R > 0 ? R : 1, sizeof(double));
+    int *ia = (int *) R_alloc(ka > 0 ? ka : 1, sizeof(int)), *ib = (int *) R_alloc(kb > 0 ? kb : 1, sizeof(int));
+    kron_mode(REAL(X_), R, l, REAL(A_), ka, isNull(B_) ? NULL : REAL(B_), kb, REAL(out), x, ia, ib);
+    UNPROTECT(1);
+    return out;
+}
+
+/* Does every row of an l x k contrast matrix have at most one non-zero
+   entry (treatment, SAS or indicator contrasts)?  Then its column for
+   each level and that entry. */
+static int selection(const double *A, int l, int k, int *col, double *val)
+{
+    for (int a = 0; a < l; a++) {
+	col[a] = -1; val[a] = 0.0;
+	for (int i = 0; i < k; i++) {
+	    double v = A[a + (R_xlen_t) l * i];
+	    if (v == 0.0) continue;
+	    if (col[a] >= 0) return 0;
+	    col[a] = i; val[a] = v;
+	}
+    }
+    return 1;
+}
+
+/* The block of X'WX for terms s <= t from their moments M (layout of
+   dm_struct_gram()), added to G (p x p, zero on entry).  The factors of
+   the union of the two terms are taken in turn (the moments' dims: first
+   those of s, then those of t that s lacks), each with the contrast of
+   s, of t, or both for a shared factor.  A factor whose contrasts are
+   selections (selection()) needs no product: its levels stay a dim of
+   the moments, scaled by the selected entries, and map to columns when
+   the block is written.  Otherwise kron_mode() contracts it, visiting only
+   non-zero entries; the last such contraction adds straight into G.  For
+   s < t the block is added both above and below the diagonal, by the
+   same operations in the same order (so G is exactly symmetric). */
+static void gram_block(const sterm *A, const sterm *B, int same, const double *M,
+		       int nx, const int *xpos, double *G, int p)
+{
+    const void *vmax = vmaxget();
+    int ns = A->ns, nt = B->ns;
+    /* modes: their contrasts, and where their columns go: the first
+       contrast's to side ma (0: the rows of the block, s; 1: its columns,
+       t) with stride sa, the second's (shared factors) to t with stride
+       sb */
+    int nm = 0;
+    const double *mA[2 * SMAXC], *mB[2 * SMAXC];
+    int ml[2 * SMAXC], mka[2 * SMAXC], mkb[2 * SMAXC], ma[2 * SMAXC], sa[2 * SMAXC], sb[2 * SMAXC];
+    for (int f = 0; f < A->nf; f++) {
+	int g = -1;
+	if (same) g = f;
+	else for (int h = 0; h < B->nf; h++) if (B->fvar[h] == A->fvar[f]) { g = h; break; }
+	mA[nm] = A->cm[f]; ml[nm] = A->nrc[f]; mka[nm] = A->fnc[f];
+	ma[nm] = 0; sa[nm] = A->fstride[f];
+	mB[nm] = g >= 0 ? B->cm[g] : NULL; mkb[nm] = g >= 0 ? B->fnc[g] : 1;
+	sb[nm] = g >= 0 ? B->fstride[g] : 0;
+	nm++;
+    }
+    for (int c = 0; c < nx; c++) {
+	int g = xpos[c];
+	mA[nm] = B->cm[g]; ml[nm] = B->nrc[g]; mka[nm] = B->fnc[g];
+	ma[nm] = 1; sa[nm] = B->fstride[g];
+	mB[nm] = NULL; mkb[nm] = 1; sb[nm] = 0;
+	nm++;
+    }
+    /* selections: per level, the scale and the row and column offsets */
+    int sel[2 * SMAXC];
+    double *scl[2 * SMAXC];
+    R_xlen_t *srow[2 * SMAXC], *scol[2 * SMAXC];
+    int last = -1; /* the last contracted mode */
+    int lmax = 1, lsum = 0;
+    for (int m = 0; m < nm; m++) { lsum += ml[m]; if (ml[m] > lmax) lmax = ml[m]; }
+    int *ca = (int *) R_alloc(2 * (size_t) lmax, sizeof(int)), *cb = ca + lmax;
+    double *va = (double *) R_alloc(2 * (size_t) lmax + lsum, sizeof(double)), *vb = va + lmax,
+	*sclw = vb + lmax;
+    R_xlen_t *sw = (R_xlen_t *) R_alloc(2 * (size_t) (lsum > 0 ? lsum : 1), sizeof(R_xlen_t));
+    for (int m = 0, used = 0; m < nm; m++) {
+	int l = ml[m];
+	sel[m] = selection(mA[m], l, mka[m], ca, va) &&
+	    (!mB[m] || selection(mB[m], l, mkb[m], cb, vb));
+	if (!sel[m]) { last = m; continue; }
+	scl[m] = sclw + used;
+	srow[m] = sw + 2 * used;
+	scol[m] = sw + 2 * used + l;
+	used += l;
+	for (int a = 0; a < l; a++) {
+	    int ok = ca[a] >= 0 && (!mB[m] || cb[a] >= 0);
+	    scl[m][a] = ok ? va[a] * (mB[m] ? vb[a] : 1.0) : 0.0;
+	    R_xlen_t oa = ok ? (R_xlen_t) sa[m] * ca[a] : 0;
+	    srow[m][a] = ma[m] ? 0 : oa;
+	    scol[m][a] = (ma[m] ? oa : 0) + (ok && mB[m] ? (R_xlen_t) sb[m] * cb[a] : 0);
+	}
+    }
+    /* only selections: no product, each moment goes to G in place */
+    if (last < 0 && nm > 0) {
+	int idx[2 * SMAXC + 2], dsz[2 * SMAXC + 2], nd = 0;
+	for (int m = 1; m < nm; m++) dsz[nd++] = ml[m];
+	dsz[nd++] = ns;
+	dsz[nd++] = nt;
+	for (int d = 0; d < nd; d++) idx[d] = 0;
+	int *nps = (int *) R_alloc(ns + nt, sizeof(int)), *npt = nps + ns;
+	for (int side = 0; side < 2; side++) {
+	    const sterm *T = side ? B : A;
+	    int *np = side ? npt : nps;
+	    for (int u = 0; u < T->ns; u++) {
+		int r3 = u, part = 0;
+		for (int q = 0; q < T->nn; q++) {
+		    part += (r3 % T->nnc[q]) * T->nstride[q];
+		    r3 /= T->nnc[q];
+		}
+		np[u] = part;
+	    }
+	}
+	int l0 = ml[0];
+	const double *sc0 = scl[0];
+	const R_xlen_t *sr0 = srow[0], *sc0c = scol[0];
+	for (const double *Me = M; ; Me += l0) {
+	    double so = 1.0;
+	    R_xlen_t rb = A->off + nps[idx[nd - 2]], cbs = B->off + npt[idx[nd - 1]];
+	    for (int m = 1; m < nm; m++) {
+		int a = idx[m - 1];
+		so *= scl[m][a];
+		rb += srow[m][a];
+		cbs += scol[m][a];
+	    }
+	    if (so != 0.0) {
+		for (int a = 0; a < l0; a++) {
+		    double c = sc0[a] * so, v = Me[a];
+		    if (c == 0.0 || v == 0.0) continue;
+		    v *= c;
+		    R_xlen_t row = rb + sr0[a], col = cbs + sc0c[a];
+		    G[row + p * col] += v;
+		    if (!same) G[col + p * row] += v;
+		}
+	    }
+	    int d = 0;
+	    for (; d < nd; d++) {
+		if (++idx[d] < dsz[d]) break;
+		idx[d] = 0;
+	    }
+	    if (d == nd) break;
+	}
+	vmaxset(vmax);
+	return;
+    }
+    /* take the modes in turn; the last contracted one is left for G */
+    R_xlen_t len = (R_xlen_t) ns * nt;
+    for (int m = 0; m < nm; m++) len *= ml[m];
+    R_xlen_t maxlen = len;
+    {
+	R_xlen_t cur = len;
+	for (int m = 0; m < nm; m++) {
+	    if (!sel[m]) cur = cur / ml[m] * mka[m] * mkb[m];
+	    if (cur > maxlen) maxlen = cur;
+	}
+    }
+    int kmax = 1;
+    for (int m = 0; m < nm; m++) { if (mka[m] > kmax) kmax = mka[m]; if (mkb[m] > kmax) kmax = mkb[m]; }
+    int *ia = (int *) R_alloc(kmax, sizeof(int)), *ib = (int *) R_alloc(kmax, sizeof(int));
+    double *x = (double *) R_alloc((size_t) maxlen, sizeof(double));
+    double *buf[2];
+    buf[0] = (double *) R_alloc((size_t) maxlen, sizeof(double));
+    buf[1] = (double *) R_alloc((size_t) maxlen, sizeof(double));
+    const double *X = M;
+    int nb = 0;
+    int nproc = last >= 0 ? last : nm; /* modes before the fused one */
+    for (int m = 0; m < nm; m++) {
+	if (m == last) break; /* written to G below */
+	int l = ml[m];
+	R_xlen_t R = len / l;
+	double *o = buf[nb++ % 2];
+	if (sel[m]) {
+	    /* move the dim to the end, scaled */
+	    const double *sc = scl[m];
+	    for (int a = 0; a < l; a++) {
+		double c = sc[a];
+		double *oa = o + R * a;
+		if (c == 0.0) { memset(oa, 0, sizeof(double) * (size_t) R); continue; }
+		for (R_xlen_t r = 0; r < R; r++) oa[r] = X[a + (R_xlen_t) l * r] * c;
+	    }
+	} else {
+	    kron_mode(X, R, l, mA[m], mka[m], mB[m], mkb[m], o, x, ia, ib);
+	    len = R * mka[m] * mkb[m];
+	}
+	X = o;
+    }
+    /* the modes after the fused one are all selections: move each to the
+       end too, so that the fused mode comes first */
+    for (int m = last + 1; last >= 0 && m < nm; m++) {
+	/* X is [l_last, l_{last+1}, ..., rest]: swap the second dim to the
+	   end */
+	int l0 = ml[last], l = ml[m];
+	R_xlen_t R = len / ((R_xlen_t) l0 * l);
+	double *o = buf[nb++ % 2];
+	const double *sc = scl[m];
+	for (int a = 0; a < l; a++) {
+	    double c = sc[a];
+	    double *oa = o + (R_xlen_t) l0 * R * a;
+	    if (c == 0.0) { memset(oa, 0, sizeof(double) * (size_t) l0 * R); continue; }
+	    for (R_xlen_t r = 0; r < R; r++) {
+		const double *xr = X + (R_xlen_t) l0 * (a + (R_xlen_t) l * r);
+		double *orr = oa + (R_xlen_t) l0 * r;
+		for (int b = 0; b < l0; b++) orr[b] = xr[b] * c;
+	    }
+	}
+	X = o;
+    }
+    /* the order of the dims after the first (l, 1 without a fused mode):
+       u, v, then the modes before the fused one, then those after it */
+    int order[2 * SMAXC], no = 0;
+    for (int m = 0; m < nproc; m++) order[no++] = m;
+    if (last >= 0) for (int m = last + 1; m < nm; m++) order[no++] = m;
+    int l = last >= 0 ? ml[last] : 1;
+    R_xlen_t R = len / l;
+    /* row and column offsets of each element of the rest */
+    int *nps = (int *) R_alloc(ns, sizeof(int)), *npt = (int *) R_alloc(nt, sizeof(int));
+    for (int side = 0; side < 2; side++) {
+	const sterm *T = side ? B : A;
+	int *np = side ? npt : nps;
+	for (int u = 0; u < T->ns; u++) {
+	    int r3 = u, part = 0;
+	    for (int q = 0; q < T->nn; q++) {
+		part += (r3 % T->nnc[q]) * T->nstride[q];
+		r3 /= T->nnc[q];
+	    }
+	    np[u] = part;
+	}
+    }
+    R_xlen_t *ro = (R_xlen_t *) R_alloc((size_t) R, sizeof(R_xlen_t)),
+	*co = (R_xlen_t *) R_alloc((size_t) R, sizeof(R_xlen_t));
+    {
+	/* dims: per mode, a selection's levels or a contraction's first
+	   and (shared) second column; offsets as tables */
+	int dsize[4 * SMAXC + 2], nd = 0;
+	const R_xlen_t *drow[4 * SMAXC + 2], *dcol[4 * SMAXC + 2];
+	for (int q = 0; q < no; q++) {
+	    int m = order[q];
+	    if (sel[m]) {
+		dsize[nd] = ml[m]; drow[nd] = srow[m]; dcol[nd] = scol[m]; nd++;
+		continue;
+	    }
+	    for (int h = 0; h < (mB[m] ? 2 : 1); h++) {
+		int k = h ? mkb[m] : mka[m], side = h ? 1 : ma[m];
+		R_xlen_t st = h ? sb[m] : sa[m];
+		R_xlen_t *zr = (R_xlen_t *) R_alloc(k, sizeof(R_xlen_t)),
+		    *zc = (R_xlen_t *) R_alloc(k, sizeof(R_xlen_t));
+		for (int i = 0; i < k; i++) {
+		    zr[i] = side ? 0 : st * i;
+		    zc[i] = side ? st * i : 0;
+		}
+		dsize[nd] = k; drow[nd] = zr; dcol[nd] = zc; nd++;
+	    }
+	}
+	int idx[4 * SMAXC + 2];
+	for (int d = 0; d < nd; d++) idx[d] = 0;
+	R_xlen_t fr = 0, fc = 0, r = 0;
+	for (int d = 0; d < nd; d++) { fr += drow[d][0]; fc += dcol[d][0]; }
+	for (;;) {
+	    for (int v = 0; v < nt; v++)
+		for (int u = 0; u < ns; u++, r++) {
+		    ro[r] = A->off + nps[u] + fr;
+		    co[r] = B->off + npt[v] + fc;
+		}
+	    int d = 0;
+	    for (; d < nd; d++) {
+		int old = idx[d], nw = old + 1 < dsize[d] ? old + 1 : 0;
+		idx[d] = nw;
+		fr += drow[d][nw] - drow[d][old];
+		fc += dcol[d][nw] - dcol[d][old];
+		if (nw) break;
+	    }
+	    if (d == nd) break;
+	}
+    }
+    if (last < 0) {
+	for (R_xlen_t r = 0; r < R; r++) {
+	    if (X[r] == 0.0) continue;
+	    G[ro[r] + p * co[r]] += X[r];
+	    if (!same) G[co[r] + p * ro[r]] += X[r];
+	}
+	vmaxset(vmax);
+	return;
+    }
+    /* the fused mode, into G */
+    int m = last, ka = mka[m], kb = mB[m] ? mkb[m] : 1;
+    const double *Am = mA[m], *Bm = mB[m];
+    for (int a = 0; a < l; a++) {
+	int na = 0, nbb = 0, any = 0;
+	for (int i = 0; i < ka; i++) if (Am[a + (R_xlen_t) l * i] != 0.0) ia[na++] = i;
+	if (Bm) { for (int j = 0; j < kb; j++) if (Bm[a + (R_xlen_t) l * j] != 0.0) ib[nbb++] = j; }
+	else { ib[0] = 0; nbb = 1; }
+	if (na == 0 || nbb == 0) continue;
+	for (R_xlen_t r = 0; r < R; r++) {
+	    x[r] = X[a + (R_xlen_t) l * r];
+	    if (x[r] != 0.0) any = 1;
+	}
+	if (!any) continue;
+	for (int jj = 0; jj < nbb; jj++) {
+	    int j = ib[jj];
+	    double bj = Bm ? Bm[a + (R_xlen_t) l * j] : 1.0;
+	    R_xlen_t cj = Bm ? (R_xlen_t) sb[m] * j : 0;
+	    for (int ii = 0; ii < na; ii++) {
+		int i = ia[ii];
+		double c = Am[a + (R_xlen_t) l * i] * bj;
+		R_xlen_t ri = ma[m] ? 0 : (R_xlen_t) sa[m] * i,
+		    ci = cj + (ma[m] ? (R_xlen_t) sa[m] * i : 0);
+		double *g = G + ri + p * ci, *gt = G + ci + p * ri;
+		if (same) {
+		    for (R_xlen_t r = 0; r < R; r++) g[ro[r] + p * co[r]] += x[r] * c;
+		} else {
+		    for (R_xlen_t r = 0; r < R; r++) {
+			double e = x[r] * c;
+			g[ro[r] + p * co[r]] += e;
+			gt[co[r] + p * ro[r]] += e;
+		    }
+		}
+	    }
+	}
+    }
+    vmaxset(vmax);
+}
+
+/* X'WX (p x p), from moments by pair of terms (s <= t, in order t = 0..,
+   s = 0..t), assembled by gram_block(); the moments are arrays: s < t: [Ls, Lx, ns, nt] sums of w N_s[u] N_t[v] by cell of
+   the union of the two terms' factors, with Lx the combined levels of the
+   factors of t that s does not have (extra_factors(); the levels of the
+   factors they share agree within a row, so only these cells can be
+   non-zero); s == t: [Ls, ns, ns]. */
 SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
 {
     sctx S;
@@ -315,12 +704,23 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
     int np = S.nt * (S.nt + 1) / 2;
     SEXP out = PROTECT(allocVector(VECSXP, np));
     double **acc = (double **) R_alloc(np > 0 ? np : 1, sizeof(double *));
+    int npa = np > 0 ? np : 1;
+    int *nx = (int *) R_alloc(npa, sizeof(int)), *Lx = (int *) R_alloc(npa, sizeof(int));
+    int **xpos = (int **) R_alloc(npa, sizeof(int *)), **xstr = (int **) R_alloc(npa, sizeof(int *));
+    int *Fx = (int *) R_alloc(BLOCK, sizeof(int));
     int q = 0;
     for (int t = 0; t < S.nt; t++)
 	for (int s = 0; s <= t; s++, q++) {
 	    const sterm *A = &S.t[s], *B = &S.t[t];
+	    if (s < t) {
+		xpos[q] = (int *) R_alloc(SMAXC, sizeof(int));
+		xstr[q] = (int *) R_alloc(SMAXC, sizeof(int));
+		Lx[q] = extra_factors(A, B, &nx[q], xpos[q], xstr[q]);
+	    } else {
+		nx[q] = 0; Lx[q] = 1; xpos[q] = NULL; xstr[q] = NULL;
+	    }
 	    R_xlen_t len = (s == t) ? (R_xlen_t) A->L * A->ns * A->ns
-		: (R_xlen_t) A->L * B->L * A->ns * B->ns;
+		: (R_xlen_t) A->L * Lx[q] * A->ns * B->ns;
 	    SEXP m = SET_VECTOR_ELT(out, q, allocVector(REALSXP, len));
 	    acc[q] = REAL(m);
 	    memset(acc[q], 0, sizeof(double) * (size_t) len);
@@ -380,7 +780,19 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
 			}
 		    }
 		} else {
-		    int Lt = B->L;
+		    /* the cell of the second term: the combined level of
+		       its factors that the first term does not have */
+		    int Lt = Lx[q];
+		    const int *Fc = Ft;
+		    if (nx[q] < B->nf) {
+			Fc = Fx;
+			for (int r = 0; r < nb; r++) Fx[r] = 0;
+			for (int c = 0; c < nx[q]; c++) {
+			    int g = xpos[q][c], a = B->adj[g] - 1, ls = xstr[q][c];
+			    const int *code = B->code[g] + i0;
+			    for (int r = 0; r < nb; r++) Fx[r] += (code[r] + a) * ls;
+			}
+		    }
 		    R_xlen_t LL = (R_xlen_t) Ls * Lt;
 		    for (int u = 0; u < ns; u++) {
 			if (w) for (int r = 0; r < nb; r++) wN[r] = w[i0 + r] * Ns[(size_t) u * BLOCK + r];
@@ -394,10 +806,10 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
 			    } else if (Lt == 1) {
 				for (int r = 0; r < nb; r++) Muv[Fs[r]] += wN[r] * Nt[(size_t) v * BLOCK + r];
 			    } else if (Ls == 1) {
-				for (int r = 0; r < nb; r++) Muv[Ft[r]] += wN[r] * Nt[(size_t) v * BLOCK + r];
+				for (int r = 0; r < nb; r++) Muv[Fc[r]] += wN[r] * Nt[(size_t) v * BLOCK + r];
 			    } else {
 				for (int r = 0; r < nb; r++)
-				    Muv[Fs[r] + (R_xlen_t) Ls * Ft[r]] += wN[r] * Nt[(size_t) v * BLOCK + r];
+				    Muv[Fs[r] + (R_xlen_t) Ls * Fc[r]] += wN[r] * Nt[(size_t) v * BLOCK + r];
 			    }
 			}
 		    }
@@ -421,8 +833,14 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
 		    }
 	    }
     }
-    UNPROTECT(2);
-    return out;
+    SEXP G = PROTECT(allocMatrix(REALSXP, S.p, S.p));
+    memset(REAL(G), 0, sizeof(double) * (size_t) S.p * S.p);
+    q = 0;
+    for (int t = 0; t < S.nt; t++)
+	for (int s = 0; s <= t; s++, q++)
+	    gram_block(&S.t[s], &S.t[t], s == t, acc[q], nx[q], xpos[q], REAL(G), S.p);
+    UNPROTECT(3);
+    return G;
 }
 
 /* Moments for X'Y (Y n x K): list per term of [L, ns, K] sums of
@@ -590,13 +1008,26 @@ SEXP dm_min_nonzero(SEXP setup, SEXP vars)
     return ScalarReal(out);
 }
 
-/* Are all values of a double vector or matrix finite?  (No allocation.) */
+/* Are all values of a double vector or matrix finite?  (No allocation.)
+   x * 0 is 0 for finite x and NaN otherwise: sums of those in four
+   independent chains, over chunks, are much faster than a test per
+   value. */
 SEXP dm_all_finite(SEXP x)
 {
     const double *v = REAL(x);
     R_xlen_t n = XLENGTH(x);
-    for (R_xlen_t i = 0; i < n; i++)
-	if (!R_FINITE(v[i])) return ScalarLogical(0);
+    for (R_xlen_t i0 = 0; i0 < n; i0 += 4096) {
+	R_xlen_t i1 = n - i0 < 4096 ? n : i0 + 4096, i = i0;
+	double a0 = 0.0, a1 = 0.0, a2 = 0.0, a3 = 0.0;
+	for (; i + 4 <= i1; i += 4) {
+	    a0 += v[i] * 0.0;
+	    a1 += v[i + 1] * 0.0;
+	    a2 += v[i + 2] * 0.0;
+	    a3 += v[i + 3] * 0.0;
+	}
+	for (; i < i1; i++) a0 += v[i] * 0.0;
+	if (a0 + a1 + a2 + a3 != 0.0) return ScalarLogical(0);
+    }
     return ScalarLogical(1);
 }
 
