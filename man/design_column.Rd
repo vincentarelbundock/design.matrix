@@ -176,12 +176,17 @@ write them where they belong. Columns of one design combine with each other,
 including the results of separate products (\code{D \%*\% b1 + D \%*\% b2}, or
 \code{(D \%*\% b) / sqrt(quadratic_diagonal(D, V))}): a product becomes a view
 only when its values are first needed, on top of the other products it
-is combined with. Columns of different designs do not combine. Nor do
-two products that were each read (by \code{as.vector()}, \code{as.data.frame()},
-\code{col_compute()} or a sum) before being combined, since their views then
-stand side by side and the database has no key to align their rows:
-combine the columns first, compute them in one product (\code{D \%*\% cbind(b1, b2)}, then \verb{[, 1]} and \verb{[, 2]}), or read them with \code{as.data.frame(keep = "id")} and match them in R. A column made by \code{design_column()} combines
-with any product of its design.
+is combined with. Two products that were each read (by \code{as.vector()},
+\code{as.data.frame()}, a sum, ...) before being combined also combine: their
+views stand side by side, and the database has no key to align their
+rows, so the product read on one side is made again on top of the other
+(one more view; a grouping's lookup needs no statement). Two columns
+each stored with \code{col_compute()}, separately, are the exception: a
+stored table is not made again, so combine the columns before storing them
+(store one column made from both, or one product \code{D \%*\% cbind(b1, b2)}
+and then \verb{[, 1]} and \verb{[, 2]}), or read them with \code{as.data.frame(keep = "id")} and match them in R. Columns of different designs do not combine
+(a subset \code{D[i, ]} is another design). A column made by
+\code{design_column()} combines with any column of its design.
 }
 
 \examples{

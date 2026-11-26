@@ -77,11 +77,15 @@
 ## (later uses read the same frame). So `D %*% b1 + D %*% b2` stacks the
 ## second product on the first. Combining columns takes the later frame
 ## (they must come from the same design, and one frame must descend from
-## the other: each frame records its lineage, see dm_frame_later()):
-## columns already settled on two branches of one frame (computed and used
-## separately, as two frozen columns) cannot be combined. dmc_bind() binds
-## columns together that are used one by one but must combine later. In
-## memory a product is computed at once.
+## the other: each frame records its lineage, see dm_frame_later()). For
+## columns already settled on two branches of one frame (two products each
+## read before they are combined), the products and lookups of one branch
+## are replayed on the other (copies of their recipes, bound again: one
+## more view per product, none for a lookup; dm_frame_replay()); columns
+## frozen or stored (dmc_freeze, col_compute) on each branch cannot be
+## combined. dmc_bind() binds columns together that are used one by one
+## but must combine later (no replay needed). In memory a product is
+## computed at once.
 ##
 ## Getting values into R: dmp_collect(col) returns the values (in memory the
 ## vector itself; remotely a SELECT of all rows: only for small data). The
@@ -296,18 +300,25 @@ dm_frame_path <- function(D) {
 }
 
 ## Frame `fr`, derived from frame `parent`: its path is the parent's and a
-## new token.
-dm_frame_child <- function(fr, parent) {
+## new token. `steps` maps the tokens of the path made by binding a recipe
+## (a product or a lookup) to that recipe, so that the frame can be made
+## again on another branch (dm_frame_replay()); other tokens (frozen or
+## stored columns, columns added to a design) cannot be replayed.
+dm_frame_child <- function(fr, parent, recipe = NULL) {
     p <- dm_frame_path(parent)
     if (is.null(p)) return(fr)
     dm_tmp$frames <- (dm_tmp$frames %||% 0) + 1
-    fr$path <- c(p, sprintf("f%x", as.integer(dm_tmp$frames)))
+    tok <- sprintf("f%x", as.integer(dm_tmp$frames))
+    fr$path <- c(p, tok)
+    fr$steps <- c(parent$steps, if (!is.null(recipe)) stats::setNames(list(recipe), tok))
     fr
 }
 
 ## Of two frames of the same design, the later one (which keeps the columns
-## of the earlier one): the descendant. Frames on two branches (neither
-## descends from the other) cannot be combined. Without a known lineage,
+## of the earlier one): the descendant. For frames on two branches (neither
+## descends from the other), the steps of one branch since they split are
+## replayed on top of the other (dm_frame_replay(): the result is pending
+## with those recipes), else that is an error. Without a known lineage,
 ## the deeper frame. The frames of pending columns (dm_frame_pending())
 ## combine their recipes: the result is pending with the recipes of both
 ## (in order, each once), on the later of their settled frames.
@@ -318,13 +329,18 @@ dm_frame_later <- function(a, b) {
     a$pend <- NULL
     b$pend <- NULL
     out <- dm_frame_later_settled(a, b)
+    ## (replayed recipes first: the pending ones may read their columns)
+    pend <- dm_pend_union(out$pend, pend)
+    out$pend <- NULL
     if (length(pend)) dm_frame_pending(out, pend) else out
 }
 
-## (dm_frame_later() of two settled frames)
+## (dm_frame_later() of two settled frames; the result has a `pend` field
+## only when one branch is replayed on the other)
 dm_frame_later_settled <- function(a, b) {
     if (!identical(a$id, b$id))
-        stop("Columns of different remote designs cannot be combined.", call. = FALSE)
+        stop("Columns of different remote designs cannot be combined (a subset or a materialized design ",
+             "is another design: make the columns again on it).", call. = FALSE)
     pa <- dm_frame_path(a)
     pb <- dm_frame_path(b)
     if (!is.null(pa) && !is.null(pb) && !identical(pa, pb)) {
@@ -332,16 +348,71 @@ dm_frame_later_settled <- function(a, b) {
         if (prefix(pa, pb)) return(b)
         if (prefix(pb, pa)) return(a)
         ## (products and lookups bind on top of one another at their first
-        ## use, so users meet this only with columns settled separately, as
-        ## two products each read before they are combined)
-        stop("Columns built on two different branches of the same remote design cannot be combined ",
-             "(remote rows have no key to align them): combine the columns before reading either, or ",
-             "compute them in one product, as `P <- D %*% cbind(b1, b2)` and then `P[, 1]` and `P[, 2]`; ",
-             "internally, bind them together first (dmc_bind()) or freeze them together (dmc_cbind()).",
+        ## use, and a product or lookup already bound on a sibling frame is
+        ## replayed: users meet this only with a stored or frozen column on
+        ## each branch, as two columns each stored by col_compute())
+        out <- dm_frame_replay(a, b)
+        if (!is.null(out)) return(out)
+        stop("Columns built on two different branches of the same remote design cannot be combined: ",
+             "on each branch a column was stored (col_compute()) or frozen after the branches split, and ",
+             "remote rows have no key to align them. Combine the columns before storing them (store one ",
+             "column made from both, or one product `D %*% cbind(b1, b2)` and then `[, 1]` and `[, 2]`), or ",
+             "read them with as.data.frame(keep = ) and match them in R; internally, freeze them together ",
+             "(dmc_cbind()) or bind them together first (dmc_bind()).",
              call. = FALSE)
     }
     if (dm_frame_depth(b) > dm_frame_depth(a)) b else a
 }
+
+## Frames a and b of one design on two branches (paths known, neither a
+## prefix of the other): the frame of one of them, pending with copies of
+## the recipes that made the other branch since the two split (its steps
+## past their common ancestor), when all those steps are products or
+## lookups; NULL when neither branch can be replayed (a stored or frozen
+## column on each). The copies (dm_recipe_replay()) bind at the next use as
+## any pending recipe does, on top of the frame: one view per product, no
+## statement for a lookup; a copy adds the same columns as its original
+## (same names), so every column of the other branch reads the same SQL
+## on the result. Steps whose columns the frame already has (an earlier
+## replay of the same recipe) are left out. Of two replayable branches,
+## the one with fewer products is replayed (a on a tie).
+dm_frame_replay <- function(a, b) {
+    pa <- a$path
+    pb <- b$path
+    m <- min(length(pa), length(pb))
+    k <- 0L
+    while (k < m && identical(pa[k + 1L], pb[k + 1L])) k <- k + 1L
+    side <- function(f, p) {
+        toks <- p[seq_along(p) > k]
+        if (!all(toks %in% names(f$steps))) return(NULL)
+        unname(f$steps[toks])
+    }
+    sa <- side(a, pa)
+    sb <- side(b, pb)
+    need <- function(st, onto) {
+        have <- dm_frame_keys(onto)
+        Filter(function(r) !dm_recipe_key(r) %in% have, st)
+    }
+    views <- function(st) sum(vapply(st, function(r) identical(r$kind, "mult"), NA))
+    nb <- if (!is.null(sb)) need(sb, a)
+    na <- if (!is.null(sa)) need(sa, b)
+    if (!is.null(sb) && (is.null(sa) || views(nb) <= views(na))) {
+        out <- a
+        rep <- nb
+    } else if (!is.null(sa)) {
+        out <- b
+        rep <- na
+    } else {
+        return(NULL)
+    }
+    out$pend <- if (length(rep)) lapply(rep, dm_recipe_replay)
+    out
+}
+
+## The identity of a recipe across replays: its own id, or that of the
+## recipe it copies; and those of the recipes bound in a frame's lineage.
+dm_recipe_key <- function(r) r$origin %||% r$id
+dm_frame_keys <- function(fr) vapply(fr$steps %||% list(), dm_recipe_key, "")
 
 ## ---- pending columns: products and lookups bound at first use ----
 ##
@@ -358,31 +429,50 @@ dm_frame_later_settled <- function(a, b) {
 
 dm_recipe <- function(kind, deps = list(), ...) {
     r <- list2env(list(...), parent = emptyenv())
-    dm_tmp$recipes <- (dm_tmp$recipes %||% 0) + 1
-    r$id <- sprintf("r%x", as.integer(dm_tmp$recipes))
+    r$id <- dm_recipe_id()
     r$kind <- kind
     r$deps <- deps
     r$frame <- NULL
     r
 }
 
-## the recipes of a and b, those of a first, each once
+dm_recipe_id <- function() {
+    dm_tmp$recipes <- (dm_tmp$recipes %||% 0) + 1
+    sprintf("r%x", as.integer(dm_tmp$recipes))
+}
+
+## A copy of the bound recipe r, not bound, to bind again on another branch
+## (dm_frame_replay()): the same design and coefficients (or lookup table
+## and join), so the same columns; `origin` names the recipe it copies. Its
+## dependencies are left out: they are steps of the same branch, replayed
+## before it (or below the branches' common ancestor).
+dm_recipe_replay <- function(r) {
+    q <- list2env(as.list(r, all.names = TRUE), parent = emptyenv())
+    q$id <- dm_recipe_id()
+    q$origin <- dm_recipe_key(r)
+    q$deps <- list()
+    q$frame <- NULL
+    q
+}
+
+## the recipes of a and b, those of a first, each once (a replayed copy
+## counts as its original)
 dm_pend_union <- function(a, b) {
     if (!length(b)) return(a)
     if (!length(a)) return(b)
-    ids <- vapply(a, function(r) r$id, "")
-    c(a, Filter(function(r) !r$id %in% ids, b))
+    keys <- vapply(a, dm_recipe_key, "")
+    c(a, Filter(function(r) !dm_recipe_key(r) %in% keys, b))
 }
 
 ## the recipes with their dependencies before them, each once
 dm_pend_order <- function(pend) {
     out <- list()
-    ids <- character()
+    keys <- character()
     add <- function(r) {
-        if (r$id %in% ids) return(invisible())
+        if (dm_recipe_key(r) %in% keys) return(invisible())
         for (d in r$deps) add(d)
         out[[length(out) + 1L]] <<- r
-        ids <<- c(ids, r$id)
+        keys <<- c(keys, dm_recipe_key(r))
         invisible()
     }
     for (r in pend) add(r)
@@ -391,13 +481,22 @@ dm_pend_order <- function(pend) {
 
 ## Settled frame `fr` with the recipes `pend` on top: the recipes already
 ## bound (by an earlier use of another column) are folded into the settled
-## frame (the later of it and their frames, which errors for frames on two
-## branches); the others stay pending.
+## frame (the later of it and their frames; for frames on two branches, one
+## replayed on the other, whose copies of recipes join the pending ones, or
+## an error); the others stay pending. (Copies made by a fold go before the
+## recipes already pending: those may sit on the lineage they remake.)
 dm_frame_pending <- function(fr, pend) {
     left <- list()
     for (r in pend) {
-        if (is.null(r$frame)) left[[length(left) + 1L]] <- r
-        else fr <- dm_frame_later_settled(fr, r$frame)
+        if (is.null(r$frame)) {
+            left <- dm_pend_union(left, list(r))
+            next
+        }
+        fr <- dm_frame_later_settled(fr, r$frame)
+        if (length(fr$pend)) {
+            left <- dm_pend_union(fr$pend, left)
+            fr$pend <- NULL
+        }
     }
     fr$pend <- if (length(left)) left
     fr
@@ -405,7 +504,9 @@ dm_frame_pending <- function(fr, pend) {
 
 ## The settled frame of a (possibly pending) frame: its recipes bound one
 ## on the other, in order, on the latest settled frame among it and the
-## frames of the recipes already bound.
+## frames of the recipes already bound. A recipe whose columns the frame
+## already has (a replayed copy of a recipe in its lineage) is not bound
+## again: it reads that frame.
 dm_frame_bind <- function(fr) {
     if (is.null(fr) || !length(fr$pend)) return(fr)
     pend <- dm_pend_order(fr$pend)
@@ -414,6 +515,10 @@ dm_frame_bind <- function(fr) {
     left <- fr$pend
     fr$pend <- NULL
     for (r in left) {
+        if (dm_recipe_key(r) %in% dm_frame_keys(fr)) {
+            r$frame <- fr
+            next
+        }
         fr <- switch(r$kind, mult = dm_bind_mult(r, fr), lookup = dm_bind_lookup(r, fr),
                      stop("internal error: unknown recipe", call. = FALSE))
         r$frame <- fr
@@ -443,6 +548,7 @@ dm_bind_mult <- function(r, fr) {
     x$src <- fr$src
     x$depth <- dm_frame_depth(fr)
     x$path <- fr$path
+    x$steps <- fr$steps
     view <- dm_remote_predict(x, r$B, column = r$nm[1L])
     out <- dm_remote_unscaled(x)
     out$src$select <- sprintf("SELECT * FROM %s", dm_qi(x, unclass(view)[1L]))
@@ -454,7 +560,7 @@ dm_bind_mult <- function(r, fr) {
     out$src$proto <- proto
     out$src$types <- vapply(proto, dm_col_type, "")
     out$depth <- dm_frame_depth(x) + 1L
-    dm_frame_child(out, x)
+    dm_frame_child(out, x, r)
 }
 
 ## The lookup recipe r bound on settled frame fr: the lookup table joined
@@ -467,7 +573,7 @@ dm_bind_lookup <- function(r, fr) {
     out$src$proto <- dm_proto_add(fr, r$col, r$type, sprintf("SELECT * FROM (%s) AS s LIMIT 0", out$src$select))
     out$src$types <- vapply(out$src$proto, dm_col_type, "")
     out$depth <- dm_frame_depth(fr) + 1L
-    dm_frame_child(out, fr)
+    dm_frame_child(out, fr, r)
 }
 
 ## The (possibly pending) frame of the remote columns in `cols`: a column,
@@ -798,6 +904,7 @@ dm_rebase <- function(x, frame) {
     x$src <- frame$src
     x$depth <- dm_frame_depth(frame)
     x$path <- frame$path
+    x$steps <- frame$steps
     x
 }
 
@@ -1378,8 +1485,9 @@ dmc_count <- function(cond, negate = FALSE) {
 ## as products are), so that later expressions refer to them instead of
 ## repeating them (DuckDB expands macros such as dm_qnorm() inline, and
 ## nested expressions would grow without bound). Columns frozen separately
-## from one frame live on sibling frames, which cannot be combined: freeze
-## them together (dmc_cbind()). In memory, the column itself. With table =
+## from one frame live on sibling frames, which cannot be combined (a frozen
+## column is not replayed on another branch): freeze them together
+## (dmc_cbind()). In memory, the column itself. With table =
 ## TRUE, the new frame is a temporary table of the rows used (computed once
 ## for all later queries, which then scan it: for columns that many queries
 ## read, such as the working weights and responses of a GLM with fixed
@@ -1446,6 +1554,7 @@ dmp_materialize <- function(x, cols = NULL) {
     x$filter <- "TRUE"
     x$depth <- 0L
     x$path <- character()
+    x$steps <- NULL
     x$cache <- new.env(parent = emptyenv())
     x$id <- dm_tmp_name("dm")
     x$scale <- sc

@@ -173,13 +173,49 @@ expect_true(same(by_id(e - e1 / sqrt(e2)), rep(0, n)))
 st <- col_compute(D %*% b)
 expect_true(same(by_id(st + D %*% b2), two(M)))
 expect_true(same(by_id(D %*% b2 - st), M %*% b2 - M %*% b))
-## two products each read before they are combined: refused, with the way out
+## two products each read before they are combined (epxj): their views are
+## siblings, so the one read second is replayed on top of the other (one
+## more view, made at the first use of the sum, once); the same values as
+## in memory
+nviews <- function() nrow(DBI::dbGetQuery(con, "SELECT * FROM duckdb_views() WHERE temporary AND NOT internal"))
 p1 <- D %*% b
 p2 <- D %*% b2
 expect_equal(length(as.vector(p1)), n)
 expect_equal(length(as.vector(p2)), n)
-expect_error(p1 + p2, "two different branches")
-expect_error(p1 + p2, "before reading either")
+v0 <- nviews()
+s12 <- p1 + p2
+expect_equal(nviews(), v0)                       # combining runs nothing
+expect_true(same(by_id(s12), two(M)))
+expect_equal(nviews(), v0 + 1L)                  # one view: the replayed product
+expect_true(same(sum(s12), sum(two(M))))
+expect_equal(nviews(), v0 + 1L)                  # bound once
+expect_true(same(by_id(p2 - p1), M %*% b2 - M %*% b))
+expect_true(same(by_id(p1 * p2 + p1), (M %*% b) * (M %*% b2) + M %*% b))
+## a product and a quadratic form, each read first
+q1 <- quadratic_diagonal(D, V)
+e1 <- D %*% b
+expect_true(same(sum(q1), sum(quadratic_diagonal(M, V))))
+expect_true(same(sum(e1), sum(M %*% b)))
+expect_true(same(by_id(e1 / sqrt(q1)), ratio(M)))
+## three products each read first
+p3 <- D %*% (2 * b)
+expect_true(same(sum(p3), 2 * sum(M %*% b)))
+expect_true(same(by_id(p1 + p2 + p3), two(M) + 2 * (M %*% b)))
+## a column stored by col_compute() combines with a product read on its own
+## (the product is replayed on the stored table)
+st1 <- col_compute(D %*% b)
+p4 <- D %*% b2
+expect_true(same(sum(p4), sum(M %*% b2)))
+expect_true(same(by_id(st1 + p4), two(M)))
+## two columns each stored separately cannot be replayed: an error
+st2 <- col_compute(D %*% b2)
+expect_error(st1 + st2, "two different branches")
+expect_error(st1 + st2, "col_compute")
+## (stored together, they combine)
+st12 <- col_compute(D %*% cbind(b, b2))
+expect_true(same(by_id(st12[, 1] + st12[, 2]), two(M)))
+## columns of two designs (a subset is another design): an error
+expect_error(D %*% b + D[DBI::SQL("x > 0"), ] %*% b, "different remote designs")
 ## (one product of both: always combines)
 P12 <- D %*% cbind(b, b2)
 expect_equal(length(as.vector(P12[, 1])), n)

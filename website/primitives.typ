@@ -174,7 +174,7 @@ c(sum = sum(z), sum_na_rm = sum(z, na.rm = TRUE), mean = mean(z, na.rm = TRUE))
 head(as.data.frame(round(r, 2), keep = "id", nm = "resid"))
 ```
 
-Missing values follow R: SQL `NULL` is `NA` and `NaN` stays `NaN`, `is.na()` is true for both, and `sum()`, `mean()`, `min()` and the other summaries give `NA` where base R does, with `na.rm = TRUE` dropping both. Columns of one design combine with each other, also when they come from separate products; columns of two designs do not. A column is valid while its connection is open.
+Missing values follow R: SQL `NULL` is `NA` and `NaN` stays `NaN`, `is.na()` is true for both, and `sum()`, `mean()`, `min()` and the other summaries give `NA` where base R does, with `na.rm = TRUE` dropping both. Columns of one design combine with each other, also when they come from separate products, read or not (a product read on its own is made again, as one more view, where it is combined); columns of two designs do not, nor do two columns stored separately with `col_compute()`. A column is valid while its connection is open.
 
 ```r
 DBI::dbDisconnect(con)

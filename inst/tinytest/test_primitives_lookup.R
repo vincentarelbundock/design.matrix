@@ -136,24 +136,50 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     expect_equal(got[order(got[, 1]), 2], ref_codes)
     expect_equal(crossprod(Dk), crossprod(D))
     ## frame lineage: columns built one on the other combine on the
-    ## descendant frame; columns settled on two branches of the same design
-    ## (two lookups, products or freezes, each bound from one frame before
-    ## they are combined: lk and lk2 were read above) cannot be combined
+    ## descendant frame; for columns settled on two branches of the same
+    ## design (two lookups or products, each bound from one frame before
+    ## they are combined: lk and lk2 were read above), the lookups and
+    ## products of one branch are replayed on the other (epxj: no statement
+    ## for a lookup, one view for a product); frozen columns on two branches
+    ## cannot be combined
     sib <- "two different branches of the same remote design"
-    expect_error(lk + lk2, sib)
-    expect_error(dmc_cbind(lk, lk2), sib)
+    nviews <- function() nrow(DBI::dbGetQuery(con, "SELECT * FROM duckdb_views() WHERE temporary AND NOT internal"))
+    byrow <- function(v) {
+        got <- dmp_collect(dmc_cbind(row, v))
+        got[order(got[, 1]), -1]
+    }
+    v0 <- nviews()
+    expect_equal(byrow(lk + lk2), ref_codes + ref_lv)
+    expect_equal(unname(byrow(dmc_cbind(lk, lk2))), unname(cbind(ref_codes, ref_lv)))
+    expect_equal(nviews(), v0)                   # lookups: no statement
     ## a lookup not read yet binds on top of the settled one
     lk3 <- dmc_lookup(vals, rc("s.code"))
     expect_equal(dmp_collect(lk2 + lk3), ref_lv + ref_codes)
     expect_equal(dmp_collect(lk3 + lk2 + rc("s.x")), ref_codes + ref_lv + d$x)
     p1 <- dmp_mult(D, c(0, 2))
     expect_equal(dmp_collect(p1 - 2 * rc("s.x") + lk), ref_codes)
-    ## (p1 is now settled on top of lk)
-    expect_error(p1 + lk2, sib)
-    expect_error(dmp_collect(dmp_mult(D, c(0, 1)) + lk + lk2), sib)
+    ## (p1 is now settled on top of lk: lk2's lookup is replayed on it)
+    v1 <- nviews()
+    expect_equal(byrow(p1 + lk2), 2 * d$x + ref_lv)
+    expect_equal(nviews(), v1)
+    expect_equal(byrow(dmp_mult(D, c(0, 1)) + lk + lk2), d$x + ref_codes + ref_lv)
+    ## a product read on its own, combined with p1 (read on top of lk):
+    ## one more view, the replayed product
+    p5 <- dmp_mult(D, c(1, 0))
+    expect_equal(dm_colsum(p5), n)
+    v2 <- nviews()
+    expect_equal(byrow(p1 + p5 + lk), 2 * d$x + 1 + ref_codes)
+    expect_equal(nviews(), v2 + 1L)
+    ## the copies of a recipe add the columns of the original: a frame that
+    ## has them (from an earlier replay) does not get them twice
+    s15 <- p1 + p5
+    expect_equal(byrow(s15 + p5), 2 * d$x + 2)
     f1 <- design.matrix:::dmc_freeze(rc("s.x") + 1)
     f2 <- design.matrix:::dmc_freeze(rc("s.x") + 2)
     expect_error(f1 + f2, sib)
+    expect_error(f1 + f2, "stored \\(col_compute\\(\\)\\) or frozen")
+    ## a frozen column and a lookup read on its own: the lookup is replayed
+    expect_equal(byrow(f1 + lk2), d$x + 1 + ref_lv)
     f12 <- design.matrix:::dmc_freeze(dmc_cbind(rc("s.x") + 1, rc("s.x") + 2))
     expect_equal(dmp_collect(design.matrix:::dmc_col(f12, 2) - design.matrix:::dmc_col(f12, 1)), rep(1, n))
     ## (frames without a lineage, from older objects: the deeper one)
@@ -222,13 +248,15 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     expect_equal(got[order(got[, 1]), 2], ref_codes + d$x)
     expect_identical(dmc_bind(list(1:3, NULL)), list(1:3, NULL))
     ## without dmc_bind(), the same two columns read one by one sit on two
-    ## branches: the error says how to avoid it
+    ## branches: the lookup is replayed on the product's frame (no statement)
     r1 <- dmc_lookup(vals, rc("s.code"))
     r2 <- dmp_mult(D, c(0, 1))
     dm_colsum(r2)
     expect_true(is.na(dm_colsum(r1)))
-    expect_error(r1 + r2, sib)
-    expect_error(r1 + r2, "combine the columns before reading either")
+    v3 <- nviews()
+    got <- dmp_collect(dmc_cbind(row, r1 + r2))
+    expect_equal(got[order(got[, 1]), 2], ref_codes + d$x)
+    expect_equal(nviews(), v3)
     ## dmc_on() refuses a column whose recipes are not bound
     expect_error(design.matrix:::dmc_on(dmp_mult(D, c(1, 0)), D), "pending column")
     ## dmp_materialize(x, cols) binds the pending columns it is given

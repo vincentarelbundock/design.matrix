@@ -141,8 +141,8 @@ reads them with columns of the remote data (to join them back), and
 makes a column from a column of the remote data. Columns of one design
 combine, separate products included (\code{D \%*\% b1 + D \%*\% b2}): a
 product becomes a view only when it is first read, on top of the
-products it is combined with (two products each read before they are
-combined cannot be).
+products it is combined with (a product read before it is combined is
+made again, as one more view, next to the other).
 \item \code{as.matrix(D)} collects the rows and builds the dense matrix, only when
 there are at most \code{getOption("design.matrix.remote_max_rows", 1e5)} rows
 or with \code{force = TRUE}.
