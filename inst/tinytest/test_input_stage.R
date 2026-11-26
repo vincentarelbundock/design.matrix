@@ -7,8 +7,8 @@
 # * weights: LM "missing or negative weights not allowed", GLM "negative
 #   weights not allowed";
 # * a factor response with a non-binomial family errors in memory, fits remotely;
-# * a two-column response, a matrix offset, a subset leaving no rows: other
-#   errors remotely than in memory;
+# * a two-column response, a subset leaving no rows: other errors remotely
+#   than in memory;
 # * na.action = na.pass with FE: fits in memory, refused remotely.
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
@@ -329,7 +329,23 @@ expect_error(design_lm(y ~ x | id, d, offset = cbind(z, z)),
 expect_error(design_glm(k ~ x | id, poisson, d, offset = cbind(z, z)),
              "number of offsets is 80 should equal 40 (number of observations)", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", offset = cbind(z, z)),
-             "`cbind(z, z)` gives 80 values for 40 rows.", fixed = TRUE)
+             "number of offsets is 80, should equal 40 (number of observations)", fixed = TRUE)
+expect_error(design_lm(y ~ x + offset(cbind(z, z)), con, table = "d"),
+             "number of offsets is 80, should equal 40 (number of observations)", fixed = TRUE)
+expect_error(design_lm(y ~ x, con, table = "d", subset = x > 0, offset = cbind(z, z)),
+             sprintf("number of offsets is %d, should equal %d (number of observations)",
+                     2L * sum(d$x > 0), sum(d$x > 0)), fixed = TRUE)
+expect_error(design_lm(y ~ x, d, subset = x > 0, offset = cbind(z, z)),
+             sprintf("number of offsets is %d, should equal %d (number of observations)",
+                     2L * sum(d$x > 0), sum(d$x > 0)), fixed = TRUE)
+expect_error(design_glm(y ~ x, gaussian, con, table = "d", offset = cbind(z, z)),
+             "number of offsets is 80 should equal 40 (number of observations)", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, con, table = "d", offset = cbind(z, z)),
+             "number of offsets is 80 should equal 40 (number of observations)", fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, con, table = "d", offset = cbind(z, z)),
+             "number of offsets is 80 should equal 40 (number of observations)", fixed = TRUE)
+expect_error(design_glm(cbind(b1, fails) ~ x, binomial, con, table = "d", offset = cbind(z, z)),
+             "number of offsets is 80 should equal 40 (number of observations)", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, offset = cbind(z, z), weights = ch),
              "'weights' must be a numeric vector", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, d, offset = cbind(z, z), weights = ch),

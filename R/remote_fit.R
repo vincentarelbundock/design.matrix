@@ -168,10 +168,7 @@ dm_problem_memory <- function(call, env, contrasts, family, fe, clv) {
     w <- as.vector(stats::model.weights(mf))
     if (!is.null(w) && !is.numeric(w)) stop("'weights' must be a numeric vector", call. = FALSE)
     off <- as.vector(stats::model.offset(mf))
-    if (!is.null(off) && length(off) != NROW(y))
-        stop(gettextf(if (lm) "number of offsets is %d, should equal %d (number of observations)"
-                      else "number of offsets is %d should equal %d (number of observations)",
-                      length(off), NROW(y)), call. = FALSE)
+    if (!is.null(off)) dm_offset_length(length(off), NROW(y), lm)
     if (!lm) {
         if (!is.null(w)) w <- as.double(w)
         if (!is.null(off)) off <- as.double(off)
@@ -180,6 +177,15 @@ dm_problem_memory <- function(call, env, contrasts, family, fe, clv) {
     list(x = X, y = y, w = w, off = off, frame = mf, na.action = attr(mf, "na.action"), exclude = FALSE,
          rows = seq_len(nrow(mf)), nall = nrow(mf), terms = mt, formula = stats::formula(mt),
          contrasts = X$contrasts, xlevels = stats::.getXlevels(mt, mf), env = environment(mt))
+}
+
+## An offset of the wrong length (a matrix): the error of lm() for a
+## linear model without FE, of glm() otherwise.
+dm_offset_length <- function(noff, n, lm) {
+    if (noff != n)
+        stop(gettextf(if (lm) "number of offsets is %d, should equal %d (number of observations)"
+                      else "number of offsets is %d should equal %d (number of observations)",
+                      noff, n), call. = FALSE)
 }
 
 ## The terms of the main formula of an FE fit, from those of its model
@@ -237,6 +243,8 @@ dm_problem_remote <- function(call, env, formula, source, contrasts, dots, famil
     r <- dm_remote_fit(formula, src, args, env, dots, contrasts, logical = "subset",
                        present = unique(c(unlist(fe$fe, use.names = FALSE), clv, resp$present)), na = na)
     D <- r$x
+    ## an offset with several columns: its number of values, as in memory
+    if (r$offk > 1L) dm_offset_length(r$offk * D$n, D$n, is.null(family) && is.null(fe))
     y <- if (length(resp$present)) dmglm_remote_factor(D, resp$present) else r$cols$y
     list(x = D, y = y, w = r$cols$weights, off = r$off, resp = list(a = r$cols$a, b = r$cols$b, cbind = resp$cbind),
          na.action = if (na == "exclude") dm_remote_exclude(D), exclude = na == "exclude", rows = NULL, nall = D$n,
@@ -265,7 +273,8 @@ dm_problem_remote <- function(call, env, formula, source, contrasts, dots, famil
 ## as model.frame(drop.unused.levels = TRUE) gives them in memory.
 ## Returns list(x = the design, cols = named list of columns (NULL for
 ## absent arguments), off = the offset (offset() terms plus the `offset`
-## argument) or NULL).
+## argument) or NULL, offk = the largest number of columns of an offset
+## evaluated in R (a matrix: the caller reports its length, as in memory)).
 dm_remote_fit <- function(formula, src, args, env, dots, contrasts = NULL, logical = character(),
                           present = character(), na = "omit") {
     miss <- setdiff(present, names(src$types))
@@ -287,6 +296,7 @@ dm_remote_fit <- function(formula, src, args, env, dots, contrasts = NULL, logic
     res <- list()
     items <- list()
     exprs <- list()
+    mat <- list()
     for (nm in names(all)) {
         a <- dm_resolve_or_eval(all[[nm]], env, src$types, con, label(nm), bool = nm %in% logical)
         if (is.null(a$expr)) {
@@ -296,6 +306,7 @@ dm_remote_fit <- function(formula, src, args, env, dots, contrasts = NULL, logic
         col <- paste0("__dm_eval", length(exprs) + 1L)
         items[[label(nm)]] <- a
         exprs[[col]] <- a$expr
+        if (nm == "offset" || nm %in% names(offt)) mat[[col]] <- "offset"
         res[[nm]] <- list(sql = if (nm %in% logical) sprintf("s.%s", q(col)) else sprintf("CAST(s.%s AS DOUBLE)", q(col)),
                           inputs = col, logical = nm %in% logical)
     }
@@ -303,14 +314,27 @@ dm_remote_fit <- function(formula, src, args, env, dots, contrasts = NULL, logic
         dots <- dm_untranslated_engine(items, dots)
         lg <- unlist(lapply(res, function(r) if (isTRUE(r$logical)) r$inputs))
         src <- dm_materialize(src, exprs, env, logical = lg,
-                              chunk_size = dots$chunk_size %||% getOption("design.matrix.chunk_size", 250000))
+                              chunk_size = dots$chunk_size %||% getOption("design.matrix.chunk_size", 250000),
+                              matrix = mat)
     }
+    offk <- max(c(1L, unlist(attr(src, "ncol"))))
     dots$table <- dots$sql <- NULL
     nonlog <- setdiff(names(res), c(logical, names(offt)))
     extra <- stats::setNames(lapply(res[nonlog], function(r) list(sql = r$sql, inputs = r$inputs, kind = "numeric")),
                              sprintf("(%s)", nonlog))
     for (col in present) extra[[paste0("(present:", col, ")")]] <- list(inputs = col, kind = "present")
     override <- lapply(res[names(offt)], function(r) list(sql = r$sql, inputs = r$inputs))
+    if (offk > 1L && length(offt)) {
+        ## (an offset() term gave a matrix, which the caller reports with
+        ## the number of rows used: the offset() terms are then columns
+        ## that only select rows, and the design that of the other terms)
+        for (nm in names(offt)) extra[[sprintf("(%s)", nm)]] <- c(override[[nm]], kind = "numeric")
+        override <- list()
+        tr <- stats::terms(rhs, data = src$proto)
+        tl <- attr(tr, "term.labels")
+        rhs <- stats::reformulate(if (length(tl)) tl else "1", intercept = attr(tr, "intercept") > 0L,
+                                  env = environment(rhs))
+    }
     sub <- if (any(logical %in% names(res))) paste(sprintf("(%s)", vapply(res[intersect(logical, names(res))], `[[`, "", "sql")), collapse = " AND ")
     D <- dm_remote(rhs, src, contrasts, NULL, dots, drop_unused = TRUE, subset = sub, extra = extra,
                    override = override)
@@ -318,7 +342,8 @@ dm_remote_fit <- function(formula, src, args, env, dots, contrasts = NULL, logic
     cols <- lapply(names(args), function(nm) if (!is.null(res[[nm]])) dm_rcols(D, res[[nm]]$sql))
     names(cols) <- names(args)
     off <- c(res[["offset"]]$sql, vapply(res[names(offt)], `[[`, "", "sql"))
-    list(x = D, cols = cols, off = if (length(off)) dm_rcols(D, paste(sprintf("(%s)", off), collapse = " + ")))
+    list(x = D, cols = cols, off = if (length(off)) dm_rcols(D, paste(sprintf("(%s)", off), collapse = " + ")),
+         offk = offk)
 }
 
 ## na.fail and na.pass: the errors of lm() when rows have missing values.
@@ -490,10 +515,17 @@ dm_remote_new_offset <- function(object, D) {
 ##     exprs), list(inputs, factor, label), see dm_eval_model(). Their
 ##     columns and kinds are returned in the attribute "model" of the
 ##     result: list(kind, cols) per expression.
+##   matrix: for expressions that may give a matrix with one row per row
+##     (named as in exprs): "offset" (its first column is written, and its
+##     number of columns returned in the attribute "ncol" of the result, for
+##     the caller's error), or the message of the error for a matrix with
+##     several columns. A one-column matrix is its column.
 ## Returns the new source (dm_remote_source() of the temporary table),
 ## which keeps the original one alive.
-dm_materialize <- function(src, exprs, env, logical = character(), chunk_size = 250000, model = list()) {
+dm_materialize <- function(src, exprs, env, logical = character(), chunk_size = 250000, model = list(),
+                           matrix = list()) {
     info <- list()
+    ncols <- list()
     con <- src$holder$con
     q <- function(x) as.character(DBI::dbQuoteIdentifier(con, x))
     from <- src$base_table
@@ -525,6 +557,13 @@ dm_materialize <- function(src, exprs, env, logical = character(), chunk_size = 
             }
             v <- eval(exprs[[nm]], chunk, env)
             if (length(v) == 1L && nrow(chunk) != 1L) v <- rep(v, nrow(chunk))
+            if (!is.null(matrix[[nm]]) && length(dim(v)) == 2L && nrow(v) == nrow(chunk)) {
+                if (ncol(v) > 1L) {
+                    if (!identical(matrix[[nm]], "offset")) stop(matrix[[nm]], call. = FALSE)
+                    ncols[[nm]] <<- max(ncols[[nm]] %||% 1L, ncol(v))
+                }
+                v <- v[, 1L]
+            }
             if (length(v) != nrow(chunk) || !is.null(dim(v)))
                 stop(sprintf("`%s` gives %d values for %d rows.", deparse2(exprs[[nm]]), length(v), nrow(chunk)),
                      call. = FALSE)
@@ -546,15 +585,24 @@ dm_materialize <- function(src, exprs, env, logical = character(), chunk_size = 
         while (a <= hi) {
             chunk <- DBI::dbGetQuery(con, sprintf("SELECT * FROM %s WHERE rowid >= %.0f AND rowid < %.0f",
                                                   from, a, a + chunk_size))
-            if (nrow(chunk)) write(evaluate(chunk))
+            ## (evaluated before the write, so that its errors are not
+            ## reported as errors of dbWriteTable())
+            if (nrow(chunk)) {
+                chunk <- evaluate(chunk)
+                write(chunk)
+            }
             a <- a + chunk_size
         }
     }
-    if (!created) write(evaluate(src$proto))
+    if (!created) {
+        chunk <- evaluate(src$proto)
+        write(chunk)
+    }
     new <- dm_remote_source(con, out, NULL)
     new$parent <- src$holder
     new$label <- paste(src$label, "(with columns computed in R)")
     attr(new, "model") <- info
+    attr(new, "ncol") <- ncols
     new
 }
 
