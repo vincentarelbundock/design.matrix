@@ -78,8 +78,8 @@
 #' the rows used) and each batch goes through `design_matrix(spec, batch)`.
 #' `engine = "auto"` (default) uses SQL when every variable can be
 #' translated, and otherwise the chunked engine, with a message naming the
-#' first term that cannot be translated. [design_explain()] shows the
-#' decision for each term, and the generated SQL.
+#' first term that cannot be translated. `summary(D)` shows the decision
+#' for each term, and `summary(D, sql = TRUE)` the generated SQL.
 #'
 #' In the chunked engine, a variable evaluated in R is taken as missing,
 #' when selecting rows in SQL, if one of its input columns is missing; rows
@@ -88,30 +88,38 @@
 #' data has counted the rows kept.
 #'
 #' @section Operations:
-#' * `crossprod(D)`: `X'X`.
-#' * `crossprod(D, "y")`: `X'y` for a column (or several columns) of the
-#'   remote data.
-#' * [design_moments()]: `X'X`, `X'y`, `y'y` and the number of rows in
-#'   one call, from the response of the formula by default, optionally
-#'   weighted by a column (`weights = "w"`): what (weighted) least squares
-#'   needs.
-#' * `colSums(D)`, `colMeans(D)`, and with `group = "g"`, the sums or means
-#'   within the groups of a column (sorted as [base::rowsum()] sorts them);
-#'   `weights = "w"` weights the rows.
-#' * `D %*% beta` or [design_predict()]: the linear predictor, written to a
-#'   temporary view (SQL engine) or table (chunked engine) whose name is
-#'   returned.
+#' The operations of a design in memory (see [design_algebra] and
+#' [design_arithmetic]), computed in the database:
+#' * `crossprod(D)`: `X'X`; `crossprod(D, "y")`: `X'y` for one or more
+#'   columns of the remote data (or a `DBI::SQL()` expression).
+#' * Scaled rows: `"w" * D` (a column name), `DBI::SQL("1 / v") * D` (an
+#'   expression over the columns), `2 * D`, `D / "w"` and `-D` scale each
+#'   row, as `w * D` with a numeric vector in memory. So `crossprod(D, "w" *
+#'   D)` is `X'WX`, `crossprod("w" * D, "y")` is `X'Wy` and `colSums("w" * D,
+#'   group = "g")` the weighted sums within groups. Only one design is
+#'   involved: `crossprod(x, y)` needs `y` to be `x` with other scales.
+#' * `colSums(D)`, `colMeans(D)`, and with `group = "g"` (a column, or a
+#'   `DBI::SQL()` expression), the sums or means within groups (sorted as
+#'   [base::rowsum()] sorts them).
+#' * `D %*% beta`: the linear predictor, with all the columns of the remote
+#'   data (to join it back), written to a temporary view (SQL engine) or
+#'   table (chunked engine) whose name is returned, as a string of class
+#'   `dm_remote_table`; [as.data.frame()] reads it, and its `"connection"`
+#'   attribute is the connection where it lives (for a Parquet source, a
+#'   private one). To keep it, create a table from it:
+#'   `DBI::dbExecute(con, sprintf("CREATE TABLE preds AS SELECT * FROM %s", p))`.
 #' * `as.matrix(D)` collects the rows and builds the dense matrix, only when
 #'   there are at most `getOption("design.matrix.remote_max_rows", 1e5)` rows
 #'   or with `force = TRUE`.
 #' * `design_matrix(D, newdata)` applies the design to a data frame, and
 #'   `design_matrix(D, con, table = ...)` to other remote data.
+#' * `summary(D)`: the engine and, for each term, whether SQL computes it.
 #'
 #' @section Compression:
 #' When the rows have few distinct *design patterns* (the same values in
 #' every input column of the design, as with factors and discrete numeric
-#' variables), `crossprod()`, `colSums()`, `colMeans()`, [design_moments()]
-#' and [design_lm()] run one `GROUP BY` over those columns, which returns
+#' variables), `crossprod()`, `colSums()`, `colMeans()` and [design_lm()]
+#' run one `GROUP BY` over those columns, which returns
 #' each pattern with its number of rows and the sums of the weights and
 #' responses, and compute the result from the design of the patterns, in
 #' memory. This works with both engines (a variable evaluated in R is
@@ -122,7 +130,7 @@
 #' patterns; `TRUE` always compresses (unless every row is distinct);
 #' `FALSE` never does. Designs that keep rows with missing values
 #' (`na.action = na.pass`) are not compressed, nor are products with a
-#' response or weights column that has missing values.
+#' column or row scale that has missing values.
 #'
 #' Remote designs keep only the *Algebra* promise of the package: results
 #' agree with the in-memory computation up to floating point rounding. With
@@ -141,11 +149,10 @@
 #'     DBI::dbWriteTable(con, "d", d)
 #'     D <- design_matrix(y ~ x * f, con, table = "d")
 #'     D
-#'     crossprod(D)
-#'     m <- design_moments(D)
-#'     solve(m$xtx, m$xty)
-#'     p <- D %*% solve(m$xtx, m$xty)
+#'     beta <- solve(crossprod(D), crossprod(D, "y"))
+#'     p <- D %*% beta
 #'     head(as.data.frame(p))
+#'     summary(D)
 #'     DBI::dbDisconnect(con)
 #' }
 #' @name design_remote
@@ -496,6 +503,8 @@ dm_remote_finish <- function(D, engine) {
     D$n <- as.numeric(dm_query(D, sprintf("SELECT COUNT(*) AS n FROM (%s) AS s WHERE %s",
                                            D$src$select, D$filter))$n)
     D$cache <- new.env(parent = emptyenv())
+    ## identifies the design through copies with scaled rows
+    D$id <- dm_tmp_name("dm")
 
     ## which terms SQL can compute
     D$terms <- dm_remote_terms(D)
@@ -584,6 +593,7 @@ dm_remote_terms <- function(D) {
 print.dm_remote <- function(x, ...) {
     cat(sprintf("<remote design_matrix: %s rows x %d columns>\n", dm_fmt_count(x$cache$n %||% x$n), x$p))
     cat("source: ", x$src$label, "\n", sep = "")
+    if (!is.null(x$scale)) cat("rows scaled by: ", x$scale, "\n", sep = "")
     if (x$engine == "sql") {
         cat("engine: sql (all terms pushed down)\n")
     } else {
@@ -606,15 +616,6 @@ dim.dm_remote <- function(x) c(x$cache$n %||% x$n, x$p)
 #' @export
 dimnames.dm_remote <- function(x) list(NULL, x$colnames)
 
-#' @export
-as.matrix.dm_remote <- function(x, force = FALSE, ...) {
-    max_rows <- getOption("design.matrix.remote_max_rows", 1e5)
-    if (!isTRUE(force) && nrow(x) > max_rows)
-        stop(sprintf("The remote design has %s rows (more than %s): use `force = TRUE` to build the dense matrix in memory.",
-                     dm_fmt_count(nrow(x)), dm_fmt_count(max_rows)), call. = FALSE)
-    chunk <- dm_query(x, dm_chunk_sql(x, dm_remote_inputs(x)))
-    as.matrix(dm_chunk_design(x, chunk)$design)
-}
 
 ## A column name argument (y, weights, group): check and quote.
 dm_remote_column <- function(D, x, what, several = FALSE) {
@@ -657,37 +658,15 @@ dm_remote_extend <- function(D, exprs, what = "expression") {
     D
 }
 
-#' Residuals of a linear fit on a remote design
-#'
-#' `design_residuals(D, beta)` returns the remote design `D` (see
-#' [design_remote]) over the same rows, with two more columns in its remote
-#' data: `.fitted`, the linear predictor `X %*% beta`, and `.resid`, the
-#' response minus `.fitted`. They can be used, like any column, as the
-#' `weights`, `group` or `y` of [design_moments()], `colSums()` and
-#' `colMeans()`, which also accept SQL expressions (`DBI::SQL()`) over the
-#' columns. This is what sandwich covariance matrices need, as sums over
-#' the rows:
-#'
-#' ```
-#' R <- design_residuals(D, beta)
-#' meat_hc <- design_moments(R, weights = DBI::SQL('".resid" * ".resid"'))$xtx
-#' scores  <- colSums(R, group = "cluster", weights = ".resid")  # G x p
-#' meat_cl <- crossprod(scores)
-#' ```
-#'
-#' The predictions are those of [design_predict()], kept in a temporary view
-#' (SQL engine) or table (chunked engine), so each use of the result
-#' recomputes or rereads them.
-#'
-#' @param x A remote design.
-#' @param beta Coefficients, a numeric vector of length `ncol(x)`.
-#' @param y The name of the response column, or `NULL` (default) for the
-#'   response of the formula.
-#' @return A remote design.
-#' @export
-design_residuals <- function(x, beta, y = NULL) {
+## Residuals of a linear fit: the remote design over the same rows, with two
+## more columns in its remote data, `.fitted` (X beta) and `.resid` (the
+## response minus `.fitted`), usable as any column, for instance to scale
+## the design (`".resid" * R`) for sandwich covariance matrices. The
+## predictions live in a temporary view (SQL engine) or table (chunked).
+dm_remote_residuals <- function(x, beta, y = NULL) {
     checkmate::assert_class(x, "dm_remote")
     checkmate::assert_numeric(beta, len = x$p, any.missing = FALSE)
+    x <- dm_remote_unscaled(x)
     yy <- dm_remote_y(x, y)
     if (is.null(yy)) stop("Give `y`: the design has no response.", call. = FALSE)
     if (length(yy$cols) != 1L) stop("`y` must be a single column.", call. = FALSE)
@@ -697,7 +676,7 @@ design_residuals <- function(x, beta, y = NULL) {
     taken <- intersect(c(".fitted", ".resid"), names(x$src$types))
     if (length(taken))
         stop(sprintf("The remote data already has a column `%s`.", taken[1L]), call. = FALSE)
-    view <- design_predict(x, beta, column = ".fitted")
+    view <- dm_remote_predict(x, beta, column = ".fitted")
     out <- x
     out$src$select <- sprintf("SELECT * FROM %s", dm_qi(x, unclass(view)[1L]))
     out$src$base_table <- NULL
@@ -706,112 +685,63 @@ design_residuals <- function(x, beta, y = NULL) {
     out
 }
 
-## The response column of a formula design (for design_moments()).
+## The response column of a formula design.
 dm_remote_y <- function(D, y) {
     if (!is.null(y)) return(list(cols = dm_remote_column(D, y, "y", several = TRUE), response = FALSE))
     if (is.null(D$response)) return(NULL)
     list(cols = D$response, response = TRUE)
 }
 
-#' Moments for least squares
-#'
-#' `design_moments()` returns what least squares needs from a design:
-#' `X'X`, `X'y`, `y'y` and the number of rows, optionally weighted. For a
-#' remote design (see [design_remote]), everything is computed in the
-#' database (or in one pass of the chunked engine).
-#'
-#' @param x A design matrix, or a remote design.
-#' @param y The response. For a remote design: `NULL` (default) for the
-#'   response of the formula (if any; without one, only `X'X` is computed),
-#'   or the names of one or more numeric columns.
-#'   For a design in memory: a numeric vector or matrix with one row per row
-#'   of `x`.
-#' @param weights Optional weights: for a remote design, the name of a
-#'   numeric column or a SQL expression over the columns (`DBI::SQL()`);
-#'   for a design in memory, a numeric vector.
-#' @return A list with `xtx` (`X'WX`), `xty` (`X'Wy`, one column per
-#'   response, or `NULL`), `yty` (`y'Wy`, a matrix, or `NULL`), `n` (rows)
-#'   and `sumw` (sum of the weights, `n` without weights).
-#' @examples
-#' d <- data.frame(y = rnorm(20), x = rnorm(20), f = gl(2, 10))
-#' m <- design_moments(design_matrix(y ~ x + f, d), d$y)
-#' solve(m$xtx, m$xty)
-#' @export
-design_moments <- function(x, y = NULL, weights = NULL) {
-    if (inherits(x, "dm_remote")) {
-        yy <- dm_remote_y(x, y)
-        wa <- dm_remote_arg(x, weights, "weights")
-        x <- wa$D
-        weights <- wa$col
-        out <- dm_compressed_moments(x, yy, weights)
-        if (is.null(out))
-            out <- if (x$engine == "sql") dm_sql_moments(x, yy, weights) else dm_chunked_moments(x, yy, weights)
-        x$cache$n <- out$n
-        return(out)
-    }
-    checkmate::assert_class(x, "design_matrix")
-    if (is.null(y)) stop("Give `y` for a design in memory.", call. = FALSE)
-    Y <- if (is.matrix(y)) y else matrix(y, ncol = 1L, dimnames = list(NULL, "y"))
-    checkmate::assert_matrix(Y, mode = "numeric", nrows = nrow(x), .var.name = "y")
-    if (is.null(weights)) {
-        xtx <- crossprod(x)
-        xty <- crossprod(x, Y)
-        yty <- crossprod(Y)
-        sumw <- nrow(x)
-    } else {
-        checkmate::assert_numeric(weights, len = nrow(x))
-        xtx <- crossprod(x, weights * x)
-        xty <- crossprod(x, weights * Y)
-        yty <- crossprod(Y, weights * Y)
-        sumw <- sum(weights)
-    }
-    list(xtx = xtx, xty = xty, yty = yty, n = nrow(x), sumw = sumw)
+## X'WX, X'Wy, y'Wy, n and the sum of the weights of a remote design, in
+## one pass where possible (compressed, SQL or chunked). `weights`: a column
+## name, a DBI::SQL() expression or NULL; `y`: columns, or NULL for the
+## response of the formula.
+dm_remote_moments <- function(x, y = NULL, weights = NULL) {
+    yy <- dm_remote_y(x, y)
+    wa <- dm_remote_arg(x, weights, "weights")
+    x <- wa$D
+    weights <- wa$col
+    out <- dm_compressed_moments(x, yy, weights)
+    if (is.null(out))
+        out <- if (x$engine == "sql") dm_sql_moments(x, yy, weights) else dm_chunked_moments(x, yy, weights)
+    x$cache$n <- out$n
+    out
 }
 
-#' Linear predictions written to the database
-#'
-#' `design_predict(D, beta)` computes `X %*% beta` for a remote design (see
-#' [design_remote]) and writes it, with columns of the remote data, to a new
-#' view or table. `D %*% beta` is `design_predict(D, beta)`.
-#'
-#' With the SQL engine and no `name`, the result is a temporary view, which
-#' computes the predictions each time it is read; with `name`, a table is
-#' created and filled. The chunked engine writes a temporary table, or the
-#' table `name`.
-#'
-#' @param x A remote design.
-#' @param beta Coefficients: a numeric vector of length `ncol(x)`, or a
-#'   matrix with `ncol(x)` rows (one output column per column).
-#' @param name Name of a table to create and keep, or `NULL` for a temporary
-#'   view or table that disappears with the connection.
-#' @param column Name of the prediction column (with several columns in
-#'   `beta`, their column names, or `column` followed by 1, 2, ...).
-#' @param keep Columns of the remote data to copy next to the predictions,
-#'   to join them back. `NULL` (default) keeps all the columns.
-#' @param overwrite Replace an existing table `name`?
-#' @return The name of the view or table, a character string of class
-#'   `dm_remote_table`; [as.data.frame()] reads it into R, and its
-#'   `"connection"` attribute is the connection where it lives (useful for
-#'   a Parquet source, which has a private connection).
-#' @export
-design_predict <- function(x, beta, name = NULL, column = ".fitted", keep = NULL, overwrite = FALSE) {
+## X %*% beta written to a temporary view (SQL engine) or table (chunked
+## engine), or to the table `name`, with the columns `keep` (default: all)
+## of the remote data. Returns the name, of class dm_remote_table.
+dm_remote_predict <- function(x, beta, name = NULL, column = ".fitted", keep = NULL, overwrite = FALSE) {
     checkmate::assert_class(x, "dm_remote")
     p <- x$p
     B <- if (is.matrix(beta)) beta else matrix(beta, ncol = 1L)
     checkmate::assert_matrix(B, mode = "numeric", nrows = p, any.missing = FALSE, .var.name = "beta")
     checkmate::assert_true(all(is.finite(B)), .var.name = "all(is.finite(beta))")
     storage.mode(B) <- "double"
-    checkmate::assert_string(name, null.ok = TRUE)
-    checkmate::assert_string(column)
-    checkmate::assert_flag(overwrite)
+    sc <- x$scale
+    x <- dm_remote_unscaled(x)
     keep <- if (is.null(keep)) names(x$src$types) else dm_remote_column(x, keep, "keep", several = TRUE)
     outcols <- if (ncol(B) == 1L) column else colnames(B) %||% paste0(column, seq_len(ncol(B)))
     if (any(outcols %in% keep))
-        stop("The prediction column clashes with a kept column; change `column` or `keep`.", call. = FALSE)
-    out <- if (x$engine == "sql") {
-        dm_sql_predict(x, B, name, outcols, keep, overwrite)
+        stop("The prediction column clashes with a column of the remote data.", call. = FALSE)
+    if (!is.null(sc)) {
+        ## rows scaled: the predictions times the scale
+        x <- dm_remote_extend(x, c(`__dm_scale` = sc), "scale")
+        tmp <- if (x$engine == "sql") dm_sql_predict(x, B, NULL, outcols, c(keep, "__dm_scale"), FALSE)
+               else dm_chunked_predict(x, B, NULL, outcols, c(keep, "__dm_scale"), FALSE)
+        sel <- sprintf("SELECT %s FROM %s", paste(c(dm_qi(x, keep),
+                       sprintf("%s * \"__dm_scale\" AS %s", dm_qi(x, outcols), dm_qi(x, outcols))), collapse = ", "),
+                       dm_qi(x, tmp))
+        if (is.null(name)) {
+            name <- dm_tmp_name("dm_pred")
+            dm_execute(x, sprintf("CREATE TEMPORARY VIEW %s AS %s", dm_qi(x, name), sel))
+        } else {
+            dm_execute(x, sprintf("CREATE %sTABLE %s AS %s", if (overwrite) "OR REPLACE " else "", dm_qi(x, name), sel))
+        }
+        out <- name
     } else {
-        dm_chunked_predict(x, B, name, outcols, keep, overwrite)
+        out <- if (x$engine == "sql") dm_sql_predict(x, B, name, outcols, keep, overwrite)
+               else dm_chunked_predict(x, B, name, outcols, keep, overwrite)
     }
     structure(out, class = "dm_remote_table", connection = dm_con(x), holder = x$src$holder)
 }
@@ -833,39 +763,154 @@ as.data.frame.dm_remote_table <- function(x, ...) {
 `%*%.dm_remote` <- function(x, y) {
     if (!inherits(x, "dm_remote"))
         stop("Only `design %*% beta` is supported, with the design first.", call. = FALSE)
-    design_predict(x, y)
+    dm_remote_predict(x, y)
+}
+
+## Scaled rows, as `w * D` for a design in memory: the scale is a SQL
+## expression over the columns of the remote data (a number, a column
+## name, or a DBI::SQL() expression), kept unevaluated in `x$scale`.
+dm_remote_scale_sql <- function(D, s, op) {
+    if (inherits(s, "SQL")) {
+        checkmate::assert_string(as.character(s), .var.name = "scale")
+        e <- sprintf("(%s)", as.character(s))
+    } else if (is.character(s)) {
+        dm_remote_column(D, s, "scale")
+        if (!D$src$types[[s]] %in% c("double", "integer", "logical"))
+            stop(sprintf("Column `%s` is not numeric.", s), call. = FALSE)
+        e <- sprintf("CAST(%s AS DOUBLE)", dm_qi(D, s))
+    } else if (is.numeric(s) && length(s) == 1L && is.null(dim(s))) {
+        e <- dm_sql_double(s)
+    } else {
+        stop("A remote design can only be scaled by a number, the name of a column or a DBI::SQL() expression.",
+             call. = FALSE)
+    }
+    if (op == "/") e <- sprintf("(CAST(1 AS DOUBLE) / %s)", e)
+    out <- if (is.null(D$scale)) e else sprintf("%s * %s", D$scale, e)
+    ## check the expression now
+    dm_remote_extend(D, c(`__dm_scale` = out), "scale")
+    out
+}
+
+#' @export
+Ops.dm_remote <- function(e1, e2) {
+    op <- .Generic
+    if (nargs() == 1L) {
+        if (op == "+") return(e1)
+        if (op == "-") {
+            e1$scale <- dm_remote_scale_sql(e1, -1, "*")
+            return(e1)
+        }
+    } else if (op %in% c("*", "/")) {
+        d1 <- inherits(e1, "dm_remote")
+        d2 <- inherits(e2, "dm_remote")
+        if (d1 && d2) stop(sprintf("`%s` between two remote designs is not supported.", op), call. = FALSE)
+        if (op == "/" && d2) stop("Only `design / scale` is supported, with the design first.", call. = FALSE)
+        D <- if (d1) e1 else e2
+        D$scale <- dm_remote_scale_sql(D, if (d1) e2 else e1, op)
+        return(D)
+    }
+    stop(sprintf("`%s` is not supported for remote designs.", op), call. = FALSE)
+}
+
+## The design without its row scale.
+dm_remote_unscaled <- function(D) {
+    D$scale <- NULL
+    D
+}
+
+## A remote design and its scale as a weights argument (DBI::SQL() or NULL).
+dm_remote_weights <- function(D, extra = NULL) {
+    w <- c(D$scale, extra)
+    list(D = dm_remote_unscaled(D),
+         w = if (length(w)) DBI::SQL(paste(w, collapse = " * ")) else NULL)
+}
+
+## Is `b` the same remote design as `a` (up to the row scale)?
+dm_remote_same <- function(a, b) identical(a$id, b$id)
+
+#' @export
+as.matrix.dm_remote <- function(x, force = FALSE, ...) {
+    max_rows <- getOption("design.matrix.remote_max_rows", 1e5)
+    if (!isTRUE(force) && nrow(x) > max_rows)
+        stop(sprintf("The remote design has %s rows (more than %s): use `force = TRUE` to build the dense matrix in memory.",
+                     dm_fmt_count(nrow(x)), dm_fmt_count(max_rows)), call. = FALSE)
+    sc <- x$scale
+    x <- dm_remote_unscaled(x)
+    cols <- dm_remote_inputs(x)
+    if (!is.null(sc)) {
+        x <- dm_remote_extend(x, c(`__dm_scale` = sc), "scale")
+        cols <- c(cols, "__dm_scale")
+    }
+    chunk <- dm_query(x, dm_chunk_sql(x, cols))
+    cd <- dm_chunk_design(x, chunk)
+    X <- as.matrix(cd$design)
+    if (!is.null(sc)) {
+        a <- attributes(X)
+        X <- chunk$`__dm_scale`[cd$keep] * X
+        attributes(X) <- a
+    }
+    X
 }
 
 #' @method crossprod dm_remote
 #' @export
 crossprod.dm_remote <- function(x, y = NULL, ...) {
     if (!inherits(x, "dm_remote"))
-        stop("Only `crossprod(design)` and `crossprod(design, \"column\")` are supported, with a design first.",
+        stop("Only `crossprod(design)`, `crossprod(design, design)` and `crossprod(design, \"column\")` are supported, with a design first.",
              call. = FALSE)
     ## crossprod() is a primitive: its dispatch drops argument names, so
     ## that `crossprod(D, weights = "w")` would arrive as `y = "w"`
     nm <- names(sys.call())
-    if (length(list(...)) || (!is.null(nm) && any(!nm %in% c("", "x", "y"))))
-        stop("`crossprod()` of a remote design takes only `y`; for weights, use `design_moments(x, weights = )`.",
+    if (...length() || (!is.null(nm) && any(!nm %in% c("", "x", "y"))))
+        stop("`crossprod()` of a remote design takes only `x` and `y`; for weights, scale the rows: `crossprod(D, \"w\" * D)`.",
              call. = FALSE)
-    if (is.null(y)) {
-        out <- dm_compressed_moments(x, NULL, NULL)
-        if (!is.null(out)) return(out$xtx)
-        return(if (x$engine == "sql") dm_sql_gram(x) else dm_chunked_moments(x, NULL, NULL)$xtx)
+    if (is.null(y) || inherits(y, "dm_remote")) {
+        ## X' diag(s_x s_y) X
+        if (!is.null(y) && !dm_remote_same(x, y))
+            stop("`crossprod(x, y)` of remote designs needs the same design, possibly with scaled rows.", call. = FALSE)
+        sy <- if (is.null(y)) x$scale else y$scale
+        dw <- dm_remote_weights(x, sy)
+        if (is.null(dw$w)) {
+            D <- dw$D
+            out <- dm_compressed_moments(D, NULL, NULL)
+            if (!is.null(out)) return(out$xtx)
+            return(if (D$engine == "sql") dm_sql_gram(D) else dm_chunked_moments(D, NULL, NULL)$xtx)
+        }
+        return(dm_remote_moments(dw$D, NULL, dw$w)$xtx)
+    }
+    if (inherits(y, "SQL")) {
+        D <- dm_remote_extend(dm_remote_unscaled(x), c(`__dm_y` = as.character(y)), "y")
+        D$scale <- x$scale
+        out <- crossprod(D, "__dm_y")
+        colnames(out) <- as.character(y)
+        return(out)
     }
     if (!is.character(y))
-        stop("For a remote design, `y` must name columns of the remote data.", call. = FALSE)
+        stop("For a remote design, `y` must be another remote design, column names or a DBI::SQL() expression.",
+             call. = FALSE)
     dm_remote_column(x, y, "y", several = TRUE)
+    dw <- dm_remote_weights(x)
+    if (!is.null(dw$w)) {
+        wa <- dm_remote_arg(dw$D, dw$w, "weights")
+        D <- wa$D
+        yy <- list(cols = y, response = FALSE)
+        out <- dm_compressed_moments(D, yy, wa$col, gram = FALSE)
+        if (is.null(out))
+            out <- if (D$engine == "sql") list(xty = dm_sql_xty(D, yy, wa$col)) else dm_chunked_moments(D, yy, wa$col, gram = FALSE)
+        return(out$xty)
+    }
+    D <- dw$D
     yy <- list(cols = y, response = FALSE)
-    out <- dm_compressed_moments(x, yy, NULL, gram = FALSE)
+    out <- dm_compressed_moments(D, yy, NULL, gram = FALSE)
     if (!is.null(out)) return(out$xty)
-    if (x$engine == "sql") dm_sql_xty(x, yy) else dm_chunked_moments(x, yy, NULL, gram = FALSE)$xty
+    if (D$engine == "sql") dm_sql_xty(D, yy) else dm_chunked_moments(D, yy, NULL, gram = FALSE)$xty
 }
 
-dm_remote_colsums <- function(x, group, weights, reorder, mean) {
+dm_remote_colsums <- function(x, group, reorder, mean) {
     if (!isTRUE(reorder))
         stop("Remote designs support only `reorder = TRUE`.", call. = FALSE)
-    wa <- dm_remote_arg(x, weights, "weights")
+    dw <- dm_remote_weights(x)
+    wa <- dm_remote_arg(dw$D, dw$w, "weights")
     ga <- dm_remote_arg(wa$D, group, "group")
     x <- ga$D
     weights <- wa$col
@@ -879,47 +924,33 @@ dm_remote_colsums <- function(x, group, weights, reorder, mean) {
 setOldClass("dm_remote")
 
 #' @rdname design_remote
-#' @param x A remote design.
+#' @param x,object A remote design.
 #' @param na.rm,dims Only the defaults are supported.
 #' @param ... Not used.
 #' @param group For `colSums()` and `colMeans()`, the name of a column of the
 #'   remote data whose values define the groups, or a SQL expression over
-#'   the columns (`DBI::SQL()`).
-#' @param weights The name of a numeric column of weights, or a SQL
-#'   expression over the columns (`DBI::SQL()`), such as the residuals of
-#'   [design_residuals()].
+#'   its columns (`DBI::SQL()`).
 #' @param reorder Only `TRUE` (groups sorted) is supported.
 #' @export
-setMethod("colSums", "dm_remote", function(x, na.rm = FALSE, dims = 1, ..., group = NULL,
-                                           weights = NULL, reorder = TRUE) {
+setMethod("colSums", "dm_remote", function(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE) {
     dm_defaults_only(na.rm, dims)
-    dm_remote_colsums(x, group, weights, reorder, mean = FALSE)
+    dm_remote_colsums(x, group, reorder, mean = FALSE)
 })
 
 #' @rdname design_remote
 #' @export
-setMethod("colMeans", "dm_remote", function(x, na.rm = FALSE, dims = 1, ..., group = NULL,
-                                            weights = NULL, reorder = TRUE) {
+setMethod("colMeans", "dm_remote", function(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE) {
     dm_defaults_only(na.rm, dims)
-    dm_remote_colsums(x, group, weights, reorder, mean = TRUE)
+    dm_remote_colsums(x, group, reorder, mean = TRUE)
 })
 
-#' Explain how a remote design is computed
-#'
-#' Lists, for each term of a remote design (see [design_remote]), whether
-#' the SQL engine can compute it and why not, and optionally prints the SQL
-#' that the engine runs.
-#'
-#' @param x A remote design.
-#' @param sql Print the generated SQL: the query that computes the model
-#'   variables and, for the SQL engine, the aggregates of `crossprod(x)`;
-#'   for the chunked engine, the query that reads a batch.
-#' @return A data frame of class `dm_explain` with one row per term
-#'   (`term`, `sql`, `reason`), printed with the engine of the design (and
-#'   the SQL, with `sql = TRUE`).
+#' @rdname design_remote
+#' @param sql For `summary()`: also print the generated SQL (the query that
+#'   computes the model variables and, for the SQL engine, the aggregates of
+#'   `crossprod()`; for the chunked engine, the query that reads a batch).
 #' @export
-design_explain <- function(x, sql = FALSE) {
-    checkmate::assert_class(x, "dm_remote")
+summary.dm_remote <- function(object, sql = FALSE, ...) {
+    x <- object
     checkmate::assert_flag(sql)
     tab <- data.frame(
         term = vapply(x$terms, function(t) t$label, ""),
@@ -927,6 +958,7 @@ design_explain <- function(x, sql = FALSE) {
         reason = vapply(x$terms, function(t) t$reason %||% "", ""),
         stringsAsFactors = FALSE)
     attr(tab, "engine") <- if (x$engine == "sql") "sql" else sprintf("chunked (%s)", x$why_short)
+    attr(tab, "scale") <- x$scale
     if (sql) {
         attr(tab, "sql") <- if (x$engine == "sql") {
             c(paste0("-- model variables\n", dm_sql_base(x)),
@@ -935,16 +967,17 @@ design_explain <- function(x, sql = FALSE) {
             paste0("-- batch\n", dm_chunk_sql(x, dm_remote_inputs(x), range = c(0, x$chunk_size)))
         }
     }
-    class(tab) <- c("dm_explain", class(tab))
+    class(tab) <- c("summary.dm_remote", class(tab))
     tab
 }
 
 #' @export
-print.dm_explain <- function(x, ...) {
+print.summary.dm_remote <- function(x, ...) {
     cat("engine: ", attr(x, "engine"), "\n", sep = "")
+    if (!is.null(attr(x, "scale"))) cat("rows scaled by: ", attr(x, "scale"), "\n", sep = "")
     sql <- attr(x, "sql")
     tab <- x
-    attr(tab, "engine") <- attr(tab, "sql") <- NULL
+    attr(tab, "engine") <- attr(tab, "sql") <- attr(tab, "scale") <- NULL
     class(tab) <- "data.frame"
     print(tab, row.names = FALSE)
     for (q in sql) cat("\n", q, "\n", sep = "")

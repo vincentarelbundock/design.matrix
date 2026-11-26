@@ -25,19 +25,29 @@
 #' @section Linear models:
 #' [design_lm()] accepts remote data like [design_matrix()]:
 #' `design_lm(y ~ x + f, con, table = "flights", weights = "w")`, with
-#' `weights` the name of a column (a string, or a bare name). With few design
+#' `weights` the name of a column (a string, or a bare name), and a remote
+#' design: `design_lm(D, y = "col", weights = "w")`. With few design
 #' patterns, the fit is compressed (see *Compression*): coefficients,
 #' covariance, residual standard error and degrees of freedom are those of
 #' [lm()] on the same rows, up to rounding. Otherwise it is computed from
-#' `X'WX`, `X'Wy` and `y'Wy` with [lm()]'s pivoting and tolerance; numeric
-#' variables are centered when that is an exact transform of the design, and
-#' the accuracy is that of the normal equations on the centered design.
-#' `design_lm_fit(D, y = "col", weights = "w")` fits a remote design. The
-#' response must have a SQL translation; `subset` and offsets are not
-#' supported. `predict(fit, newdata = con, table = ...)` writes the
-#' predictions to the database (see [design_predict()]: arguments `name`,
-#' `column` and `keep`); standard errors and intervals are not available
-#' there. Residuals and fitted values are not kept.
+#' `X'WX`, `X'Wy` and `y'Wy` with [lm()]'s column selection; numeric
+#' variables are centered when that is an exact transform of the design,
+#' and the accuracy is that of the normal equations on the centered design.
+#' The response must have a SQL translation; `subset` and offsets are not
+#' supported. `predict(fit, newdata = con, table = ...)` returns the name of
+#' a temporary view or table of predictions, as `D %*% beta`; standard
+#' errors and intervals are not available there. `residuals(fit)` returns
+#' the remote design with two more columns, `.fitted` and `.resid`, which
+#' can scale its rows: for heteroskedasticity-consistent and clustered
+#' standard errors,
+#' ```
+#' R <- residuals(fit)
+#' meat_hc1 <- crossprod(R, DBI::SQL('".resid" * ".resid"') * R)
+#' scores <- colSums(".resid" * R, group = "cluster")
+#' meat_cl <- crossprod(scores)
+#' ```
+#' (with `bread <- vcov(fit) / sigma(fit)^2`, the HC1 covariance is
+#' `n / (n - k) * bread %*% meat_hc1 %*% bread`).
 NULL
 
 ## design_lm(formula, <remote>, ...): `weights` is a column name or NULL.
@@ -122,6 +132,8 @@ dm_remote_lm_fit <- function(D, yy, weights, compress = "auto", tol = 1e-07) {
     out$rows <- rows
     out$spec <- D$plan
     out$remote <- TRUE
+    out$remote_design <- D
+    out$remote_y <- if (yy$response) NULL else yy$cols
     D$cache$n <- rows
     class(out) <- "design_lm"
     out
@@ -334,16 +346,13 @@ dm_uncenter <- function(fit, Tm) {
 
 ## predict(fit, newdata = <remote>, ...): the linear predictor written to the
 ## database. `...` holds the source arguments (table, sql, engine,
-## chunk_size) and those of design_predict() (name, column, keep, overwrite).
+## chunk_size).
 dm_remote_lm_predict <- function(object, newdata, na.action, dots) {
     if (is.null(object$spec)) stop("This design cannot be applied to new data.", call. = FALSE)
     if (!is.null(object$offset_call) || length(attr(object$terms, "offset")))
         stop("Offsets are not supported for remote data.", call. = FALSE)
-    nms <- names(dots)
-    if (is.null(nms)) nms <- rep("", length(dots))
-    pk <- c("name", "column", "keep", "overwrite")
-    D <- do.call(design_matrix, c(list(object$spec, newdata, na.action = na.action), dots[!nms %in% pk]))
+    D <- do.call(design_matrix, c(list(object$spec, newdata, na.action = na.action), dots))
     if (object$rank < length(object$coefficients))
         warning("prediction from rank-deficient fit; consider predict(., rankdeficient=\"NA\")", call. = FALSE)
-    do.call(design_predict, c(list(D, dmfit_beta(object)), dots[nms %in% pk]))
+    dm_remote_predict(D, dmfit_beta(object))
 }

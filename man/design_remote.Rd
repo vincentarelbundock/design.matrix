@@ -4,30 +4,17 @@
 \alias{design_remote}
 \alias{colSums,dm_remote-method}
 \alias{colMeans,dm_remote-method}
+\alias{summary.dm_remote}
 \title{Out-of-core designs on DuckDB}
 \usage{
-\S4method{colSums}{dm_remote}(
-  x,
-  na.rm = FALSE,
-  dims = 1,
-  ...,
-  group = NULL,
-  weights = NULL,
-  reorder = TRUE
-)
+\S4method{colSums}{dm_remote}(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE)
 
-\S4method{colMeans}{dm_remote}(
-  x,
-  na.rm = FALSE,
-  dims = 1,
-  ...,
-  group = NULL,
-  weights = NULL,
-  reorder = TRUE
-)
+\S4method{colMeans}{dm_remote}(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE)
+
+\method{summary}{dm_remote}(object, sql = FALSE, ...)
 }
 \arguments{
-\item{x}{A remote design.}
+\item{x, object}{A remote design.}
 
 \item{na.rm, dims}{Only the defaults are supported.}
 
@@ -35,13 +22,13 @@
 
 \item{group}{For \code{colSums()} and \code{colMeans()}, the name of a column of the
 remote data whose values define the groups, or a SQL expression over
-the columns (\code{DBI::SQL()}).}
-
-\item{weights}{The name of a numeric column of weights, or a SQL
-expression over the columns (\code{DBI::SQL()}), such as the residuals of
-\code{\link[=design_residuals]{design_residuals()}}.}
+its columns (\code{DBI::SQL()}).}
 
 \item{reorder}{Only \code{TRUE} (groups sorted) is supported.}
+
+\item{sql}{For \code{summary()}: also print the generated SQL (the query that
+computes the model variables and, for the SQL engine, the aggregates of
+\code{crossprod()}; for the chunked engine, the query that reads a batch).}
 
 \item{table, sql}{The remote rows: a table name, or a \code{SELECT} query.}
 
@@ -119,8 +106,8 @@ base table, otherwise from a temporary table holding the needed columns of
 the rows used) and each batch goes through \code{design_matrix(spec, batch)}.
 \code{engine = "auto"} (default) uses SQL when every variable can be
 translated, and otherwise the chunked engine, with a message naming the
-first term that cannot be translated. \code{\link[=design_explain]{design_explain()}} shows the
-decision for each term, and the generated SQL.
+first term that cannot be translated. \code{summary(D)} shows the decision
+for each term, and \code{summary(D, sql = TRUE)} the generated SQL.
 
 In the chunked engine, a variable evaluated in R is taken as missing,
 when selecting rows in SQL, if one of its input columns is missing; rows
@@ -131,25 +118,31 @@ data has counted the rows kept.
 
 \section{Operations}{
 
+The operations of a design in memory (see \link{design_algebra} and
+\link{design_arithmetic}), computed in the database:
 \itemize{
-\item \code{crossprod(D)}: \verb{X'X}.
-\item \code{crossprod(D, "y")}: \verb{X'y} for a column (or several columns) of the
-remote data.
-\item \code{\link[=design_moments]{design_moments()}}: \verb{X'X}, \verb{X'y}, \verb{y'y} and the number of rows in
-one call, from the response of the formula by default, optionally
-weighted by a column (\code{weights = "w"}): what (weighted) least squares
-needs.
-\item \code{colSums(D)}, \code{colMeans(D)}, and with \code{group = "g"}, the sums or means
-within the groups of a column (sorted as \code{\link[base:rowsum]{base::rowsum()}} sorts them);
-\code{weights = "w"} weights the rows.
-\item \code{D \%*\% beta} or \code{\link[=design_predict]{design_predict()}}: the linear predictor, written to a
-temporary view (SQL engine) or table (chunked engine) whose name is
-returned.
+\item \code{crossprod(D)}: \verb{X'X}; \code{crossprod(D, "y")}: \verb{X'y} for one or more
+columns of the remote data (or a \code{DBI::SQL()} expression).
+\item Scaled rows: \code{"w" * D} (a column name), \code{DBI::SQL("1 / v") * D} (an
+expression over the columns), \code{2 * D}, \code{D / "w"} and \code{-D} scale each
+row, as \code{w * D} with a numeric vector in memory. So \code{crossprod(D, "w" * D)} is \verb{X'WX}, \code{crossprod("w" * D, "y")} is \verb{X'Wy} and \code{colSums("w" * D, group = "g")} the weighted sums within groups. Only one design is
+involved: \code{crossprod(x, y)} needs \code{y} to be \code{x} with other scales.
+\item \code{colSums(D)}, \code{colMeans(D)}, and with \code{group = "g"} (a column, or a
+\code{DBI::SQL()} expression), the sums or means within groups (sorted as
+\code{\link[base:rowsum]{base::rowsum()}} sorts them).
+\item \code{D \%*\% beta}: the linear predictor, with all the columns of the remote
+data (to join it back), written to a temporary view (SQL engine) or
+table (chunked engine) whose name is returned, as a string of class
+\code{dm_remote_table}; \code{\link[=as.data.frame]{as.data.frame()}} reads it, and its \code{"connection"}
+attribute is the connection where it lives (for a Parquet source, a
+private one). To keep it, create a table from it:
+\code{DBI::dbExecute(con, sprintf("CREATE TABLE preds AS SELECT * FROM \%s", p))}.
 \item \code{as.matrix(D)} collects the rows and builds the dense matrix, only when
 there are at most \code{getOption("design.matrix.remote_max_rows", 1e5)} rows
 or with \code{force = TRUE}.
 \item \code{design_matrix(D, newdata)} applies the design to a data frame, and
 \code{design_matrix(D, con, table = ...)} to other remote data.
+\item \code{summary(D)}: the engine and, for each term, whether SQL computes it.
 }
 }
 
@@ -157,8 +150,8 @@ or with \code{force = TRUE}.
 
 When the rows have few distinct \emph{design patterns} (the same values in
 every input column of the design, as with factors and discrete numeric
-variables), \code{crossprod()}, \code{colSums()}, \code{colMeans()}, \code{\link[=design_moments]{design_moments()}}
-and \code{\link[=design_lm]{design_lm()}} run one \verb{GROUP BY} over those columns, which returns
+variables), \code{crossprod()}, \code{colSums()}, \code{colMeans()} and \code{\link[=design_lm]{design_lm()}}
+run one \verb{GROUP BY} over those columns, which returns
 each pattern with its number of rows and the sums of the weights and
 responses, and compute the result from the design of the patterns, in
 memory. This works with both engines (a variable evaluated in R is
@@ -169,7 +162,7 @@ few distinct patterns, and gives up when there are more than
 patterns; \code{TRUE} always compresses (unless every row is distinct);
 \code{FALSE} never does. Designs that keep rows with missing values
 (\code{na.action = na.pass}) are not compressed, nor are products with a
-response or weights column that has missing values.
+column or row scale that has missing values.
 
 Remote designs keep only the \emph{Algebra} promise of the package: results
 agree with the in-memory computation up to floating point rounding. With
@@ -182,19 +175,30 @@ result has \code{NA}.
 
 \code{\link[=design_lm]{design_lm()}} accepts remote data like \code{\link[=design_matrix]{design_matrix()}}:
 \code{design_lm(y ~ x + f, con, table = "flights", weights = "w")}, with
-\code{weights} the name of a column (a string, or a bare name). With few design
+\code{weights} the name of a column (a string, or a bare name), and a remote
+design: \code{design_lm(D, y = "col", weights = "w")}. With few design
 patterns, the fit is compressed (see \emph{Compression}): coefficients,
 covariance, residual standard error and degrees of freedom are those of
 \code{\link[=lm]{lm()}} on the same rows, up to rounding. Otherwise it is computed from
-\verb{X'WX}, \verb{X'Wy} and \verb{y'Wy} with \code{\link[=lm]{lm()}}'s pivoting and tolerance; numeric
-variables are centered when that is an exact transform of the design, and
-the accuracy is that of the normal equations on the centered design.
-\code{design_lm_fit(D, y = "col", weights = "w")} fits a remote design. The
-response must have a SQL translation; \code{subset} and offsets are not
-supported. \code{predict(fit, newdata = con, table = ...)} writes the
-predictions to the database (see \code{\link[=design_predict]{design_predict()}}: arguments \code{name},
-\code{column} and \code{keep}); standard errors and intervals are not available
-there. Residuals and fitted values are not kept.
+\verb{X'WX}, \verb{X'Wy} and \verb{y'Wy} with \code{\link[=lm]{lm()}}'s column selection; numeric
+variables are centered when that is an exact transform of the design,
+and the accuracy is that of the normal equations on the centered design.
+The response must have a SQL translation; \code{subset} and offsets are not
+supported. \code{predict(fit, newdata = con, table = ...)} returns the name of
+a temporary view or table of predictions, as \code{D \%*\% beta}; standard
+errors and intervals are not available there. \code{residuals(fit)} returns
+the remote design with two more columns, \code{.fitted} and \code{.resid}, which
+can scale its rows: for heteroskedasticity-consistent and clustered
+standard errors,
+
+\if{html}{\out{<div class="sourceCode">}}\preformatted{R <- residuals(fit)
+meat_hc1 <- crossprod(R, DBI::SQL('".resid" * ".resid"') * R)
+scores <- colSums(".resid" * R, group = "cluster")
+meat_cl <- crossprod(scores)
+}\if{html}{\out{</div>}}
+
+(with \code{bread <- vcov(fit) / sigma(fit)^2}, the HC1 covariance is
+\code{n / (n - k) * bread \%*\% meat_hc1 \%*\% bread}).
 }
 
 \examples{
@@ -204,11 +208,10 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     DBI::dbWriteTable(con, "d", d)
     D <- design_matrix(y ~ x * f, con, table = "d")
     D
-    crossprod(D)
-    m <- design_moments(D)
-    solve(m$xtx, m$xty)
-    p <- D \%*\% solve(m$xtx, m$xty)
+    beta <- solve(crossprod(D), crossprod(D, "y"))
+    p <- D \%*\% beta
     head(as.data.frame(p))
+    summary(D)
     DBI::dbDisconnect(con)
 }
 }

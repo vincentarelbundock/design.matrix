@@ -38,9 +38,10 @@ check_remote <- function(Dr, M, dd, rows, info) {
     expect_identical(colnames(Dr), colnames(M), info = info)
     expect_true(same(crossprod(Dr), crossprod(M)), info = paste(info, "X'X"))
     expect_true(same(crossprod(Dr, "w"), crossprod(M, dd$w[rows])), info = paste(info, "X'w"))
-    mw <- design_moments(Dr, weights = "w")
-    expect_true(same(mw$xtx, crossprod(M, dd$w[rows] * M)), info = paste(info, "X'WX"))
-    expect_equal(mw$sumw, sum(dd$w[rows]), info = paste(info, "sum of weights"))
+    w <- dd$w[rows]
+    expect_true(same(crossprod(Dr, "w" * Dr), crossprod(M, w * M)), info = paste(info, "X'WX"))
+    expect_true(same(crossprod(sqrt(2) * Dr), crossprod(sqrt(2) * M)), info = paste(info, "(sX)'(sX)"))
+    expect_true(same(crossprod("w" * Dr, "x1"), crossprod(M, w * dd$x1[rows])), info = paste(info, "X'Wx"))
     expect_true(same(colSums(Dr), colSums(M)), info = paste(info, "colSums"))
     g <- dd$g[rows]
     wg <- if (anyNA(g)) "missing values" else NA
@@ -49,7 +50,7 @@ check_remote <- function(Dr, M, dd, rows, info) {
     expect_true(same(a$value, b$value), info = paste(info, "colSums(group)"))
     expect_identical(rownames(a$value), rownames(b$value), info = paste(info, "group names"))
     expect_identical(a$warnings, b$warnings, info = paste(info, "group warning"))
-    a <- suppressWarnings(colMeans(Dr, group = "g", weights = "w"))
+    a <- suppressWarnings(colMeans("w" * Dr, group = "g"))
     b <- suppressWarnings(colMeans(dd$w[rows] * M, group = g))
     expect_true(same(a, b), info = paste(info, "colMeans(group, weights)"))
     beta <- rnorm(ncol(M))
@@ -89,9 +90,8 @@ for (i in 1:40) {
         Dr <- Dr$value
         checked[Dr$engine] <- checked[Dr$engine] + 1
         check_remote(Dr, M$value, dd, kept_rows(fo, dd), info)
-        m <- design_moments(Dr)
-        ref <- design_moments(M$value, dd$y[kept_rows(fo, dd)])
-        expect_true(same(m$xty, ref$xty) && same(m$yty, ref$yty) && m$n == ref$n, info = paste(info, "moments"))
+        expect_true(same(crossprod(Dr, "y"), crossprod(M$value, dd$y[kept_rows(fo, dd)])),
+                    info = paste(info, "X'y"))
     }
 }
 expect_true(all(checked > 5))
@@ -188,10 +188,13 @@ Dr <- design_matrix(fo, con, table = "na")
 expect_identical(Dr$engine, "sql")
 expect_equal(nrow(Dr), nrow(M))
 expect_true(same(crossprod(Dr), crossprod(M)))
-expect_true(same(design_moments(Dr)$xty, crossprod(M, na$y[c(1, 6, 7, 8)])))
-expect_error(crossprod(Dr, weights = "w"), "design_moments")
-mw <- design_moments(Dr, weights = "w")
-expect_true(same(mw$xtx, crossprod(M)) && same(mw$xty, crossprod(M, na$y[c(1, 6, 7, 8)])))
+expect_true(same(crossprod(Dr, "y"), crossprod(M, na$y[c(1, 6, 7, 8)])))
+expect_error(crossprod(Dr, weights = "w"), "only `x` and `y`")
+expect_true(same(crossprod(Dr, "w" * Dr), crossprod(M)))
+expect_error(Dr + Dr, "not supported")
+expect_error(Dr * Dr, "two remote designs")
+expect_error(1:3 * Dr, "only be scaled")
+expect_error(crossprod(Dr, suppressMessages(design_matrix(fo, con, table = "na"))), "same design")
 ## a column with missing values in the rows used gives NA, as in memory
 DBI::dbWriteTable(con, "na2", transform(na, w = c(1, 1, 1, 1, 1, NA, 1, 1)))
 Dr2 <- design_matrix(fo, con, table = "na2")
@@ -206,9 +209,9 @@ expect_error(design_matrix(y ~ poly(z, 2) + f1, con, table = "d", engine = "sql"
              "SQL engine cannot compute this design", fixed = TRUE)
 expect_silent(D <- design_matrix(y ~ x1 * f1 + I(x2^2) + log(z, 10), con, table = "d"))
 expect_identical(D$engine, "sql")
-expect_stdout(print(design_explain(D, sql = TRUE)), "GROUP BY")
-expect_silent(ex <- design_explain(D))
-expect_inherits(ex, "dm_explain")
+expect_stdout(print(summary(D, sql = TRUE)), "GROUP BY")
+expect_silent(ex <- summary(D))
+expect_inherits(ex, "summary.dm_remote")
 expect_identical(ex$sql, rep(TRUE, nrow(ex)))
 expect_stdout(print(D), "all terms pushed down")
 expect_identical(design.matrix:::dm_fmt_count(1e6), "1,000,000")
@@ -230,15 +233,17 @@ expect_equal(as.matrix(design_matrix(D, dd[1:5, ])), as.matrix(design_matrix(M, 
 D2 <- design_matrix(D, con, table = "d", na.action = stats::na.omit)
 expect_true(same(crossprod(D2), crossprod(design_matrix(M, dd, na.action = stats::na.omit))))
 
-## persisted predictions
+## predictions kept in a table; scaled predictions; scaled as.matrix()
 beta <- seq_len(ncol(D))
-tab <- design_predict(D, beta, name = "preds", keep = "id", column = "eta")
+tab <- D %*% beta
 expect_inherits(tab, "dm_remote_table")
-p <- DBI::dbGetQuery(con, "SELECT * FROM preds ORDER BY id")
-expect_identical(names(p), c("id", "eta"))
-expect_true(same(p$eta, drop(M %*% beta)))
-expect_error(design_predict(D, beta, name = "preds"))
-expect_silent(design_predict(D, beta, name = "preds", overwrite = TRUE))
+DBI::dbExecute(con, sprintf("CREATE TABLE preds AS SELECT * FROM %s", tab))
+p <- DBI::dbGetQuery(con, "SELECT id, \".fitted\" FROM preds ORDER BY id")
+expect_true(same(p$.fitted, drop(M %*% beta)))
+ps <- as.data.frame((DBI::SQL("2 * x1") * D / "w") %*% beta)
+ps <- ps[order(ps$id), ]
+expect_true(same(ps$.fitted, drop(M %*% beta) * 2 * ps$x1 / ps$w))
+expect_equal(unname(as.matrix(-D)), -unname(as.matrix(M)))
 
 ## several prediction columns; a fitted model scored with `newdata`
 fit <- lm(y ~ x1 + f1 + splines::ns(z, 2), dd)
@@ -246,9 +251,9 @@ B <- cbind(a = coef(fit), b = -coef(fit))
 ref <- as.matrix(design_matrix(fit, newdata = dd)) %*% B
 for (engine in c("auto", "chunked")) {
     Df <- suppressMessages(design_matrix(fit, newdata = con, table = "d", engine = engine))
-    p <- as.data.frame(design_predict(Df, B, keep = "id"))
+    p <- as.data.frame(Df %*% B)
     p <- p[order(p$id), ]
-    expect_identical(names(p), c("id", "a", "b"))
+    expect_true(all(c("id", "a", "b") %in% names(p)))
     expect_true(same(as.matrix(p[c("a", "b")]), ref), info = engine)
 }
 
@@ -276,26 +281,25 @@ fit <- lm(y ~ x * f, dk)
 e <- unname(residuals(fit))
 for (engine in c("sql", "chunked")) {
     D <- design_matrix(y ~ x * f, con, table = "ds", engine = engine, chunk_size = 64)
-    m <- design_moments(D, weights = DBI::SQL("1 + abs(x)"))
-    expect_true(same(m$xtx, crossprod(X, (1 + abs(dk$x)) * X)), info = engine)
-    expect_true(same(m$xty, crossprod(X, (1 + abs(dk$x)) * dk$y)), info = engine)
+    sw <- DBI::SQL("1 + abs(x)")
+    expect_true(same(crossprod(D, sw * D), crossprod(X, (1 + abs(dk$x)) * X)), info = engine)
+    expect_true(same(crossprod(sw * D, "y"), crossprod(X, (1 + abs(dk$x)) * dk$y)), info = engine)
+    expect_true(same(crossprod(D, DBI::SQL("y * x")), crossprod(X, dk$y * dk$x)), info = engine)
     expect_true(same(colSums(D, group = DBI::SQL("cl % 3")), rowsum(X, dk$cl %% 3)), info = engine)
-    expect_true(same(colMeans(D, group = "cl", weights = DBI::SQL("2 * x")),
+    expect_true(same(colMeans(DBI::SQL("2 * x") * D, group = "cl"),
                      rowsum(2 * dk$x * X, dk$cl) / as.vector(table(dk$cl))), info = engine)
-    R <- design_residuals(D, coef(fit))
+    R <- design.matrix:::dm_remote_residuals(D, coef(fit))
     expect_equal(dim(R), dim(D), info = engine)
-    expect_true(same(design_moments(R, weights = DBI::SQL('".resid" * ".resid"'))$xtx,
-                     crossprod(X, e^2 * X)), info = engine)
-    expect_true(same(colSums(R, group = "cl", weights = ".resid"), rowsum(e * X, dk$cl)), info = engine)
-    expect_true(same(design_moments(R, y = ".resid")$xty[, 1], rep(0, ncol(X))) ||
-                max(abs(design_moments(R, y = ".resid")$xty)) < 1e-8, info = engine)
+    expect_true(same(crossprod(R, DBI::SQL('".resid" * ".resid"') * R), crossprod(X, e^2 * X)), info = engine)
+    expect_true(same(crossprod(".resid" * R), crossprod(X, e^2 * X)), info = engine)
+    expect_true(same(colSums(".resid" * R, group = "cl"), rowsum(e * X, dk$cl)), info = engine)
+    expect_true(max(abs(crossprod(R, ".resid"))) < 1e-8, info = engine)
 }
-Rl <- design_residuals(design_matrix(log(abs(y)) ~ x, con, table = "ds"), coef(lm(log(abs(y)) ~ x, dk)))
-expect_true(same(design_moments(Rl, y = ".resid")$xty[, 1], c(0, 0)) ||
-            max(abs(design_moments(Rl, y = ".resid")$xty)) < 1e-8)
-expect_error(design_moments(design_matrix(y ~ x, con, table = "ds"), weights = DBI::SQL("nope + 1")),
-             "invalid SQL expression")
-expect_error(design_residuals(design_matrix(y ~ x, con, table = "ds"), 1), "len")
+Rl <- design.matrix:::dm_remote_residuals(design_matrix(log(abs(y)) ~ x, con, table = "ds"),
+                                          coef(lm(log(abs(y)) ~ x, dk)))
+expect_true(max(abs(crossprod(Rl, ".resid"))) < 1e-8)
+expect_error(DBI::SQL("nope + 1") * design_matrix(y ~ x, con, table = "ds"), "invalid SQL expression")
+expect_error(design.matrix:::dm_remote_residuals(design_matrix(y ~ x, con, table = "ds"), 1), "len")
 
 ## errors
 expect_error(design_matrix(y ~ x1, con), "exactly one of")

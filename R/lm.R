@@ -81,15 +81,13 @@
 #'   rank-deficient fit, as in [stats::predict.lm()].
 #' @param model Keep the model frame and its design matrix, for
 #'   [residuals()], [fitted()] and [model.frame()].
-#' @param x A `design_matrix`, or a remote design (see [design_remote]).
-#' @param y A numeric response vector with one value per row of `x`. For a
-#'   remote design, the name of a column (default: the response of its
-#'   formula).
+#' @param x A `design_matrix`.
+#' @param y A numeric response vector with one value per row of `x`.
 #' @param ... For remote data (a DuckDB connection or Parquet paths as
-#'   `data`), `table`, `sql`, `engine` and `chunk_size`; see
-#'   [design_remote]. In `predict()` with remote `newdata`, also `name`,
-#'   `column`, `keep` and `overwrite` of [design_predict()]. Otherwise not
-#'   used.
+#'   `data`, or as `newdata` in `predict()`), `table`, `sql`, `engine` and
+#'   `chunk_size`; see [design_remote]. With a remote design as `formula`,
+#'   `y`, the name of the response column (default: the response of its
+#'   formula). Otherwise not used.
 #' @return An object of class `"design_lm"`: a list with, among others,
 #'   `coefficients`, `sigma`, `df.residual`, `nobs`, `rank`, `pivot`, `R`
 #'   (the `p` by `p` factor of [design_qr], columns in pivoted order),
@@ -120,6 +118,21 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
     checkmate::assert_number(tol, lower = 0, finite = TRUE)
     checkmate::assert_flag(model)
     cl <- match.call()
+    ## a remote design (see remote_lm.R): design_lm(D, y = "col", weights = "w")
+    if (inherits(formula, "dm_remote")) {
+        dots <- list(...)
+        if (length(setdiff(names(dots), "y"))) stop("Unknown arguments: ", paste(setdiff(names(dots), "y"), collapse = ", "), call. = FALSE)
+        if (!is.null(formula$scale))
+            stop("Fit an unscaled remote design, with `weights` naming a column.", call. = FALSE)
+        w <- if (missing(weights)) NULL else weights
+        if (!is.null(w)) dm_remote_column(formula, w, "weights")
+        yy <- dm_remote_y(formula, dots$y)
+        if (is.null(yy) || length(yy$cols) != 1L)
+            stop("Give `y`, the name of one column (or a design with a response).", call. = FALSE)
+        fit <- dm_remote_lm_fit(formula, yy, w, compress, tol)
+        fit$call <- cl
+        return(fit)
+    }
     ## remote data (see remote_lm.R)
     if (!missing(data) && dm_is_remote_source(data)) {
         if (!missing(subset)) stop("`subset` is not supported for remote data.", call. = FALSE)
@@ -162,16 +175,6 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
 #' @export
 design_lm_fit <- function(x, y, weights = NULL, offset = NULL,
                           compress = "auto", tol = 1e-07) {
-    if (inherits(x, "dm_remote")) {
-        if (!is.null(offset)) stop("Offsets are not supported for remote data.", call. = FALSE)
-        yy <- dm_remote_y(x, if (missing(y)) NULL else y)
-        if (is.null(yy) || length(yy$cols) != 1L)
-            stop("Give `y`, the name of one column (or a design with a response).", call. = FALSE)
-        if (!is.null(weights)) dm_remote_column(x, weights, "weights")
-        fit <- dm_remote_lm_fit(x, yy, weights, compress, tol)
-        fit$call <- match.call()
-        return(fit)
-    }
     checkmate::assert_class(x, "design_matrix")
     dmfit_check_compress(compress)
     checkmate::assert_number(tol, lower = 0, finite = TRUE)
@@ -481,6 +484,9 @@ model.frame.design_lm <- function(formula, ...) {
 
 #' @export
 residuals.design_lm <- function(object, ...) {
+    ## a remote fit: the remote design with .fitted and .resid columns
+    if (isTRUE(object$remote))
+        return(dm_remote_residuals(object$remote_design, dmfit_beta(object), object$remote_y))
     dat <- dmfit_data(object, "residuals()")
     D <- dat$design
     ## (y - offset) - X b, in the order of the fit

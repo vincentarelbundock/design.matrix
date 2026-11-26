@@ -103,12 +103,16 @@ check_fit(design_lm(y ~ xd + f1, pq), lm(y ~ xd + f1, dp), "parquet")
 check_fit(design_lm(y ~ xd + f1, con, sql = "SELECT * FROM d WHERE id <= 2000"),
           lm(y ~ xd + f1, dd[dd$id <= 2000, ]), "sql")
 
-## design_lm_fit() on a remote design
+## design_lm() on a remote design
 D <- design_matrix(y ~ xd + f1, con, table = "d")
-check_fit(design_lm_fit(D), lm(y ~ xd + f1, dd), "design_lm_fit")
-check_fit(design_lm_fit(D, weights = "w"), lm(y ~ xd + f1, dd, weights = w), "design_lm_fit weighted")
+check_fit(design_lm(D), lm(y ~ xd + f1, dd), "remote design")
+check_fit(design_lm(D, weights = "w"), lm(y ~ xd + f1, dd, weights = w), "remote design, weighted")
 D2 <- design_matrix(~ xd + f1, con, table = "d", na.action = stats::na.omit)
-expect_error(design_lm_fit(D2), "Give `y`")
+expect_error(design_lm(D2), "Give `y`")
+dk <- dd[stats::complete.cases(dd[c("xd", "f1")]), ]
+check_fit(design_lm(D2, y = "w"), lm(w ~ xd + f1, dk), "remote design, y column")
+## a response column with missing values: lm.fit()'s error, as in memory
+expect_error(design_lm(D2, y = "xc"), "NA/NaN/Inf in 'y'")
 
 ## errors as lm()
 DBI::dbWriteTable(con, "negw", transform(dd, w = -w))
@@ -119,27 +123,28 @@ expect_error(design_lm(y ~ xd + offset(xc), con, table = "d"), "Offsets")
 ## predictions written to the database
 f <- design_lm(y ~ xd + f1 + f2, con, table = "d")
 l <- lm(y ~ xd + f1 + f2, dd)
-p <- as.data.frame(predict(f, newdata = con, table = "d", keep = "id"))
+p <- as.data.frame(predict(f, newdata = con, table = "d"))
 p <- p[order(p$id), ]
 ref <- predict(l, newdata = dd)
 expect_true(same(p$.fitted, ref))
 expect_error(predict(f, newdata = con, table = "d", se.fit = TRUE), "fit only")
 ## an in-memory fit scored in the database
 fm <- design_lm(y ~ xd + f1 + f2, dd)
-p2 <- as.data.frame(predict(fm, newdata = con, table = "d", keep = "id", name = "p2"))
+p2 <- as.data.frame(predict(fm, newdata = con, table = "d"))
 expect_true(same(p2$.fitted[order(p2$id)], ref))
 
 ## compressed products agree with the uncompressed ones
 for (engine in c("auto", "chunked")) {
     D <- suppressMessages(design_matrix(y ~ poly(xd, 2) * f2 + f1, con, table = "d", engine = engine))
-    m1 <- design_moments(D, weights = "w")
-    m0 <- no_compress(design_moments(D, weights = "w"))
+    m1 <- design.matrix:::dm_remote_moments(D, weights = "w")
+    m0 <- no_compress(design.matrix:::dm_remote_moments(D, weights = "w"))
     expect_true(same(m1$xtx, m0$xtx) && same(m1$xty, m0$xty) && same(m1$yty, m0$yty), info = engine)
     expect_equal(m1$n, m0$n, info = engine)
     expect_true(same(m1$sumw, m0$sumw), info = engine)
+    expect_true(same(crossprod(D, "w" * D), no_compress(crossprod(D, "w" * D))), info = engine)
     expect_true(same(crossprod(D), no_compress(crossprod(D))), info = engine)
     expect_true(same(crossprod(D, "xc"), no_compress(crossprod(D, "xc"))), info = engine)
-    expect_true(same(colSums(D, group = "cl", weights = "w"), no_compress(colSums(D, group = "cl", weights = "w"))),
+    expect_true(same(colSums("w" * D, group = "cl"), no_compress(colSums("w" * D, group = "cl"))),
                 info = engine)
     expect_true(same(colMeans(D, group = "cl"), no_compress(colMeans(D, group = "cl"))), info = engine)
     expect_true(same(colMeans(D), no_compress(colMeans(D))), info = engine)
@@ -153,6 +158,19 @@ Dp <- design_matrix(spec, con, table = "d")
 M <- design_matrix(spec, dd)
 expect_true(same(crossprod(Dp), crossprod(M)))
 expect_identical(is.na(crossprod(Dp)), is.na(crossprod(M)))
+
+## residuals of a remote fit: sandwich covariances, as in memory
+dk <- dd[stats::complete.cases(dd[c("y", "xc", "f1", "cl")]), ]
+l <- lm(y ~ xc + f1, dk)
+X <- model.matrix(l)
+e <- unname(residuals(l))
+for (engine in c("auto", "chunked")) {
+    f <- suppressMessages(design_lm(y ~ xc + f1, con, table = "d", engine = engine))
+    R <- residuals(f)
+    expect_inherits(R, "dm_remote")
+    expect_true(same(crossprod(R, DBI::SQL('".resid" * ".resid"') * R), crossprod(X, e^2 * X)), info = engine)
+    expect_true(same(colSums(".resid" * R, group = "cl"), rowsum(e * X, dk$cl)), info = engine)
+}
 
 DBI::dbDisconnect(con)
 unlink(pq)

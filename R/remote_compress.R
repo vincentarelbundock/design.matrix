@@ -164,7 +164,7 @@ dm_compress_ys <- function(D, yy) {
     sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, yy$cols))
 }
 
-## design_moments() from patterns, or NULL.
+## Moments from patterns (dm_remote_moments()), or NULL.
 dm_compressed_moments <- function(D, yy, weights, gram = TRUE) {
     ys <- dm_compress_ys(D, yy)
     if (is.null(ys)) return(NULL)
