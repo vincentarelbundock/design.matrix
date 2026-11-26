@@ -2,13 +2,14 @@
  *  design.matrix: kernels for linear models with fixed effects (R/fe.R).
  *
  *  dm_fe_gsum():       group sums of the columns of a matrix (codes 1..G);
- *  dm_fe_crosstab():   weighted crosstab of two code vectors, as the
- *                      compressed rows of a G_a x G_b sparse matrix with
- *                      sorted, unique column indices;
+ *  dm_fe_crosstabs():  weighted crosstabs of a code vector with others, as
+ *                      the compressed rows of G_a x G_b sparse matrices
+ *                      with sorted, unique column indices;
  *  dm_fe_components(): connected components of the bipartite graph whose
  *                      edges are the (a, b) pairs of a crosstab;
  *  dm_fe_struct_gsum(): grouped sums of the design's structured moments,
- *                      the weights and other columns, for every FE at once;
+ *                      the weights and other columns, for every FE at once,
+ *                      and dense crosstabs of pairs of FE, in one pass;
  *  dm_fe_code():       codes of an FE variable and rows per level;
  *  dm_fe_schur():      the reduced system, formed (lower triangle);
  *  dm_fe_ichol(), dm_fe_pcg(): IC(0) and preconditioned conjugate
@@ -28,8 +29,20 @@
 #include "dm.h"
 #include "structured.h"
 
-/* G x k matrix of sums of the columns of W (n x k) within codes 1..G. */
-SEXP dm_fe_gsum(SEXP codes_, SEXP G_, SEXP W)
+/* G x k matrix of sums of the columns of W (n x k) within codes 1..G.  On
+   several threads: fixed row chunks with their own sums, added in chunk
+   order (dm_reduce_threads()); one thread is the single-threaded pass. */
+static void gsum_rows(const int *codes, R_xlen_t n, int G, int k, const double *w,
+		      R_xlen_t i0, R_xlen_t i1, double *o)
+{
+    for (int j = 0; j < k; j++) {
+	const double *wj = w + (R_xlen_t)j * n;
+	double *oj = o + (R_xlen_t)j * G;
+	for (R_xlen_t i = i0; i < i1; i++) oj[codes[i] - 1] += wj[i];
+    }
+}
+
+SEXP dm_fe_gsum(SEXP codes_, SEXP G_, SEXP W, SEXP nthreads_)
 {
     R_xlen_t n = XLENGTH(codes_);
     int G = asInteger(G_), k = ncols(W);
@@ -38,22 +51,36 @@ SEXP dm_fe_gsum(SEXP codes_, SEXP G_, SEXP W)
     const double *w = REAL(W);
     SEXP out = PROTECT(allocMatrix(REALSXP, G, k));
     double *o = REAL(out);
-    memset(o, 0, sizeof(double) * (size_t)G * k);
-    for (int j = 0; j < k; j++) {
-	const double *wj = w + (R_xlen_t)j * n;
-	double *oj = o + (R_xlen_t)j * G;
-	for (R_xlen_t i = 0; i < n; i++) oj[codes[i] - 1] += wj[i];
+    R_xlen_t len = (R_xlen_t) G * k;
+    memset(o, 0, sizeof(double) * (size_t) len);
+    int T = dm_reduce_threads(asInteger(nthreads_), n, (double) n * k, (double) len);
+    if (T == 1) {
+	gsum_rows(codes, n, G, k, w, 0, n, o);
+    } else {
+	double **acc = dm_chunk_acc(o, T, len);
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(T) schedule(static)
+#endif
+	for (int t = 0; t < T; t++) {
+	    if (t > 0) dm_zero(acc[t], len);
+	    gsum_rows(codes, n, G, k, w, dm_chunk_start(n, T, t, 1), dm_chunk_start(n, T, t + 1, 1), acc[t]);
+	}
+	dm_combine(acc, T, len);
     }
     UNPROTECT(1);
     return out;
 }
 
-/* Crosstab of codes a (1..Ga) and b (1..Gb) with weights w (NULL for 1):
-   list(p, j, x), the compressed rows (by a) of the Ga x Gb matrix, j
-   0-based and sorted within rows.  The rows are taken in order of a (as
-   they come when a is sorted, as in panel data, otherwise after a counting
-   sort); within a level of a, a marker array over b finds each pair's
-   entry, and the level's entries are then sorted by b. */
+/* Crosstabs of codes a (1..Ga) with each of the codes b_1, ..., b_K
+   (1..Gb_k), weights w (NULL for 1): for each k, list(p, j, x), the
+   compressed rows (by a) of the Ga x Gb_k matrix of the sums of w, j
+   0-based and sorted within rows.  The rows are taken by level of a (in
+   row order: as they come when a is sorted, as in panel data, otherwise
+   after a stable counting sort); within a level, a marker array over b_k
+   finds each pair's entry, so that every entry is the sum of its rows in
+   row order, and the level's entries are then sorted by b_k.  On several
+   threads, each takes a range of levels of a (about n / T rows): the
+   entries are the same on any number of threads. */
 typedef struct { int j; double x; } ct_entry;
 
 static int ct_cmp(const void *u, const void *v)
@@ -62,81 +89,146 @@ static int ct_cmp(const void *u, const void *v)
     return (a > b) - (a < b);
 }
 
-SEXP dm_fe_crosstab(SEXP a_, SEXP b_, SEXP w_, SEXP Ga_, SEXP Gb_)
+/* sort entries jj[0..m), xx[0..m) by jj (unique) */
+static void ct_sort(int *jj, double *xx, R_xlen_t m, ct_entry *tmp)
+{
+    int sorted = 1;
+    for (R_xlen_t e = 1; e < m; e++) if (jj[e] < jj[e - 1]) { sorted = 0; break; }
+    if (sorted) return;
+    if (m <= 32) {
+	for (R_xlen_t e = 1; e < m; e++) {
+	    int jv = jj[e];
+	    double xv = xx[e];
+	    R_xlen_t f = e;
+	    while (f > 0 && jj[f - 1] > jv) { jj[f] = jj[f - 1]; xx[f] = xx[f - 1]; f--; }
+	    jj[f] = jv;
+	    xx[f] = xv;
+	}
+	return;
+    }
+    for (R_xlen_t e = 0; e < m; e++) { tmp[e].j = jj[e]; tmp[e].x = xx[e]; }
+    qsort(tmp, (size_t) m, sizeof(ct_entry), ct_cmp);
+    for (R_xlen_t e = 0; e < m; e++) { jj[e] = tmp[e].j; xx[e] = tmp[e].x; }
+}
+
+SEXP dm_fe_crosstabs(SEXP a_, SEXP bs_, SEXP w_, SEXP Ga_, SEXP Gb_, SEXP nthreads_)
 {
     R_xlen_t n = XLENGTH(a_);
-    int Ga = asInteger(Ga_), Gb = asInteger(Gb_);
-    const int *a = INTEGER(a_), *b = INTEGER(b_);
+    int Ga = asInteger(Ga_), K = LENGTH(bs_);
+    const int *a = INTEGER(a_), *Gb = INTEGER(Gb_);
     const double *w = isNull(w_) ? NULL : REAL(w_);
+    const int **b = (const int **) R_alloc(K > 0 ? K : 1, sizeof(int *));
+    for (int k = 0; k < K; k++) {
+	if (XLENGTH(VECTOR_ELT(bs_, k)) != n) error("internal error: one code per row");
+	b[k] = INTEGER(VECTOR_ELT(bs_, k));
+    }
+    /* the rows by level of a: start[g] .. start[g + 1] in ord (or in the
+       rows themselves when a is sorted) */
+    R_xlen_t *start = (R_xlen_t *) R_alloc((size_t) Ga + 1, sizeof(R_xlen_t));
+    memset(start, 0, sizeof(R_xlen_t) * ((size_t) Ga + 1));
     int sorted = 1;
-    for (R_xlen_t i = 1; i < n; i++) if (a[i] < a[i - 1]) { sorted = 0; break; }
+    for (R_xlen_t i = 0; i < n; i++) {
+	start[a[i]]++;
+	if (i > 0 && a[i] < a[i - 1]) sorted = 0;
+    }
+    for (int g = 1; g <= Ga; g++) start[g] += start[g - 1];
     int *ord = NULL;
     if (!sorted) {
-	R_xlen_t *cnt = (R_xlen_t *) R_alloc((size_t) Ga + 1, sizeof(R_xlen_t));
+	R_xlen_t *pos = (R_xlen_t *) R_alloc((size_t) Ga + 1, sizeof(R_xlen_t));
+	memcpy(pos, start, sizeof(R_xlen_t) * ((size_t) Ga + 1));
 	ord = (int *) R_alloc((size_t) n, sizeof(int));
-	memset(cnt, 0, sizeof(R_xlen_t) * ((size_t) Ga + 1));
-	for (R_xlen_t i = 0; i < n; i++) cnt[a[i]]++;
-	for (int g = 1; g <= Ga; g++) cnt[g] += cnt[g - 1];
-	for (R_xlen_t i = 0; i < n; i++) ord[cnt[a[i] - 1]++] = (int) i;
+	for (R_xlen_t i = 0; i < n; i++) ord[pos[a[i] - 1]++] = (int) i;
     }
 #define ROW(t) (sorted ? (t) : (R_xlen_t) ord[t])
-    int *mark = (int *) R_alloc((size_t) Gb + 1, sizeof(int));
-    for (int g = 0; g <= Gb; g++) mark[g] = 0;
-    /* count the pairs */
-    R_xlen_t nnz = 0;
-    for (R_xlen_t t = 0; t < n; t++) {
-	R_xlen_t i = ROW(t);
-	if (mark[b[i]] != a[i]) { mark[b[i]] = a[i]; nnz++; }
+    int T = dm_worker_count(asInteger(nthreads_), n / DM_RED_MIN_ROWS);
+    if (T > Ga) T = Ga > 0 ? Ga : 1;
+    /* levels of thread t: lv[t] .. lv[t + 1], about n / T rows each */
+    int *lv = (int *) R_alloc((size_t) T + 1, sizeof(int));
+    lv[0] = 0;
+    for (int t = 1; t < T; t++) {
+	R_xlen_t target = (R_xlen_t) ((double) n * t / T);
+	int g = lv[t - 1];
+	while (g < Ga && start[g] < target) g++;
+	lv[t] = g;
     }
-    SEXP p = PROTECT(allocVector(INTSXP, (R_xlen_t) Ga + 1));
-    SEXP j = PROTECT(allocVector(INTSXP, nnz));
-    SEXP x = PROTECT(allocVector(REALSXP, nnz));
-    int *pp = INTEGER(p), *jj = INTEGER(j);
-    double *xx = REAL(x);
-    memset(pp, 0, sizeof(int) * ((size_t) Ga + 1));
-    for (int g = 0; g <= Gb; g++) mark[g] = 0;
-    R_xlen_t *pos = (R_xlen_t *) R_alloc((size_t) Gb + 1, sizeof(R_xlen_t));
-    R_xlen_t q = 0, start = 0;
-    ct_entry *tmp = NULL;
-    size_t tmpn = 0;
-    for (R_xlen_t t = 0; t <= n; t++) {
-	R_xlen_t i = t < n ? ROW(t) : 0;
-	int ai = t < n ? a[i] : -1;
-	if (t > 0 && (t == n || ai != a[ROW(t - 1)])) {
-	    /* close the level of the previous row: sort its entries by b */
-	    R_xlen_t m = q - start;
-	    int sortedb = 1;
-	    for (R_xlen_t e = start + 1; e < q; e++) if (jj[e] < jj[e - 1]) { sortedb = 0; break; }
-	    if (!sortedb) {
-		if ((size_t) m > tmpn) {
-		    tmpn = (size_t) m;
-		    tmp = (ct_entry *) R_alloc(tmpn, sizeof(ct_entry));
+    lv[T] = Ga;
+    /* per thread and b_k: a marker (level of a + 1) and a position */
+    int Gmax = 1;
+    for (int k = 0; k < K; k++) if (Gb[k] > Gmax) Gmax = Gb[k];
+    int **mark = (int **) R_alloc((size_t) T, sizeof(int *));
+    R_xlen_t **pos = (R_xlen_t **) R_alloc((size_t) T, sizeof(R_xlen_t *));
+    for (int t = 0; t < T; t++) {
+	mark[t] = (int *) R_alloc((size_t) Gmax + 1, sizeof(int));
+	pos[t] = (R_xlen_t *) R_alloc((size_t) Gmax + 1, sizeof(R_xlen_t));
+    }
+    SEXP out = PROTECT(allocVector(VECSXP, K));
+    /* the largest level, for the sorting buffers */
+    R_xlen_t mmax = 0;
+    for (int g = 0; g < Ga; g++) if (start[g + 1] - start[g] > mmax) mmax = start[g + 1] - start[g];
+    ct_entry **tmp = (ct_entry **) R_alloc((size_t) T, sizeof(ct_entry *));
+    for (int t = 0; t < T; t++)
+	tmp[t] = mmax > 32 ? (ct_entry *) R_alloc((size_t) mmax, sizeof(ct_entry)) : NULL;
+    for (int k = 0; k < K; k++) {
+	const int *bk = b[k];
+	SEXP pk = PROTECT(allocVector(INTSXP, (R_xlen_t) Ga + 1));
+	int *pp = INTEGER(pk);
+	pp[0] = 0;
+	/* count the pairs of each level */
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(T) schedule(static)
+#endif
+	for (int t = 0; t < T; t++) {
+	    int *mk = mark[t];
+	    for (int g = 0; g <= Gb[k]; g++) mk[g] = 0;
+	    for (int g = lv[t]; g < lv[t + 1]; g++) {
+		int c = 0;
+		for (R_xlen_t q = start[g]; q < start[g + 1]; q++) {
+		    int bi = bk[ROW(q)];
+		    if (mk[bi] != g + 1) { mk[bi] = g + 1; c++; }
 		}
-		for (R_xlen_t e = 0; e < m; e++) { tmp[e].j = jj[start + e]; tmp[e].x = xx[start + e]; }
-		qsort(tmp, (size_t) m, sizeof(ct_entry), ct_cmp);
-		for (R_xlen_t e = 0; e < m; e++) { jj[start + e] = tmp[e].j; xx[start + e] = tmp[e].x; }
+		pp[g + 1] = c;
 	    }
-	    pp[a[ROW(t - 1)]] = (int) m;
-	    start = q;
 	}
-	if (t == n) break;
-	int bi = b[i];
-	if (mark[bi] != ai) {
-	    mark[bi] = ai;
-	    pos[bi] = q;
-	    jj[q] = bi - 1;
-	    xx[q] = 0.0;
-	    q++;
+	double nnz = 0.0;
+	for (int g = 0; g < Ga; g++) nnz += pp[g + 1];
+	if (nnz > INT_MAX) error("the crosstab has too many entries");
+	for (int g = 0; g < Ga; g++) pp[g + 1] += pp[g];
+	SEXP jk = PROTECT(allocVector(INTSXP, pp[Ga]));
+	SEXP xk = PROTECT(allocVector(REALSXP, pp[Ga]));
+	int *jj = INTEGER(jk);
+	double *xx = REAL(xk);
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(T) schedule(static)
+#endif
+	for (int t = 0; t < T; t++) {
+	    int *mk = mark[t];
+	    R_xlen_t *ps = pos[t];
+	    for (int g = 0; g <= Gb[k]; g++) mk[g] = 0;
+	    for (int g = lv[t]; g < lv[t + 1]; g++) {
+		R_xlen_t e0 = pp[g], e = e0;
+		for (R_xlen_t q = start[g]; q < start[g + 1]; q++) {
+		    R_xlen_t i = ROW(q);
+		    int bi = bk[i];
+		    if (mk[bi] != g + 1) {
+			mk[bi] = g + 1;
+			ps[bi] = e;
+			jj[e] = bi - 1;
+			xx[e] = 0.0;
+			e++;
+		    }
+		    xx[ps[bi]] += w ? w[i] : 1.0;
+		}
+		ct_sort(jj + e0, xx + e0, e - e0, tmp[t]);
+	    }
 	}
-	xx[pos[bi]] += w ? w[i] : 1.0;
+	SEXP ok = SET_VECTOR_ELT(out, k, allocVector(VECSXP, 3));
+	SET_VECTOR_ELT(ok, 0, pk);
+	SET_VECTOR_ELT(ok, 1, jk);
+	SET_VECTOR_ELT(ok, 2, xk);
+	UNPROTECT(3);
     }
 #undef ROW
-    for (int g = 1; g <= Ga; g++) pp[g] += pp[g - 1];
-    SEXP out = PROTECT(allocVector(VECSXP, 3));
-    SET_VECTOR_ELT(out, 0, p);
-    SET_VECTOR_ELT(out, 1, j);
-    SET_VECTOR_ELT(out, 2, x);
-    UNPROTECT(4);
+    UNPROTECT(1);
     return out;
 }
 
@@ -230,23 +322,86 @@ SEXP dm_fe_components(SEXP i_, SEXP j_, SEXP Ga_, SEXP Gb_)
    One pass over the rows for all fixed effects: the Q sums of a row for
    effect k are contiguous, so that each row touches one or two cache lines
    per effect.  `terms = FALSE` skips the design (row 0 and Y only).
+
+   In the same pass, crosstabs of pairs of fixed effects (`pairs`: NULL or
+   a 2 x P integer matrix of 0-based indices (a, b)) accumulated densely:
+   for each pair the sums of w over the rows of each (a, b) level pair, as
+   the compressed columns (by a) list(p, i, x) of the G_b x G_a matrix
+   (entries with no rows left out; w > 0, so every entry with rows is
+   positive).  Each sum is over its rows in row order, as the sparse
+   kernel (dm_fe_crosstabs()) has them.
+
+   On several threads: fixed row chunks (whole blocks of BLOCK rows), each
+   with its own sums, added in chunk order (dm_reduce_threads()); one
+   thread is the single-threaded pass.  Returns the nk matrices, then the
+   P crosstabs.
    ------------------------------------------------------------------------ */
 
+typedef struct {
+    const sctx *S;
+    const int *toff;
+    int nk, Q, K, offY, np;
+    const int *const *codes;
+    const double *w, *Y;
+    const int *pa, *pb;  /* the pairs: codes indices */
+    const int *G;
+} gsum_ctx;
 
-SEXP dm_fe_struct_gsum(SEXP setup, SEXP vars, SEXP w_, SEXP codes_, SEXP G_, SEXP Y_, SEXP terms_)
+static void struct_gsum_rows(const gsum_ctx *C, R_xlen_t i0_, R_xlen_t i1, double **acc, double **pacc,
+			     int **F, double **N, double *wb)
+{
+    const sctx *S = C->S;
+    R_xlen_t n = S->n;
+    int Q = C->Q, K = C->K, offY = C->offY;
+    for (R_xlen_t i0 = i0_; i0 < i1; i0 += BLOCK) {
+	int nb = (int) (i1 - i0 < BLOCK ? i1 - i0 : BLOCK);
+	for (int t = 0; t < S->nt; t++)
+	    if (C->toff[t] >= 0) term_block(&S->t[t], n, i0, nb, F[t], N[t]);
+	for (int r = 0; r < nb; r++) wb[r] = C->w ? C->w[i0 + r] : 1.0;
+	for (int k = 0; k < C->nk; k++) {
+	    const int *ck = C->codes[k] + i0;
+	    double *a = acc[k];
+	    for (int r = 0; r < nb; r++) {
+		double wi = wb[r];
+		double *base = a + (size_t) Q * (ck[r] - 1);
+		base[0] += wi;
+		for (int t = 0; t < S->nt; t++) {
+		    int o = C->toff[t];
+		    if (o < 0) continue;
+		    const sterm *Tt = &S->t[t];
+		    int L = Tt->L, f = F[t][r];
+		    const double *Nt = N[t] + r;
+		    for (int u = 0; u < Tt->ns; u++)
+			base[o + f + L * u] += wi * Nt[(size_t) u * BLOCK];
+		}
+		for (int j = 0; j < K; j++)
+		    base[offY + j] += wi * C->Y[i0 + r + (R_xlen_t) j * n];
+	    }
+	}
+	for (int q = 0; q < C->np; q++) {
+	    const int *ca = C->codes[C->pa[q]] + i0, *cb = C->codes[C->pb[q]] + i0;
+	    size_t Gb = (size_t) C->G[C->pb[q]];
+	    double *a = pacc[q];
+	    for (int r = 0; r < nb; r++) a[(size_t) (ca[r] - 1) * Gb + (cb[r] - 1)] += wb[r];
+	}
+    }
+}
+
+SEXP dm_fe_struct_gsum(SEXP setup, SEXP vars, SEXP w_, SEXP codes_, SEXP G_, SEXP Y_, SEXP terms_,
+		       SEXP pairs_, SEXP nthreads_)
 {
     sctx S;
     int use_terms = asLogical(terms_);
-    R_xlen_t n;
+    /* (build_sctx() leaves one object protected) */
     if (use_terms) {
 	build_sctx(&S, setup, vars);
-	n = S.n;
     } else {
 	PROTECT(R_NilValue);
 	S.nt = 0;
 	S.t = NULL;
-	n = XLENGTH(VECTOR_ELT(codes_, 0));
+	S.n = XLENGTH(VECTOR_ELT(codes_, 0));
     }
+    R_xlen_t n = S.n;
     int nk = LENGTH(codes_);
     const int *G = INTEGER(G_);
     const double *w = isNull(w_) ? NULL : REAL(w_);
@@ -254,61 +409,125 @@ SEXP dm_fe_struct_gsum(SEXP setup, SEXP vars, SEXP w_, SEXP codes_, SEXP G_, SEX
     int K = isNull(Y_) ? 0 : ncols(Y_);
     const double *Y = K ? REAL(Y_) : NULL;
     if (K && nrows(Y_) != n) error("internal error: one row of Y per row");
+    int np = isNull(pairs_) ? 0 : ncols(pairs_);
+    const int *pr = np ? INTEGER(pairs_) : NULL;
     /* term offsets: the intercept (no component) is covered by row 0 */
     int *toff = (int *) R_alloc(S.nt > 0 ? S.nt : 1, sizeof(int));
     int Q = 1;
+    double work = 1.0;
     for (int t = 0; t < S.nt; t++) {
-	const sterm *T = &S.t[t];
-	if (T->nf == 0 && T->nn == 0) { toff[t] = -1; continue; }
-	if (T->L < 0) error("internal error: term too large for the structured kernel");
+	const sterm *Tt = &S.t[t];
+	if (Tt->nf == 0 && Tt->nn == 0) { toff[t] = -1; continue; }
+	if (Tt->L < 0) error("internal error: term too large for the structured kernel");
 	toff[t] = Q;
-	Q += T->L * T->ns;
+	Q += Tt->L * Tt->ns;
+	work += Tt->ns + Tt->nf + Tt->nn;
     }
     int offY = Q;
     Q += K;
     const int **codes = (const int **) R_alloc(nk, sizeof(int *));
-    double **acc = (double **) R_alloc(nk, sizeof(double *));
-    SEXP out = PROTECT(allocVector(VECSXP, nk));
     for (int k = 0; k < nk; k++) {
 	SEXP ck = VECTOR_ELT(codes_, k);
 	if (XLENGTH(ck) != n) error("internal error: one code per row");
 	codes[k] = INTEGER(ck);
+    }
+    int *pa = (int *) R_alloc(np > 0 ? np : 1, sizeof(int)), *pb = (int *) R_alloc(np > 0 ? np : 1, sizeof(int));
+    for (int q = 0; q < np; q++) {
+	pa[q] = pr[2 * q];
+	pb[q] = pr[2 * q + 1];
+	if (pa[q] < 0 || pa[q] >= nk || pb[q] < 0 || pb[q] >= nk) error("internal error: pairs");
+    }
+    /* one accumulator: the nk matrices, then the np dense crosstabs */
+    R_xlen_t *off = (R_xlen_t *) R_alloc((size_t) nk + np + 1, sizeof(R_xlen_t));
+    off[0] = 0;
+    for (int k = 0; k < nk; k++) off[k + 1] = off[k] + (R_xlen_t) Q * G[k];
+    for (int q = 0; q < np; q++) off[nk + q + 1] = off[nk + q] + (R_xlen_t) G[pa[q]] * G[pb[q]];
+    R_xlen_t len = off[nk + np];
+    work = (double) n * (nk * (work + K) + np);
+    int T = dm_reduce_threads(asInteger(nthreads_), n, work, (double) len);
+    SEXP out = PROTECT(allocVector(VECSXP, nk + np));
+    double **mats = (double **) R_alloc(nk > 0 ? nk : 1, sizeof(double *));
+    for (int k = 0; k < nk; k++) {
 	SEXP m = SET_VECTOR_ELT(out, k, allocMatrix(REALSXP, Q, G[k]));
-	acc[k] = REAL(m);
-	memset(acc[k], 0, sizeof(double) * (size_t) Q * G[k]);
+	mats[k] = REAL(m);
+	memset(mats[k], 0, sizeof(double) * (size_t) Q * G[k]);
     }
-    int **F = (int **) R_alloc(S.nt > 0 ? S.nt : 1, sizeof(int *));
-    double **N = (double **) R_alloc(S.nt > 0 ? S.nt : 1, sizeof(double *));
-    for (int t = 0; t < S.nt; t++) {
-	F[t] = (int *) R_alloc(BLOCK, sizeof(int));
-	N[t] = (double *) R_alloc((size_t) BLOCK * (S.t[t].ns > 0 ? S.t[t].ns : 1), sizeof(double));
+    /* one thread and no crosstabs: the sums go to the matrices; otherwise
+       each chunk sums into a contiguous buffer (chunk 0's: buf0), and the
+       buffers are added in chunk order */
+    int direct = T == 1 && np == 0;
+    double *buf0 = NULL;
+    if (!direct) {
+	buf0 = (double *) R_alloc((size_t) (len > 0 ? len : 1), sizeof(double));
+	memset(buf0, 0, sizeof(double) * (size_t) len);
     }
-    double *wb = (double *) R_alloc(BLOCK, sizeof(double));
-    for (R_xlen_t i0 = 0; i0 < n; i0 += BLOCK) {
-	int nb = (int) (n - i0 < BLOCK ? n - i0 : BLOCK);
-	for (int t = 0; t < S.nt; t++)
-	    if (toff[t] >= 0) term_block(&S.t[t], n, i0, nb, F[t], N[t]);
-	for (int r = 0; r < nb; r++) wb[r] = w ? w[i0 + r] : 1.0;
-	for (int k = 0; k < nk; k++) {
-	    const int *ck = codes[k] + i0;
-	    double *a = acc[k];
-	    for (int r = 0; r < nb; r++) {
-		double wi = wb[r];
-		double *base = a + (size_t) Q * (ck[r] - 1);
-		base[0] += wi;
-		for (int t = 0; t < S.nt; t++) {
-		    int o = toff[t];
-		    if (o < 0) continue;
-		    const sterm *T = &S.t[t];
-		    int L = T->L, f = F[t][r];
-		    const double *Nt = N[t] + r;
-		    for (int u = 0; u < T->ns; u++)
-			base[o + f + L * u] += wi * Nt[(size_t) u * BLOCK];
-		}
-		for (int j = 0; j < K; j++)
-		    base[offY + j] += wi * Y[i0 + r + (R_xlen_t) j * n];
-	    }
+    double ***acc = (double ***) R_alloc(T, sizeof(double **));
+    double ***pacc = (double ***) R_alloc(T, sizeof(double **));
+    double **bufs = (double **) R_alloc(T, sizeof(double *));
+    int ***F = (int ***) R_alloc(T, sizeof(int **));
+    double ***N = (double ***) R_alloc(T, sizeof(double **));
+    double **wb = (double **) R_alloc(T, sizeof(double *));
+    int nta = S.nt > 0 ? S.nt : 1;
+    for (int t = 0; t < T; t++) {
+	acc[t] = (double **) R_alloc(nk > 0 ? nk : 1, sizeof(double *));
+	pacc[t] = (double **) R_alloc(np > 0 ? np : 1, sizeof(double *));
+	if (direct) {
+	    bufs[t] = NULL;
+	    for (int k = 0; k < nk; k++) acc[t][k] = mats[k];
+	} else {
+	    bufs[t] = t == 0 ? buf0 : (double *) R_alloc((size_t) (len > 0 ? len : 1), sizeof(double));
+	    for (int k = 0; k < nk; k++) acc[t][k] = bufs[t] + off[k];
+	    for (int q = 0; q < np; q++) pacc[t][q] = bufs[t] + off[nk + q];
 	}
+	F[t] = (int **) R_alloc(nta, sizeof(int *));
+	N[t] = (double **) R_alloc(nta, sizeof(double *));
+	for (int u = 0; u < S.nt; u++) {
+	    F[t][u] = (int *) R_alloc(BLOCK, sizeof(int));
+	    N[t][u] = (double *) R_alloc((size_t) BLOCK * (S.t[u].ns > 0 ? S.t[u].ns : 1), sizeof(double));
+	}
+	wb[t] = (double *) R_alloc(BLOCK, sizeof(double));
+    }
+    gsum_ctx C = { &S, toff, nk, Q, K, offY, np, (const int *const *) codes, w, Y, pa, pb, G };
+    if (T == 1) {
+	struct_gsum_rows(&C, 0, n, acc[0], pacc[0], F[0], N[0], wb[0]);
+    } else {
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(T) schedule(static)
+#endif
+	for (int t = 0; t < T; t++) {
+	    if (t > 0) dm_zero(bufs[t], len);
+	    struct_gsum_rows(&C, dm_chunk_start(n, T, t, BLOCK), dm_chunk_start(n, T, t + 1, BLOCK),
+			     acc[t], pacc[t], F[t], N[t], wb[t]);
+	}
+	dm_combine(bufs, T, len);
+    }
+    if (!direct)
+	for (int k = 0; k < nk; k++) memcpy(mats[k], buf0 + off[k], sizeof(double) * (size_t) Q * G[k]);
+    /* the dense crosstabs, compressed */
+    for (int q = 0; q < np; q++) {
+	int Ga = G[pa[q]], Gb = G[pb[q]];
+	const double *d = buf0 + off[nk + q];
+	R_xlen_t nnz = 0, tot = (R_xlen_t) Ga * Gb;
+	for (R_xlen_t e = 0; e < tot; e++) nnz += d[e] != 0.0;
+	if (nnz > INT_MAX) error("the crosstab has too many entries");
+	SEXP pk = PROTECT(allocVector(INTSXP, (R_xlen_t) Ga + 1));
+	SEXP ik = PROTECT(allocVector(INTSXP, nnz));
+	SEXP xk = PROTECT(allocVector(REALSXP, nnz));
+	int *pp = INTEGER(pk), *ii = INTEGER(ik);
+	double *xx = REAL(xk);
+	R_xlen_t e = 0;
+	pp[0] = 0;
+	for (int g = 0; g < Ga; g++) {
+	    const double *dg = d + (size_t) g * Gb;
+	    for (int h = 0; h < Gb; h++)
+		if (dg[h] != 0.0) { ii[e] = h; xx[e++] = dg[h]; }
+	    pp[g + 1] = (int) e;
+	}
+	SEXP ok = SET_VECTOR_ELT(out, nk + q, allocVector(VECSXP, 3));
+	SET_VECTOR_ELT(ok, 0, pk);
+	SET_VECTOR_ELT(ok, 1, ik);
+	SET_VECTOR_ELT(ok, 2, xk);
+	UNPROTECT(3);
     }
     UNPROTECT(2);
     return out;

@@ -93,6 +93,10 @@
 ##                            list(S = G x p, n = G sums of the scale, extra =
 ##                            G x k sums of scale * extra); one pass of the
 ##                            structured kernel in memory
+##   dmp_fe_sums(x, w, groups, extra, pairs)
+##                            dmp_colsums_groups() of w * x and the
+##                            crosstabs of pairs of coded groupings at once
+##                            (fewer passes in memory)
 ##   dmp_crosstab(a, b, w)    for two grouping columns, the sums of w (counts
 ##                            without w) for each pair of groups: a
 ##                            Matrix::dgCMatrix, rows the sorted groups of a,
@@ -724,7 +728,7 @@ dmp_groupsum_codes <- function(col, group) {
         ## (the kernel takes a vector as one column: no copy of a double)
         W <- col
         if (!is.double(W)) storage.mode(W) <- "double"
-        return(.Call(C_dm_fe_gsum, group$codes, G, W))
+        return(.Call(C_dm_fe_gsum, group$codes, G, W, design_threads()))
     }
     res <- dm_group_query(list(group$codes), list(col), nulls = TRUE)
     k <- length(col)
@@ -741,14 +745,22 @@ dmp_groupsum_codes <- function(col, group) {
 ## weighted counts by pair of coded groups: Ga x Gb dgCMatrix
 dmp_crosstab_codes <- function(a, b, w = NULL) {
     if (!dm_is_rcols(a$codes) && !dm_is_rcols(b$codes) && !dm_is_rcols(w)) {
-        ## (the kernel returns the transpose of the crosstab of its first
-        ## two arguments, and is fastest when the first is sorted)
-        ct <- .Call(C_dm_fe_crosstab, b$codes, a$codes, if (is.null(w)) NULL else as.double(w), b$G, a$G)
-        return(methods::new("dgCMatrix", i = ct[[2L]], p = ct[[1L]], x = ct[[3L]], Dim = c(a$G, b$G)))
+        ## (the kernel returns the transposes of the crosstabs of its first
+        ## argument with the others, and is fastest when the first is
+        ## sorted)
+        ct <- .Call(C_dm_fe_crosstabs, b$codes, list(a$codes), if (is.null(w)) NULL else as.double(w), b$G,
+                    a$G, design_threads())[[1L]]
+        return(dm_ct_matrix(ct, a$G, b$G))
     }
     res <- dm_group_query(list(a$codes, b$codes), if (is.null(w)) list() else list(w))
     Matrix::sparseMatrix(i = as.integer(res$g1), j = as.integer(res$g2), x = as.double(res$v1),
                          dims = c(a$G, b$G), repr = "C")
+}
+
+## A crosstab from the kernels (compressed columns list(p, i, x)) as an
+## nr x nc dgCMatrix.
+dm_ct_matrix <- function(ct, nr, nc) {
+    methods::new("dgCMatrix", i = ct[[2L]], p = ct[[1L]], x = ct[[3L]], Dim = c(as.integer(nr), as.integer(nc)))
 }
 
 ## Column sums of a design within several coded groups at once:
@@ -783,17 +795,35 @@ dmp_colsums_groups <- function(x, groups, extra = NULL) {
              else if (is.double(s) && length(s) == nrow(D) && is.null(attributes(s))) s
              else rep_len(as.double(s), nrow(D))
     }
+    dm_gsums_memory(D, w, groups, extra)$gs
+}
+
+## In memory: the grouped sums of dmp_colsums_groups() of design D scaled by
+## w (NULL for 1), and the crosstabs (as dmp_crosstab(), sums of w) of the
+## pairs of groupings `pairs` (a list of c(a, b), indices in `groups`: the
+## G_b x G_a matrix of t(crosstab(a, b))) whose dense table is small enough,
+## all in one pass of the structured kernel when it applies; list(gs, ct),
+## ct with NULL for the pairs left out.
+dm_gsums_memory <- function(D, w, groups, extra = NULL, pairs = list()) {
     G <- vapply(groups, function(g) g$G, 1L)
     codes <- lapply(groups, function(g) g$codes)
+    ct <- vector("list", length(pairs))
     ## (the kernels take a vector as one column: no copy of a double)
     Y <- extra
     if (!is.null(Y) && !is.double(Y)) storage.mode(Y) <- "double"
     if (dm_colsums_struct_ok(D, G)) {
-        M <- .Call(C_dm_fe_struct_gsum, D$setup, D$vars, w, codes, as.integer(G), Y, TRUE)
+        ## dense crosstabs: up to 2^22 cells, and at most two per row
+        dense <- vapply(pairs, function(pr) as.double(G[pr[1L]]) * G[pr[2L]] <= min(2^22, 2 * nrow(D)), NA)
+        pm <- if (any(dense)) matrix(as.integer(unlist(pairs[dense])) - 1L, nrow = 2L)
+        M <- .Call(C_dm_fe_struct_gsum, D$setup, D$vars, w, codes, as.integer(G), Y, TRUE, pm, design_threads())
+        for (q in seq_along(which(dense))) {
+            pr <- pairs[[which(dense)[q]]]
+            ct[[which(dense)[q]]] <- dm_ct_matrix(M[[length(groups) + q]], G[pr[2L]], G[pr[1L]])
+        }
         info <- dm_struct_info(D)
         icpt <- isTRUE(D$setup$intercept > 0L)
         p <- ncol(D)
-        return(lapply(seq_along(groups), function(k) {
+        gs <- lapply(seq_along(groups), function(k) {
             m <- M[[k]]
             S <- matrix(0, G[k], p)
             q <- 1L
@@ -810,17 +840,48 @@ dmp_colsums_groups <- function(x, groups, extra = NULL) {
                 q <- q + L * ns
             }
             list(S = S, n = m[1L, ], extra = if (is.null(Y)) NULL else t(m[q + seq_len(NCOL(Y)), , drop = FALSE]))
-        }))
+        })
+        return(list(gs = gs, ct = ct))
     }
     one <- if (is.null(w)) rep(1, nrow(D)) else w
-    lapply(seq_along(groups), function(k) {
+    nt <- design_threads()
+    gs <- lapply(seq_along(groups), function(k) {
         J <- as_jac(D)
         W <- matrix(one, ncol = 1L)
         S <- if (jac_kernel_ok(J)) t(dm_crossprod_kernel(J, W, codes[[k]], G[k]))
-             else .Call(C_dm_fe_gsum, codes[[k]], G[k], one * as.matrix(D))
-        ns <- .Call(C_dm_fe_gsum, codes[[k]], G[k], cbind(one, if (!is.null(Y)) one * Y))
+             else .Call(C_dm_fe_gsum, codes[[k]], G[k], one * as.matrix(D), nt)
+        ns <- .Call(C_dm_fe_gsum, codes[[k]], G[k], cbind(one, if (!is.null(Y)) one * Y), nt)
         list(S = S, n = ns[, 1L], extra = if (!is.null(Y)) ns[, -1L, drop = FALSE])
     })
+    list(gs = gs, ct = ct)
+}
+
+## The sums of a fit with fixed effects (fe.R): the grouped sums of
+## dmp_colsums_groups(w * x, groups, extra) (x unscaled, w NULL for 1) and
+## the crosstabs t(dmp_crosstab(groups[[b]], groups[[a]], w)) (G_a x G_b
+## sums of w, transposed) for each pair c(a, b) of `pairs`: list(gs, ct).
+## In memory one pass of the structured kernel for the grouped sums and
+## the small crosstabs (dense tables), and one pass for the crosstabs of
+## each grouping a with all its b (dm_fe_crosstabs(): the rows by level of
+## a); remotely the queries of dmp_colsums_groups() and dmp_crosstab().
+dmp_fe_sums <- function(x, w, groups, extra = NULL, pairs = list()) {
+    if (inherits(x, "dm_remote") || dm_is_comb(x)) {
+        gs <- dmp_colsums_groups(if (is.null(w)) x else dmp_scale(x, w), groups, extra)
+        ct <- lapply(pairs, function(pr) dmp_crosstab(groups[[pr[2L]]], groups[[pr[1L]]], w))
+        return(list(gs = gs, ct = ct))
+    }
+    if (!is.null(w)) w <- as.double(w)
+    r <- dm_gsums_memory(x, w, groups, extra, pairs)
+    ## the other crosstabs: one pass per grouping a, for all its b
+    left <- which(vapply(r$ct, is.null, NA))
+    for (a in unique(vapply(pairs[left], `[`, 1L, 1L))) {
+        qs <- left[vapply(pairs[left], `[`, 1L, 1L) == a]
+        bs <- vapply(pairs[qs], `[`, 1L, 2L)
+        cts <- .Call(C_dm_fe_crosstabs, groups[[a]]$codes, lapply(groups[bs], `[[`, "codes"), w,
+                     groups[[a]]$G, vapply(groups[bs], function(g) g$G, 1L), design_threads())
+        for (j in seq_along(qs)) r$ct[[qs[j]]] <- dm_ct_matrix(cts[[j]], groups[[bs[j]]]$G, groups[[a]]$G)
+    }
+    r
 }
 
 dm_colsums_struct_ok <- function(D, G) {

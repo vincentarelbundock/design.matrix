@@ -11,10 +11,12 @@
 ## of K). Every input is a sum over rows: X'WX and X'Wy are products with
 ## the design, S and s grouped sums, K counts and crosstabs; the rows are
 ## never demeaned and the dense design is never formed. The same estimator
-## (dm_fe_core()) runs on data in memory (C kernels, one pass for all
-## grouped sums: dm_fe_struct_gsum() in src/fe.c) and on remote data
-## (the remote methods of the same primitives): one code path, see
-## dm_fe_core().
+## (dm_fe_core()) runs on data in memory (C kernels: one pass for all
+## grouped sums and the small crosstabs, dm_fe_struct_gsum() in src/fe.c,
+## and one for the crosstabs of the largest FE with the others,
+## dm_fe_crosstabs(); on several threads with design_threads()) and on
+## remote data (the remote methods of the same primitives): one code path,
+## see dm_fe_core().
 ##
 ## The solve with K eliminates the largest FE (diagonal block D_1)
 ## analytically and works on the Schur complement over the other FEs,
@@ -422,6 +424,19 @@ dm_fe_sub <- function(R, use) {
     R
 }
 
+## The crosstabs that dm_fe_system() takes, as pairs c(a, b) (crosstab(a,
+## b) = t(N_ab)): the largest FE with each other, then the pairs of the
+## others.
+dm_fe_pairs <- function(G) {
+    o <- order(G, decreasing = TRUE)
+    rest <- o[-1L]
+    pairs <- lapply(rest, function(k) c(o[1L], k))
+    if (length(rest) > 1L)
+        for (r in seq_along(rest)[-length(rest)]) for (s in (r + 1L):length(rest))
+            pairs <- c(pairs, list(c(rest[r], rest[s])))
+    pairs
+}
+
 ## The FE system K = F'WF, reduced by eliminating the largest FE.
 ## G: levels per FE; nk: weighted counts per level; crosstab(a, b): t(N_ab).
 ##
@@ -557,7 +572,7 @@ dm_fe_pivchol <- function(M, scale, tol) {
 ## One implementation for designs in memory and remote designs: every sum
 ## is a primitive of the fitting core (primitives.R, primitives_lookup.R):
 ## X'WX and X'Wz (dmp_crossprod), F_k'WX, F_k'W1 and F_k'Wz for all FE
-## (dmp_colsums_groups, one pass in memory), crosstabs N_kl (dmp_crosstab),
+## and the crosstabs N_kl (dmp_fe_sums, two passes in memory),
 ## the residual column (dmp_mult and lookups of the FE values), F_k'We
 ## (dmp_groupsum), sums over rows (dm_colsum).
 ##
@@ -603,13 +618,17 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_f
     if (!mem_resid) tss <- dm_colsum(if (is.null(w)) (z - ybar)^2 else w * (z - ybar)^2)
     if (!all(is.finite(xtx)) || !all(is.finite(xty))) stop("NA/NaN/Inf in 'x'", call. = FALSE)
     ## grouped sums and the FE system
-    gs <- dmp_colsums_groups(if (is.null(w)) x else dmp_scale(x, w), codes, extra = z)
+    ## (with the crosstabs of the FE system: one or two passes in memory)
+    pairs <- dm_fe_pairs(G)
+    fs <- dmp_fe_sums(x, w, codes, extra = z, pairs = pairs)
+    gs <- fs$gs
     nk <- lapply(gs, `[[`, "n")
     if (any(vapply(nk, function(v) any(!(v > 0)), NA)))
         stop("internal error: a fixed-effect level without weight", call. = FALSE)
     B <- lapply(gs, function(g) cbind(g$S[, xcols, drop = FALSE], g$extra[, 1L]))
     ## t(N_ab), G_b x G_a
-    crosstab <- function(a, b) dmp_crosstab(codes[[b]], codes[[a]], w)
+    pkey <- vapply(pairs, paste, "", collapse = ",")
+    crosstab <- function(a, b) fs$ct[[match(paste(a, b, sep = ","), pkey)]]
     sys <- dm_fe_system(G, nk, crosstab, opts)
     ab <- dm_fe_apply(sys, B, Z0 = if (!is.null(warm)) warm$Z)
     if (!is.null(warm)) {
