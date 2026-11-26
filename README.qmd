@@ -672,6 +672,36 @@ bench::mark(
     iterations = 5, check = same)[c("expression", "min", "median", "mem_alloc")]
 ```
 
+### Out-of-core data
+
+When the data are too large for memory, pass a DuckDB connection and a table (or a `sql` query), or the path of Parquet files, instead of a data frame. The rows stay in the database. `crossprod()`, `colSums()` and `colMeans()` (with `group =` a column) run there as `GROUP BY` aggregates over factor codes and products of numeric variables, followed by small products with the contrast matrices in R. `D %*% beta` writes the predictions to a temporary view and returns its name. Factor levels are pinned in R, with R's sorting rules, and rows with missing values are dropped, as `na.omit()` drops them.
+
+```{r}
+library(design.matrix)
+con <- DBI::dbConnect(duckdb::duckdb())
+d <- data.frame(
+    y = c(0.3, -1.2, 0.8, 1.5, -0.4, 0.9, -2.1, 0.2),
+    x = c(-1.5, 0.2, 1.1, -0.3, 2.0, 0.7, -0.9, 1.4),
+    f = c("a", "b", "c", "a", "b", "c", "a", "b"))
+DBI::dbWriteTable(con, "d", d)
+
+D <- design_matrix(y ~ x + f + log(x + 3), con, table = "d")
+D
+m <- design_moments(D) # X'X, X'y, y'y and n, computed in DuckDB
+beta <- solve(m$xtx, m$xty)
+all.equal(drop(beta), coef(lm(y ~ x + f + log(x + 3), d)), check.attributes = FALSE)
+
+p <- D %*% beta
+as.data.frame(p)
+```
+
+The SQL engine handles factors, character and logical columns, numeric columns, interactions, and arithmetic with `log()`, `exp()`, `sqrt()` and `abs()`. Any other formula, such as one with `poly()` or `splines::ns()`, uses the chunked engine: batches of rows go through `design_matrix(spec, batch)`, and the results are accumulated. `design_explain(D)` shows which terms prevent the SQL engine. To fit in R and score in the database, pass a design or a fitted model instead of the formula: `design_matrix(fit, con, table = "new_rows") %*% coef(fit)`. Remote designs keep only the algebra promise (agreement up to rounding), and `as.matrix()` refuses to collect more than 100,000 rows unless `force = TRUE`.
+
+```{r}
+#| include: false
+DBI::dbDisconnect(con)
+```
+
 ## Recipes
 
 ### Least squares
