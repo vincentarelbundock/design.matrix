@@ -66,8 +66,8 @@
 #'
 #' **Remote data.** `data` can be a DuckDB connection (with `table` or
 #' `sql`) or Parquet paths, and the first argument a remote design (see
-#' [design_remote]); `weights` and `offset` then name columns (`offset()`
-#' terms of the formula are also used when they have a SQL translation).
+#' [design_remote]); `weights` and `offset` are then column names, `DBI::SQL()`
+#' or R expressions over the columns.
 #' The fit is the same code as in memory: its columns (response, weights,
 #' linear predictor, working weights) are SQL expressions, and its products
 #' with the design run in the database or in batches. See the section
@@ -107,8 +107,10 @@
 #'   As in [stats::glm()] (`na.action`: `na.omit`, `na.exclude` or
 #'   `na.fail`). With a design matrix, `weights` and `offset` are numeric
 #'   vectors with one value per row, and `data`, `na.action` and `contrasts`
-#'   do not apply. For remote data, `weights` and `offset` name columns
-#'   (strings, bare names or variables holding a string).
+#'   do not apply. For remote data, `weights` and `offset` are column
+#'   names, `DBI::SQL()` expressions or R expressions over the columns
+#'   (evaluated in batches when they have no SQL translation), as in
+#'   [design_lm()].
 #' @param control A list of arguments of [stats::glm.control()].
 #' @param compress `"auto"`, `TRUE` or `FALSE`: fit on the design patterns
 #'   (see Details).

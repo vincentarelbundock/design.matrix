@@ -38,8 +38,10 @@ design_glm(
 \item{data, weights, na.action, start, offset, contrasts}{As in \code{\link[stats:glm]{stats::glm()}} (\code{na.action}: \code{na.omit}, \code{na.exclude} or
 \code{na.fail}). With a design matrix, \code{weights} and \code{offset} are numeric
 vectors with one value per row, and \code{data}, \code{na.action} and \code{contrasts}
-do not apply. For remote data, \code{weights} and \code{offset} name columns
-(strings, bare names or variables holding a string).}
+do not apply. For remote data, \code{weights} and \code{offset} are column
+names, \code{DBI::SQL()} expressions or R expressions over the columns
+(evaluated in batches when they have no SQL translation), as in
+\code{\link[=design_lm]{design_lm()}}.}
 
 \item{control}{A list of arguments of \code{\link[stats:glm.control]{stats::glm.control()}}.}
 
@@ -116,8 +118,8 @@ error.
 
 \strong{Remote data.} \code{data} can be a DuckDB connection (with \code{table} or
 \code{sql}) or Parquet paths, and the first argument a remote design (see
-\link{design_remote}); \code{weights} and \code{offset} then name columns (\code{offset()}
-terms of the formula are also used when they have a SQL translation).
+\link{design_remote}); \code{weights} and \code{offset} are then column names, \code{DBI::SQL()}
+or R expressions over the columns.
 The fit is the same code as in memory: its columns (response, weights,
 linear predictor, working weights) are SQL expressions, and its products
 with the design run in the database or in batches. See the section
