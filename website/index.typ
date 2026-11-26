@@ -92,6 +92,22 @@ D_new <- design_matrix(D, newdata)
 drop(D_new %*% beta)
 ```
 
+= Data in memory or in a database
+
+The same code fits data frames, DuckDB tables and Parquet files: give a connection and a table instead of a data frame, and the products, `design_lm()`, `design_glm()` and fixed effects run in the database, with the same results as in memory.
+
+```r
+#| eval: false
+con <- DBI::dbConnect(duckdb::duckdb())
+DBI::dbWriteTable(con, "d", d)
+design_lm(y ~ x + f, d)                        # a data frame
+design_lm(y ~ x + f, con, table = "d")         # the same fit, in DuckDB
+design_glm(k ~ x + f, poisson, con, table = "d")
+design_lm(y ~ x | firm, con, table = "d", vcov = ~firm)
+```
+
+The #link("recipes/out-of-core.html")[Out-of-core data] recipe runs every call on both backends side by side (#link("recipes/out-of-core.html#one-code-two-backends")[One code, two backends]) and describes the remote designs.
+
 = Setup
 
 The benchmarks on this site ran on:

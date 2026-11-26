@@ -14,7 +14,7 @@ options(width = 200)
 
 #title()
 
-When the data do not fit in memory, `design_matrix()` and `design_lm()` take a DuckDB connection and a table (or a `sql` query), or the path of Parquet files, instead of a data frame. The rows stay in the database: products with the design run there as `GROUP BY` aggregates, or in batches, and only small results come back to R. These designs need the DBI and duckdb packages.
+When the data do not fit in memory, `design_matrix()`, `design_lm()` and `design_glm()` take a DuckDB connection and a table (or a `sql` query), or the path of Parquet files, instead of a data frame. The rows stay in the database: products with the design run there as `GROUP BY` aggregates, or in batches, and only small results come back to R. These designs need the DBI and duckdb packages.
 
 ```r
 library(design.matrix)
@@ -22,31 +22,48 @@ con <- DBI::dbConnect(duckdb::duckdb())
 set.seed(1)
 n <- 10000
 d <- data.frame(
+    id = seq_len(n),
     x = rnorm(n),
     z = sample(1:5, n, TRUE),
     f = sample(c("a", "b", "c"), n, TRUE),
     w = runif(n, 0.5, 2),
     cl = sample(1:50, n, TRUE))
 d$y <- d$x + d$z + rnorm(n) * (1 + abs(d$x))
+d$k <- rpois(n, exp(0.2 * d$z))
 DBI::dbWriteTable(con, "d", d)
 ```
 
 = One code, two backends
 
-A design built from a data frame and one built from a DuckDB table answer the same operations: products, sums, `qr()`, `design_lm()`, `predict()`. Results with one number per row come back as vectors in memory and as tables in the database; everything else is the same R object.
+The same calls work on a data frame and on a DuckDB table: only the data argument changes. Below, every call runs once on `d` and once on the table `"d"`, with the same results. Numbers, matrices and fits are the same R objects in both cases; results with one value per row (such as `D %*% beta`) are vectors in memory and tables in the database, which keep the columns of the data (here `id`) to match the rows.
 
 ```r
-fit_mem <- design_lm(y ~ x + f, d)
-fit_db  <- design_lm(y ~ x + f, con, table = "d")
-all.equal(coef(fit_mem), coef(fit_db))
-all.equal(vcov(fit_mem), vcov(fit_db))
-
+## designs and their products
 D_mem <- design_matrix(y ~ x + f, d)
 D_db  <- design_matrix(y ~ x + f, con, table = "d")
-all.equal(crossprod(D_mem, d$w * D_mem), crossprod(D_db, "w" * D_db))
-all.equal(qr.coef(qr(D_mem), d$y), qr.coef(qr(D_db), "y"))
-head(predict(fit_mem, newdata = d))
-head(as.data.frame(predict(fit_db, newdata = con, table = "d")))
+all.equal(crossprod(D_mem), crossprod(D_db))
+
+beta <- c(1, 0.5, -1, 2)
+p_db <- as.data.frame(D_db %*% beta)
+all.equal(drop(D_mem %*% beta), p_db$.fitted[match(d$id, p_db$id)])
+
+## a linear model
+lm_mem <- design_lm(y ~ x + f, d, weights = w)
+lm_db  <- design_lm(y ~ x + f, con, table = "d", weights = w)
+all.equal(coef(lm_mem), coef(lm_db))
+all.equal(vcov(lm_mem), vcov(lm_db))
+
+## a GLM
+glm_mem <- design_glm(k ~ x + f, poisson, d)
+glm_db  <- design_glm(k ~ x + f, poisson, con, table = "d")
+all.equal(coef(glm_mem), coef(glm_db))
+all.equal(deviance(glm_mem), deviance(glm_db))
+
+## fixed effects, with standard errors clustered by FE
+fe_mem <- design_lm(y ~ x + f | cl, d, vcov = ~cl)
+fe_db  <- design_lm(y ~ x + f | cl, con, table = "d", vcov = ~cl)
+all.equal(coef(fe_mem), coef(fe_db))
+all.equal(vcov(fe_mem), vcov(fe_db))
 ```
 
 = Remote designs
@@ -139,7 +156,7 @@ all.equal(coef(fit_z), coef(glm(yb ~ factor(z) * f, binomial, d2)))
 fit_z$method
 ```
 
-`predict(fit, newdata = con, table = , type = "response")` scores in the database, and `residuals(fit, type = )` returns the remote design with `.fitted` and `.resid` columns, as for linear models.
+`predict(fit, newdata = con, table = , type = "response")` scores in the database, and `fitted(fit)` and `residuals(fit, type = )` return tables with `.fitted` (and `.resid`) columns next to the columns of the data.
 
 = Robust standard errors
 
@@ -175,7 +192,7 @@ all.equal(V_cl, G / (G - 1) * (n - 1) / (n - k) * B %*% crossprod(S) %*% B, chec
 
 = Differences from in-memory fits
 
-- `model.frame()` is not available for a remote fit, and `model` is ignored: the data stay in the database (`fit$remote_design` is the remote design of the fit).
+- `model.frame()` is not available for a remote fit, and `model` is ignored: the data stay in the database (`fit$data$design` is the remote design of the fit).
 - Results with one value per row are tables in the database, not vectors: `fitted()` (`.fitted`, `.resid`), `predict()` (`.fitted`; `se.fit` as a column `.se.fit` with attributes `df` and `residual.scale`; `.nonestim` instead of the attribute `"non-estim"`), and `residuals()`, a remote design.
 - These tables have no row order: rows are matched to the data through its columns, which every table keeps.
 - `compress = "auto"` decides from other evidence than in memory; the results are the same either way.
