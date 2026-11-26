@@ -58,6 +58,9 @@ static const R_CallMethodDef CallEntries[] = {
     {"dm_glm_working", (DL_FUNC) &dm_glm_working, 7},
     {"dm_poisson_dev", (DL_FUNC) &dm_poisson_dev, 3},
     {"dm_unwrap_vars", (DL_FUNC) &dm_unwrap_vars, 1},
+    {"dm_levels_unused", (DL_FUNC) &dm_levels_unused, 2},
+    {"dm_ls_sums", (DL_FUNC) &dm_ls_sums, 4},
+    {"dm_binomial_ll", (DL_FUNC) &dm_binomial_ll, 4},
     {"dm_omp_max_threads", (DL_FUNC) &dm_omp_max_threads, 0},
     {NULL, NULL, 0}
 };

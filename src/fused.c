@@ -11,6 +11,7 @@
 #include <float.h>
 #include <math.h>
 #include <string.h>
+#include <Rmath.h>
 #include "dm.h"
 
 /* R's sum() of doubles: long double accumulation, +-Inf beyond DBL_MAX */
@@ -298,5 +299,139 @@ SEXP dm_unwrap_vars(SEXP vars)
 	UNPROTECT(1);
     }
     UNPROTECT(nprot);
+    return out;
+}
+
+/* Does factor x (integer codes, L levels) leave a level unused, as
+   length(unique(x[!is.na(x)])) < length(levels(x)) tells?  NA when a code
+   is out of range (then the R code decides). */
+SEXP dm_levels_unused(SEXP x_, SEXP L_)
+{
+    R_xlen_t n = XLENGTH(x_);
+    int L = asInteger(L_);
+    const int *x = INTEGER_RO(x_);
+    if (L == NA_INTEGER || L < 0) return ScalarLogical(NA_LOGICAL);
+    char *seen = (char *) R_alloc((size_t) L + 1, 1);
+    memset(seen, 0, (size_t) L + 1);
+    int distinct = 0;
+    for (R_xlen_t i = 0; i < n; i++) {
+	int c = x[i];
+	if (c == NA_INTEGER) continue;
+	if (c < 1 || c > L) return ScalarLogical(NA_LOGICAL);
+	if (!seen[c]) { seen[c] = 1; distinct++; }
+    }
+    return ScalarLogical(distinct < L);
+}
+
+/* The sums of dmfit_ls() in memory, from z, the fitted values f and the
+   weights w (NULL for 1), as its R code computes them with r = z - f:
+   rss = sum(r^2) (sum(ifelse(w > 0, w r^2, 0)) with weights) and, with an
+   intercept, mss = sum((f - fbar)^2) with fbar = mean(f) (sum(w (f -
+   fbar)^2), fbar = sum(w f) / sum(w) with weights), without one sum(f^2)
+   (sum(w f^2)).  c(rss, mss). */
+SEXP dm_ls_sums(SEXP z_, SEXP f_, SEXP w_, SEXP intercept_)
+{
+    R_xlen_t n = XLENGTH(z_);
+    const double *z = REAL_RO(z_), *f = REAL_RO(f_);
+    const double *w = isNull(w_) ? NULL : REAL_RO(w_);
+    int intercept = asLogical(intercept_);
+    if (XLENGTH(f_) != n || (w && XLENGTH(w_) != n)) error("internal error: one value per row");
+    long double rss = 0.0, s = 0.0, sw = 0.0;
+    for (R_xlen_t i = 0; i < n; i++) {
+	double r = z[i] - f[i];
+	double r2 = r * r;
+	if (w) {
+	    double wi = w[i];
+	    /* ifelse(w > 0, w r^2, 0): NA where w > 0 is NA */
+	    double v = ISNAN(wi) ? NA_REAL : (wi > 0 ? wi * r2 : 0.0);
+	    rss += v;
+	    double wf = wi * f[i];
+	    s += wf;
+	    sw += wi;
+	} else {
+	    rss += r2;
+	    s += f[i];
+	}
+    }
+    double fbar = 0.0;
+    if (intercept) {
+	if (w) {
+	    fbar = dm_ld_value(s) / dm_ld_value(sw);
+	} else {
+	    /* mean(): the long double mean (from the terms divided by n if
+	       the sum overflows), then one correcting pass */
+	    long double m;
+	    if (R_FINITE((double) s)) {
+		m = s / n;
+	    } else {
+		long double t = 0.0;
+		for (R_xlen_t i = 0; i < n; i++) t += f[i] / n;
+		m = t;
+	    }
+	    if (R_FINITE((double) m)) {
+		long double t = 0.0;
+		for (R_xlen_t i = 0; i < n; i++) t += (f[i] - m);
+		m += t / n;
+	    }
+	    fbar = (double) m;
+	}
+    }
+    long double mss = 0.0;
+    for (R_xlen_t i = 0; i < n; i++) {
+	double d = intercept ? f[i] - fbar : f[i];
+	double d2 = d * d;
+	double v = w ? w[i] * d2 : d2;
+	mss += v;
+    }
+    SEXP out = PROTECT(allocVector(REALSXP, 2));
+    REAL(out)[0] = dm_ld_value(rss);
+    REAL(out)[1] = dm_ld_value(mss);
+    UNPROTECT(1);
+    return out;
+}
+
+/* R's log() */
+static double dm_rlog(double x)
+{
+    return x > 0 ? log(x) : (x == 0 ? R_NegInf : R_NaN);
+}
+
+/* The weighted binomial log densities of the AIC (dmglm_final() in
+   memory), with kk = round(m y), mm = round(m):
+   ifelse(m > 0, w / m, 0) * (lgamma(mm + 1) - lgamma(kk + 1) -
+   lgamma(mm - kk + 1) + ifelse(kk > 0, kk log(mu), 0) +
+   ifelse(mm - kk > 0, (mm - kk) log(1 - mu), 0)), NA where a test is NA
+   (m, y, w, mu of length 1 or n). */
+SEXP dm_binomial_ll(SEXP m_, SEXP y_, SEXP w_, SEXP mu_)
+{
+    SEXP a[4] = {m_, y_, w_, mu_};
+    R_xlen_t n = 0;
+    for (int j = 0; j < 4; j++) if (XLENGTH(a[j]) > n) n = XLENGTH(a[j]);
+    for (int j = 0; j < 4; j++)
+	if (XLENGTH(a[j]) != n && XLENGTH(a[j]) != 1) error("internal error: lengths of the columns");
+    const double *m = REAL_RO(m_), *y = REAL_RO(y_), *w = REAL_RO(w_), *mu = REAL_RO(mu_);
+    int sm = XLENGTH(m_) == n, sy = XLENGTH(y_) == n, sw = XLENGTH(w_) == n, smu = XLENGTH(mu_) == n;
+    SEXP out = PROTECT(allocVector(REALSXP, n));
+    double *o = REAL(out);
+    for (R_xlen_t i = 0; i < n; i++) {
+	double mi = m[sm ? i : 0], yi = y[sy ? i : 0], wi = w[sw ? i : 0], mui = mu[smu ? i : 0];
+	double my = mi * yi;
+	double kk = nearbyint(my);
+	double mm = nearbyint(mi);
+	double f = ISNAN(mi) ? NA_REAL : (mi > 0 ? wi / mi : 0.0);
+	double d = mm - kk;
+	double l1 = lgammafn(mm + 1);
+	double l2 = lgammafn(kk + 1);
+	double l3 = lgammafn(d + 1);
+	double t2 = ISNAN(kk) ? NA_REAL : (kk > 0 ? kk * dm_rlog(mui) : 0.0);
+	double om = 1 - mui;
+	double t3 = ISNAN(d) ? NA_REAL : (d > 0 ? d * dm_rlog(om) : 0.0);
+	double s = l1 - l2;
+	s = s - l3;
+	s = s + t2;
+	s = s + t3;
+	o[i] = f * s;
+    }
+    UNPROTECT(1);
     return out;
 }

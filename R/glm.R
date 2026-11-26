@@ -841,11 +841,16 @@ dmglm_final <- function(lin, cols, cf, k, ck, beta, old, eta0, dev, intercept) {
     ll <- switch(k$aic,
         binomial = {
             m <- if (ck$maxn > 0) cols$n else w
-            kk <- dmc_round(m * y)
-            mm <- dmc_round(m)
-            dmc_ifelse(m > 0, w / m, 0) *
-                (dmc_lgamma(mm + 1) - dmc_lgamma(kk + 1) - dmc_lgamma(mm - kk + 1) +
-                 dmc_ifelse(kk > 0, kk * log(mu), 0) + dmc_ifelse(mm - kk > 0, (mm - kk) * log(1 - mu), 0))
+            if (dmglm_mem_working(list(m, y, w, mu), max(length(m), length(y), length(w), length(mu)))) {
+                ## (in memory one pass in C)
+                .Call(C_dm_binomial_ll, m, y, w, mu)
+            } else {
+                kk <- dmc_round(m * y)
+                mm <- dmc_round(m)
+                dmc_ifelse(m > 0, w / m, 0) *
+                    (dmc_lgamma(mm + 1) - dmc_lgamma(kk + 1) - dmc_lgamma(mm - kk + 1) +
+                     dmc_ifelse(kk > 0, kk * log(mu), 0) + dmc_ifelse(mm - kk > 0, (mm - kk) * log(1 - mu), 0))
+            }
         },
         poisson = w * dmc_ifelse(y == 0, -mu, y * log(mu) - mu - dmc_lgamma(y + 1)),
         Gamma = {

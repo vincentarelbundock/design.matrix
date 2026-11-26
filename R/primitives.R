@@ -1009,7 +1009,7 @@ dmp_y <- function(x, y) {
 dmp_subset <- function(x, keep) {
     if (!inherits(x, "dm_remote")) {
         if (dm_is_rcols(keep)) stop("A remote column cannot select rows of a design in memory.", call. = FALSE)
-        return(x[!is.na(keep) & keep, ])
+        return(x[if (is.logical(keep) && !anyNA(keep)) keep else !is.na(keep) & keep, ])
     }
     if (inherits(keep, "SQL")) keep <- dm_rcols(x, as.character(keep))
     if (!dm_is_rcols(keep))
