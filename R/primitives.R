@@ -93,6 +93,11 @@
 ##                            list(S = G x p, n = G sums of the scale, extra =
 ##                            G x k sums of scale * extra); one pass of the
 ##                            structured kernel in memory
+##   dmc_groupsums(col, groups, total)
+##                            sums of col within each coded grouping (a G x k
+##                            matrix each, as dmp_groupsum()) and of `total`
+##                            over all rows (as dm_colsum()), in one query
+##                            remotely
 ##   dmp_crosstab(a, b, w)    for two grouping columns, the sums of w (counts
 ##                            without w) for each pair of groups: a
 ##                            Matrix::dgCMatrix, rows the sorted groups of a,
@@ -126,12 +131,16 @@
 ##                            `keys` (a column, k columns), patterns are also
 ##                            split by their values, returned as `keys`
 ##                            (one row per pattern).
-##   dmp_materialize(x)       the design over a copy of its rows: remotely a
+##   dmp_materialize(x, cols = NULL)
+##                            the design over a copy of its rows: remotely a
 ##                            temporary table of the rows used with every
 ##                            column of its frame (later queries scan it
 ##                            instead of recomputing the frame's views and
-##                            joins); a new design (re-make columns with
-##                            dmc_on()); in memory x
+##                            joins), or, given `cols` (a list of the
+##                            columns to re-make on it), the columns of the
+##                            data and the internal ones (lookups) that the
+##                            design and `cols` read; a new design
+##                            (re-make columns with dmc_on()); in memory x
 ##   dmp_subset(x, keep)      the design of the rows where the logical column
 ##                            keep is TRUE (remotely also a DBI::SQL()
 ##                            predicate); a new remote design
@@ -528,7 +537,8 @@ dmp_mult <- function(x, B, along = list()) {
     fr$src$select <- sprintf("SELECT * FROM %s", dm_qi(x, unclass(view)[1L]))
     fr$src$base_table <- NULL
     fr$src$view <- c(fr$src$view, list(view))
-    proto <- DBI::dbGetQuery(dm_con(x), sprintf("SELECT * FROM (%s) AS s LIMIT 0", fr$src$select))
+    ## (the view keeps every column of the frame, and adds the products)
+    proto <- dm_proto_add(fr, nm, double(0), sprintf("SELECT * FROM (%s) AS s LIMIT 0", fr$src$select))
     fr$src$proto <- proto
     fr$src$types <- vapply(proto, dm_col_type, "")
     fr$depth <- dm_frame_depth(x) + 1L
@@ -733,6 +743,55 @@ dmp_groupsum_codes <- function(col, group) {
     out
 }
 
+## Sums of a column (k columns) within each of several coded groupings, and
+## of another column `total` (or NULL) over all rows: list(groups = one G x k
+## matrix per grouping, as dmp_groupsum(); total = dm_colsum(total)). In
+## memory those calls; remotely one query (GROUP BY GROUPING SETS), whose
+## rows the frame computes once (the frame of residuals, with its joins).
+dmc_groupsums <- function(col, groups, total = NULL) {
+    remote <- dm_is_rcols(col) && all(vapply(groups, function(g) dm_is_rcols(g$codes), NA))
+    if (!remote || length(groups) + (!is.null(total)) < 2L)
+        return(list(groups = lapply(groups, function(g) dmp_groupsum(col, g)),
+                    total = if (!is.null(total)) dm_colsum(total)))
+    fr <- do.call(dm_rcols_frame, c(list(col, total), lapply(groups, `[[`, "codes")))
+    gs <- vapply(groups, function(g) unclass(g$codes)$sql, "")
+    vs <- unclass(col)$sql
+    ts <- if (!is.null(total)) unclass(total)$sql else character()
+    k <- length(vs)
+    sums <- function(e, p) c(sprintf("SUM(CAST(%s AS DOUBLE)) AS %s%d", e, p, seq_along(e)),
+                             sprintf("SUM(CASE WHEN (%s) IS NULL THEN 1 ELSE 0 END) AS %sn%d", e, p, seq_along(e)))
+    sets <- c(sprintf("(%s)", gs), if (length(ts)) "()")
+    res <- dm_query(fr, sprintf("SELECT %s FROM (%s) AS s WHERE %s GROUP BY GROUPING SETS (%s)",
+                                paste(c(sprintf("%s AS g%d", gs, seq_along(gs)), sums(vs, "v"), sums(ts, "t")),
+                                      collapse = ", "),
+                                fr$src$select, fr$filter, paste(sets, collapse = ", ")))
+    ## (codes are never missing: the rows of grouping j are those with g_j)
+    gk <- lapply(seq_along(gs), function(j) !is.na(res[[paste0("g", j)]]))
+    out <- lapply(seq_along(groups), function(j) {
+        r <- gk[[j]]
+        for (l in seq_along(gs)[-j]) r <- r & !gk[[l]]
+        m <- matrix(0, groups[[j]]$G, k)
+        i <- as.integer(res[[paste0("g", j)]][r])
+        for (u in seq_len(k)) {
+            v <- as.double(res[[paste0("v", u)]][r])
+            v[as.numeric(res[[paste0("vn", u)]][r]) > 0] <- NA_real_
+            m[i, u] <- v
+        }
+        m
+    })
+    tot <- NULL
+    if (length(ts)) {
+        r <- Reduce(`&`, lapply(gk, `!`))
+        tot <- vapply(seq_along(ts), function(u) {
+            if (!any(r)) return(0)
+            if (as.numeric(res[[paste0("tn", u)]][r][1L]) > 0) return(NA_real_)
+            v <- as.double(res[[paste0("t", u)]][r][1L])
+            if (is.na(v)) 0 else v
+        }, 0)
+    }
+    list(groups = out, total = tot)
+}
+
 ## weighted counts by pair of coded groups: Ga x Gb dgCMatrix
 dmp_crosstab_codes <- function(a, b, w = NULL) {
     if (!dm_is_rcols(a$codes) && !dm_is_rcols(b$codes) && !dm_is_rcols(w)) {
@@ -742,8 +801,9 @@ dmp_crosstab_codes <- function(a, b, w = NULL) {
         return(methods::new("dgCMatrix", i = ct[[2L]], p = ct[[1L]], x = ct[[3L]], Dim = c(a$G, b$G)))
     }
     res <- dm_group_query(list(a$codes, b$codes), if (is.null(w)) list() else list(w))
-    Matrix::sparseMatrix(i = as.integer(res$g1), j = as.integer(res$g2), x = as.double(res$v1),
-                         dims = c(a$G, b$G), repr = "C")
+    ## (the pairs, one per row, through the kernel of the rows in memory)
+    ct <- .Call(C_dm_fe_crosstab, as.integer(res$g2), as.integer(res$g1), as.double(res$v1), b$G, a$G)
+    methods::new("dgCMatrix", i = ct[[2L]], p = ct[[1L]], x = ct[[3L]], Dim = c(a$G, b$G))
 }
 
 ## Column sums of a design within several coded groups at once:
@@ -753,18 +813,20 @@ dmp_crosstab_codes <- function(a, b, w = NULL) {
 ## counts without one), extra = G x k sums of scale * extra) per grouping.
 ## In memory: one pass of the structured kernel for all groupings when it
 ## applies (dm_fe_struct_gsum), else the row kernels; remotely, one GROUP BY
-## per grouping.
+## per grouping for the design and one query for the sums of the scale and
+## extra (dmc_groupsums()).
 dmp_colsums_groups <- function(x, groups, extra = NULL) {
     if (inherits(x, "dm_remote")) {
         s <- x$scale
         one <- dm_rcols(dm_remote_unscaled(x), if (is.null(s)) "CAST(1 AS DOUBLE)" else s)
-        return(lapply(groups, function(g) {
-            gc <- g$codes
+        ## (the sums of the scale and extra, for every grouping: one query)
+        ns <- dmc_groupsums(if (is.null(extra)) one else dmc_cbind(one, one * extra), groups)$groups
+        return(lapply(seq_along(groups), function(k) {
+            g <- groups[[k]]
             S <- matrix(0, g$G, ncol(x))
-            cs <- dmp_colsums(x, group = gc)
+            cs <- dmp_colsums(x, group = g$codes)
             S[as.integer(rownames(cs)), ] <- unname(cs)
-            ns <- dmp_groupsum_codes(if (is.null(extra)) one else dmc_cbind(one, one * extra), g)
-            list(S = S, n = ns[, 1L], extra = if (!is.null(extra)) ns[, -1L, drop = FALSE])
+            list(S = S, n = ns[[k]][, 1L], extra = if (!is.null(extra)) ns[[k]][, -1L, drop = FALSE])
         }))
     }
     ## in memory: the plain design and its row scale
@@ -896,18 +958,46 @@ dmc_freeze <- function(col, table = FALSE) {
 
 ## The frame of a remote design as a temporary table of its rows used (with
 ## every column of the frame; the design's filter stays valid on them).
-dm_remote_to_table <- function(x) {
+## (`keep`: the columns of the frame to copy, NULL for all)
+dm_remote_to_table <- function(x, keep = NULL) {
     tn <- dm_qi(x, dm_tmp_name("dm_mat"))
-    dm_execute(x, sprintf("CREATE TEMPORARY TABLE %s AS SELECT * FROM (%s) AS s WHERE %s", tn, x$src$select, x$filter))
+    sel <- if (is.null(keep)) "*" else paste(dm_qi(x, keep), collapse = ", ")
+    dm_execute(x, sprintf("CREATE TEMPORARY TABLE %s AS SELECT %s FROM (%s) AS s WHERE %s", tn, sel, x$src$select, x$filter))
     x$src$select <- sprintf("SELECT * FROM %s", tn)
     x$src$base_table <- tn
+    if (!is.null(keep) && !is.null(x$src$proto)) {
+        x$src$proto <- x$src$proto[keep]
+        x$src$types <- x$src$types[keep]
+    }
     x
 }
 
-dmp_materialize <- function(x) {
+## The columns of the frame of remote design x to copy for the design and
+## the columns `cols` (a list of columns, dmc_codes() groupings or NULL):
+## the columns of the data (whose names do not start with "__dm_"; results
+## on the rows keep them), and the internal columns (lookups, products of
+## earlier steps) that the design (the SQL and inputs of its variables, its
+## scale) or `cols` read: those whose names occur in their SQL.
+dm_remote_used <- function(x, cols) {
+    sql <- function(v) {
+        if (is.null(v)) return(character())
+        if (dm_is_codes(v)) return(sql(v$codes))
+        if (dm_is_rcols(v)) return(unclass(v)$sql)
+        if (is.list(v)) return(unlist(lapply(v, sql), use.names = FALSE))
+        character()
+    }
+    txt <- c(sql(cols), unlist(lapply(x$vars, function(v) c(v$sql, v$col, v$inputs))), x$scale %||% character())
+    txt <- paste(as.character(txt), collapse = " ")
+    nm <- names(x$src$proto)
+    nm[!startsWith(nm, "__dm_") | vapply(nm, grepl, NA, x = txt, fixed = TRUE)]
+}
+
+dmp_materialize <- function(x, cols = NULL) {
     if (!inherits(x, "dm_remote")) return(x)
     sc <- x$scale
-    x <- dm_remote_to_table(dm_remote_unscaled(x))
+    keep <- if (!is.null(cols) && !is.null(x$src$proto)) dm_remote_used(x, cols)
+    if (!length(keep)) keep <- NULL
+    x <- dm_remote_to_table(dm_remote_unscaled(x), keep)
     x$filter <- "TRUE"
     x$depth <- 0L
     x$cache <- new.env(parent = emptyenv())
