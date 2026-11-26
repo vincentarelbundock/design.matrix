@@ -25,12 +25,15 @@
 #' of that table. `na.action` can be [na.omit()] (default), [na.exclude()],
 #' [na.fail()] or [na.pass()], with the results or errors of [lm()].
 #'
-#' With few design patterns, the fit is compressed (see *Compression*);
-#' otherwise it is computed from `X'WX`, `X'Wy` and `y'Wy` with [lm()]'s
-#' column selection, numeric variables centered when that is an exact
-#' transform of the design. Coefficients, covariance, residual standard
-#' error, degrees of freedom, `logLik()`, `AIC()`, `BIC()` and `summary()`
-#' are those of [lm()] on the same rows, up to rounding.
+#' The fit is the same algorithm as in memory, on remote primitives: with
+#' few design patterns it is compressed (see *Compression*); otherwise it
+#' runs [qr()][design_qr] of the remote design (`X'WX` in the database,
+#' columns judged with [lm()]'s rule, suspect columns from products with
+#' the data), with the factor's values computed with numeric variables
+#' shifted when that is an exact transform of the design (so that `x + 1e7`
+#' keeps its accuracy). Coefficients, aliased columns, covariance, residual
+#' standard error, degrees of freedom, `logLik()`, `AIC()`, `BIC()` and
+#' `summary()` are those of [lm()] on the same rows, up to rounding.
 #'
 #' Results that have one value per row are tables in the database (names of
 #' temporary views, of class `dm_remote_table`, with all the columns of the
@@ -40,8 +43,8 @@
 #' `.fitted`; with `se.fit = TRUE`, `.se.fit`, and the attributes `df` and
 #' `residual.scale`; with intervals, `.lwr` and `.upr`; for a rank-deficient
 #' fit, `.nonestim`, the non-estimable cases flagged by `rankdeficient` as in
-#' [stats::predict.lm()], with its warnings). Standard errors, intervals and
-#' non-estimability are computed in batches of rows; the fit alone in SQL.
+#' [stats::predict.lm()], with its warnings), computed by the same code as
+#' in memory, in SQL.
 #' `residuals(fit)` returns the remote design of the fit with two more
 #' columns, `.fitted` and `.resid`, which can scale its rows: for
 #' heteroskedasticity-consistent and clustered standard errors,
@@ -67,10 +70,6 @@
 #'   its columns, which every table keeps.
 #' * `compress = "auto"` decides from other evidence than in memory (see
 #'   *Compression*); the results are the same either way.
-#' * Without compression, aliased columns are detected from the centered
-#'   `X'WX`, with [lm()]'s rule but without a refinement from the data: the
-#'   same columns as [lm()] unless a column's residual is within rounding
-#'   of `tol`.
 NULL
 
 ## na.action of a remote fit: "omit", "exclude", "fail" or "pass".
