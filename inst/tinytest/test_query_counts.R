@@ -38,11 +38,12 @@ expect_equal(nq(design_glm(yb ~ x1 + f, binomial("probit"), con, table = "d", co
 expect_equal(nq(design_glm(yb ~ xd + f, binomial("probit"), con, table = "d", compress = TRUE)), 26L,
              info = "probit compressed")
 ## FE-LM (two FE), with clustering; FE-GLM Poisson with clustering (FE fits
-## are never compressed)
-expect_equal(nq(design_lm(y ~ x1 + xd | a + b, con, table = "d")), 34L, info = "FE-LM")
-expect_equal(nq(design_lm(y ~ x1 + xd | a + b, con, table = "d", vcov = ~a)), 39L,
+## are never compressed; since etg8 their crossprod/colSums run no
+## compression decision query: 3 fewer statements each)
+expect_equal(nq(design_lm(y ~ x1 + xd | a + b, con, table = "d")), 31L, info = "FE-LM")
+expect_equal(nq(design_lm(y ~ x1 + xd | a + b, con, table = "d", vcov = ~a)), 36L,
              info = "FE-LM cluster")
-expect_equal(nq(design_glm(yp ~ x1 + xd | a + b, poisson, con, table = "d", vcov = ~a)), 176L,
+expect_equal(nq(design_glm(yp ~ x1 + xd | a + b, poisson, con, table = "d", vcov = ~a)), 173L,
              info = "FE-GLM Poisson cluster")
 
 ## the counter sees statements dm_query() does not log
