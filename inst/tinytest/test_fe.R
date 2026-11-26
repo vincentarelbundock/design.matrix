@@ -339,6 +339,24 @@ if (remote) {
     expect_equal(p$.fitted[order(p$.row)], unname(predict(b, dq)), tolerance = TOL)
 }
 
+# Remote: response and weights as R expressions (translated to SQL, or
+# evaluated in R when they have no translation), as design_lm() without FE
+if (remote) {
+    myw <- function(v) sqrt(v) + 0.5        # no SQL translation of a closure
+    b <- fx_fit(log(y + 10) ~ x1 + x2 | a + b, transform(d, ww = sqrt(w) + 0.5), weights = ~ww)
+    a1 <- design_lm(log(y + 10) ~ x1 + x2 | a + b, con, table = "d", weights = sqrt(w) + 0.5, vcov = ~a)
+    a2 <- suppressMessages(design_lm(log(y + 10) ~ x1 + x2 | a + b, con, table = "d", weights = myw(w), vcov = ~a))
+    a3 <- design_lm(log(y + 10) ~ x1 + x2 | a + b, d, weights = myw(w), vcov = ~a)
+    for (a in list(a1, a2, a3)) {
+        expect_equal(unname(coef(a)), unname(coef(b)), tolerance = TOL)
+        expect_equal(plain(vcov(a)), plain(vcov(b, cluster = ~a)), tolerance = TOL)
+    }
+    mylog <- function(v) log(v + 10)
+    a4 <- suppressMessages(design_lm(mylog(y) ~ x1 + x2 | a + b, con, table = "d", weights = "w"))
+    b4 <- fx_fit(log(y + 10) ~ x1 + x2 | a + b, d, weights = ~w)
+    expect_equal(unname(coef(a4)), unname(coef(b4)), tolerance = TOL)
+}
+
 # Errors -----------------------------------------------------------------------
 expect_error(design_lm(y ~ x1 | a, d, vcov = ~a + b), "one-way")
 expect_error(design_lm(y ~ x1 | a, d, vcov = "hc1"), "vcov")

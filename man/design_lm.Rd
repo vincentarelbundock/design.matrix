@@ -200,8 +200,9 @@ largest (differences within a connected set are those of fixest).
 remote fits without FE.
 \item Not supported with FE: \code{subset}, offsets, \code{compress = TRUE}, \code{se.fit}
 and intervals in \code{predict()}, clustering by more than one variable.
-For remote data, \code{weights} names a column, and the response must have
-a SQL translation.
+For remote data, the response and \code{weights} are column names,
+\code{DBI::SQL()} or R expressions, as without FE (expressions with no SQL
+translation are evaluated in R, in batches).
 \item Options: \code{design.matrix.fe_solver} (\code{"auto"}, \code{"dense"}, \code{"pcg"}, or
 \code{"chol"} for a sparse Cholesky factor), \code{design.matrix.fe_precond}
 (\code{"jacobi"}, default, or \code{"ichol"} for an incomplete Cholesky factor),
