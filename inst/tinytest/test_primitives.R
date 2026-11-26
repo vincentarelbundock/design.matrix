@@ -10,7 +10,7 @@ xtx_p_groupsum <- xtx:::xtx_p_groupsum
 xtx_p_crosstab <- xtx:::xtx_p_crosstab
 xtx_p_quad <- xtx:::xtx_p_quad
 xtx_p_patterns <- xtx:::xtx_p_patterns
-xtx_p_output <- xtx:::xtx_p_output
+xtx_p_output <- design_output
 xtx_p_column <- xtx:::xtx_p_column
 xtx_p_collect <- xtx:::xtx_p_collect
 xtx_colsum <- xtx:::xtx_colsum
@@ -109,7 +109,7 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
 xtx_c_codes <- xtx:::xtx_c_codes
 xtx_p_colsums_groups <- xtx:::xtx_p_colsums_groups
 xtx_p_subset <- xtx:::xtx_p_subset
-xtx_p_resolve <- xtx:::xtx_p_resolve
+xtx_p_resolve <- design_resolve
 xtx_c_cbind <- xtx:::xtx_c_cbind
 cg <- xtx_c_codes(d$g, 7L)
 cf <- xtx_c_codes(match(d$f, c("a", "b", "c")), 3L)
@@ -171,7 +171,7 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     expect_true(same(crossprod(xtx_p_subset(rr$x, rr$cols$s)), crossprod(Xr[dd$x > 0, ])))
     ## patterns with keys, remotely
     Rd <- design_matrix(y ~ xd + f, con, table = "d")
-    kzr <- xtx:::xtx_c_round(xtx_p_column(Rd, 'CAST(s."x" AS DOUBLE)'))
+    kzr <- round(xtx_p_column(Rd, 'CAST(s."x" AS DOUBLE)'))
     ptr <- xtx_p_patterns(Rd, xtx_p_column(Rd, 'CAST(s."y" AS DOUBLE)') - kzr, xtx_p_column(Rd, 'CAST(s."w" AS DOUBLE)'),
                         compress = TRUE, keys = kzr)
     lpr <- lm.wfit(as.matrix(ptr$x), ptr$z, ptr$w)

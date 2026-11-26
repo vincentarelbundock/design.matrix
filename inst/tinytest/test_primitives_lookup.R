@@ -42,7 +42,7 @@ expect_equal(xtx_c_lookup(cbind(lvals, 2 * lvals), d[c("a", "b")], lv), cbind(re
 ## xtx_p_materialize() and xtx_c_freeze(table = TRUE) are identities in memory
 Dm <- design_matrix(~ x, d)
 expect_identical(xtx:::xtx_p_materialize(Dm), Dm)
-expect_identical(xtx:::xtx_c_freeze(d$x, table = TRUE), d$x)
+expect_identical(col_compute(d$x), d$x)
 
 if (requireNamespace("duckdb", quietly = TRUE)) {
     con <- test_con()
@@ -174,14 +174,14 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     ## has them (from an earlier replay) does not get them twice
     s15 <- p1 + p5
     expect_equal(byrow(s15 + p5), 2 * d$x + 2)
-    f1 <- xtx:::xtx_c_freeze(rc("s.x") + 1)
-    f2 <- xtx:::xtx_c_freeze(rc("s.x") + 2)
+    f1 <- col_compute(rc("s.x") + 1, table = FALSE)
+    f2 <- col_compute(rc("s.x") + 2, table = FALSE)
     expect_error(f1 + f2, sib)
     expect_error(f1 + f2, "stored \\(col_compute\\(\\)\\) or frozen")
     ## a frozen column and a lookup read on its own: the lookup is replayed
     expect_equal(byrow(f1 + lk2), d$x + 1 + ref_lv)
-    f12 <- xtx:::xtx_c_freeze(xtx_c_cbind(rc("s.x") + 1, rc("s.x") + 2))
-    expect_equal(xtx_p_collect(xtx:::xtx_c_col(f12, 2) - xtx:::xtx_c_col(f12, 1)), rep(1, n))
+    f12 <- col_compute(cbind(rc("s.x") + 1, rc("s.x") + 2), table = FALSE)
+    expect_equal(xtx_p_collect(f12[, 2] - f12[, 1]), rep(1, n))
     ## (frames without a lineage, from older objects: the deeper one)
     nopath <- function(f) {
         f$path <- NULL

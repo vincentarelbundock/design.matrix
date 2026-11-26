@@ -117,7 +117,7 @@ for (fname in names(formulas)) for (src in names(sources)) {
     expect_true(same(crossprod(D[pos, ]), crossprod(X[dk$x > 0, ])), info = paste(info, "D[column, ]"))
     expect_equal(nrow(D[pos, ]), sum(dk$x > 0), info = paste(info, "nrow(D[column, ])"))
     fr <- xtx:::finite_rows(D)
-    expect_equal(xtx:::xtx_colsum(xtx:::xtx_c_ifelse(fr, 1, 0)), sum(xtx:::finite_rows(M)),
+    expect_equal(unname(col_sums(col_ifelse(fr, 1, 0))), sum(xtx:::finite_rows(M)),
                  info = paste(info, "finite_rows"))
     ## qr() and its methods
     q <- qr(D)
