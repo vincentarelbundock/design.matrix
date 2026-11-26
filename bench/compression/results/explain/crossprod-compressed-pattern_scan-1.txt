@@ -1,0 +1,43 @@
+WITH b AS (SELECT s.f1 AS __dm_c1, s.f2 AS __dm_c2, CAST(s.xd1 AS DOUBLE) AS __dm_v3, CAST(s.xd2 AS DOUBLE) AS __dm_v4 FROM (SELECT * FROM d) AS s WHERE ((s.f1 IS NOT NULL)) AND ((s.f2 IS NOT NULL)) AND (((CAST(s.xd1 AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.xd1 AS DOUBLE)))) AND (((CAST(s.xd2 AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.xd2 AS DOUBLE))))) SELECT __dm_v3, __dm_v4, __dm_c1, __dm_c2, SUM(1) AS __dm_m1, SUM(CAST(1 AS DOUBLE)) AS __dm_m2 FROM b GROUP BY ALL LIMIT 1000001
+
+╭─ Summary ───────────╮
+│ Total Time: 0.0091s │
+╰─────────────────────╯
+╭─ Execute ────────────────────────────────╮
+│ 0 rows                               0µs │
+╰─────────────────────┬────────────────────╯
+╭─ Explain Analyze ───┴────────────────────╮
+│ 0 rows                               0µs │
+╰─────────────────────┬────────────────────╯
+╭─ Projection ────────┴────────────────────╮
+│ Projections:                             │
+│ #0, #1,                                  │
+│ __internal_decompress_string(#2),        │
+│ __internal_decompress_string(#3), #4, #5 │
+│ 980 rows                             0µs │
+╰─────────────────────┬────────────────────╯
+╭─ Hash Group By ─────┴────────────────────╮
+│ Groups: #0, #1, #2, #3                   │
+│ Aggregates: sum_no_overflow(#4), sum(#5) │
+│ 980 rows                          20.0ms │
+╰─────────────────────┒┎───────────────────╯
+╭─ Projection ────────┚┖───────────────────╮
+│ Projections: __dm_v3, __dm_v4, __dm_c1,  │
+│              __dm_c2, 1, 1.0             │
+│ 1,000,000 rows                       0µs │
+╰─────────────────────┒┎───────────────────╯
+╭─ Projection ────────┚┖───────────────────╮
+│ Projections:                             │
+│ __internal_compress_string_uinteger(#0), │
+│ __internal_compress_string_uinteger(#1), │
+│ #2, #3                                   │
+│ 1,000,000 rows                    10.0ms │
+╰─────────────────────┒┎───────────────────╯
+╭─ Table Scan ────────┚┖───────────────────╮
+│ Table: memory.main.d                     │
+│ Type: Sequential Scan                    │
+│ Projections: f1, f2, xd1, xd2            │
+│ Row Groups Scanned: 9 / 9                │
+│ 1,000,000 rows                    20.0ms │
+╰──────────────────────────────────────────╯
+

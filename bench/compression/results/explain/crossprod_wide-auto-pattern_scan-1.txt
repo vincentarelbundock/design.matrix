@@ -1,0 +1,54 @@
+WITH b AS (SELECT s.f1 AS __dm_c1, s.f2 AS __dm_c2, CAST(s.xd1 AS DOUBLE) AS __dm_v3, (pow(CAST(s.xd1 AS DOUBLE), CAST('2' AS DOUBLE))) AS __dm_v4, (pow(CAST(s.xd1 AS DOUBLE), CAST('3' AS DOUBLE))) AS __dm_v5, CAST(s.xd2 AS DOUBLE) AS __dm_v6, (pow(CAST(s.xd2 AS DOUBLE), CAST('2' AS DOUBLE))) AS __dm_v7, (pow(CAST(s.xd2 AS DOUBLE), CAST('3' AS DOUBLE))) AS __dm_v8 FROM (SELECT * FROM d) AS s WHERE ((s.f1 IS NOT NULL)) AND ((s.f2 IS NOT NULL)) AND (((CAST(s.xd1 AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.xd1 AS DOUBLE)))) AND ((((pow(CAST(s.xd1 AS DOUBLE), CAST('2' AS DOUBLE)))) IS NOT NULL AND NOT isnan((pow(CAST(s.xd1 AS DOUBLE), CAST('2' AS DOUBLE)))))) AND ((((pow(CAST(s.xd1 AS DOUBLE), CAST('3' AS DOUBLE)))) IS NOT NULL AND NOT isnan((pow(CAST(s.xd1 AS DOUBLE), CAST('3' AS DOUBLE)))))) AND (((CAST(s.xd2 AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.xd2 AS DOUBLE)))) AND ((((pow(CAST(s.xd2 AS DOUBLE), CAST('2' AS DOUBLE)))) IS NOT NULL AND NOT isnan((pow(CAST(s.xd2 AS DOUBLE), CAST('2' AS DOUBLE)))))) AND ((((pow(CAST(s.xd2 AS DOUBLE), CAST('3' AS DOUBLE)))) IS NOT NULL AND NOT isnan((pow(CAST(s.xd2 AS DOUBLE), CAST('3' AS DOUBLE))))))) SELECT __dm_v3, __dm_v4, __dm_v5, __dm_v6, __dm_v7, __dm_v8, __dm_c1, __dm_c2, SUM(1) AS __dm_m1, SUM(CAST(1 AS DOUBLE)) AS __dm_m2 FROM b GROUP BY ALL LIMIT 500001
+
+╭─ Summary ───────────╮
+│ Total Time: 0.0209s │
+╰─────────────────────╯
+╭─ Execute ────────────────────────────────╮
+│ 0 rows                               0µs │
+╰─────────────────────┬────────────────────╯
+╭─ Explain Analyze ───┴────────────────────╮
+│ 0 rows                               0µs │
+╰─────────────────────┬────────────────────╯
+╭─ Streaming Limit ───┴────────────────────╮
+│ Limit: 500001                            │
+│ 980 rows                             0µs │
+╰─────────────────────┬────────────────────╯
+╭─ Projection ────────┴────────────────────╮
+│ Projections:                             │
+│ #0, #1, #2, #3, #4, #5,                  │
+│ __internal_decompress_string(#6),        │
+│ __internal_decompress_string(#7), #8, #9 │
+│ 980 rows                             0µs │
+╰─────────────────────┬────────────────────╯
+╭─ Hash Group By ─────┴────────────────────╮
+│ Groups: #0, #1, #2, #3, #4, #5, #6, #7   │
+│ Aggregates: sum_no_overflow(#8), sum(#9) │
+│ 980 rows                          40.0ms │
+╰─────────────────────┒┎───────────────────╯
+╭─ Projection ────────┚┖───────────────────╮
+│ Projections: __dm_v3, __dm_v4, __dm_v5,  │
+│              __dm_v6, __dm_v7, __dm_v8,  │
+│              __dm_c1, __dm_c2, 1, 1.0    │
+│ 1,000,000 rows                       0µs │
+╰─────────────────────┒┎───────────────────╯
+╭─ Projection ────────┚┖───────────────────╮
+│ Projections:                             │
+│ __internal_compress_string_uinteger(#0), │
+│ __internal_compress_string_uinteger(#1), │
+│ #2, #3, #4, #5, #6, #7                   │
+│ 1,000,000 rows                    10.0ms │
+╰─────────────────────┒┎───────────────────╯
+╭─ Projection ────────┚┖───────────────────╮
+│ Projections: __dm_c1, __dm_c2, __dm_v3,  │
+│              __dm_v4, __dm_v5, __dm_v6,  │
+│              __dm_v7, __dm_v8            │
+│ 1,000,000 rows                    50.0ms │
+╰─────────────────────┒┎───────────────────╯
+╭─ Table Scan ────────┚┖───────────────────╮
+│ Table: memory.main.d                     │
+│ Type: Sequential Scan                    │
+│ Projections: f1, f2, xd1, xd2            │
+│ Row Groups Scanned: 9 / 9                │
+│ 1,000,000 rows                    20.0ms │
+╰──────────────────────────────────────────╯
+
