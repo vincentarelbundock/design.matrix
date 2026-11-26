@@ -108,8 +108,9 @@
 #'   `fit$fe_iter` holds the iterations of conjugate gradients of each
 #'   step (0 for a direct solve).
 #' * Not supported with FE: `start`, `compress = TRUE` (compression is
-#'   turned off), `na.action = na.fail`, clustering by more than one
-#'   variable, a design matrix as first argument.
+#'   turned off), `na.action` other than `na.omit` and `na.exclude`,
+#'   clustering by more than one variable, a design matrix as first
+#'   argument.
 #'
 #' **What is kept.** As in [design_lm()]: the coefficients, the factor `R`
 #' of the last weighted least squares problem (which gives the covariance
@@ -143,7 +144,7 @@
 #' @param family A family object, function or name, as in [stats::glm()].
 #' @param data,weights,na.action,start,offset,contrasts
 #'   As in [stats::glm()] (`na.action`: `na.omit`, `na.exclude` or
-#'   `na.fail`). With a design matrix, `weights` and `offset` are numeric
+#'   `na.fail`; with fixed effects `na.omit` or `na.exclude`). With a design matrix, `weights` and `offset` are numeric
 #'   vectors with one value per row, and `data`, `na.action` and `contrasts`
 #'   do not apply. For remote data, `weights` and `offset` are column
 #'   names, `DBI::SQL()` expressions or R expressions over the columns
@@ -224,11 +225,13 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
         return(fit)
     }
     if (!is.null(y)) stop("`y` applies only when the first argument is a design matrix.", call. = FALSE)
-    na_kind <- if (missing(na.action)) "omit" else dm_na_kind(na.action, c("omit", "exclude", "fail"))
+    if (!missing(na.action)) {
+        if (fe) dm_fe_na_kind(na.action) else dm_na_kind(na.action, c("omit", "exclude", "fail"))
+    }
     ## fixed effects (fe_glm.R)
     if (fe) {
         return(dm_fe_glm(cl, parent.frame(), formula, family, if (missing(data)) NULL else data, start, control,
-                         contrasts, compress, model, vcov, fixef.rm, list(...), na_kind))
+                         contrasts, compress, model, vcov, fixef.rm, list(...)))
     }
     ## the design and columns of a data frame or remote data (remote_fit.R)
     P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, list(...),

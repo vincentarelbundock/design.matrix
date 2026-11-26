@@ -82,11 +82,10 @@ dm_fe_bounds <- function(family) {
 ## Entry point from design_glm(): `call` is its matched call, `env` its
 ## parent frame.
 dm_fe_glm <- function(call, env, formula, family, data, start, control, contrasts, compress, model,
-                      vcov, fixef.rm, dots, na_kind) {
+                      vcov, fixef.rm, dots) {
     k <- dmglm_kind(family)
     if (isTRUE(compress)) stop("`compress = TRUE` is not supported with fixed effects.", call. = FALSE)
     if (!is.null(start)) stop("`start` is not supported with fixed effects.", call. = FALSE)
-    if (na_kind == "fail") stop("With fixed effects, `na.action` must be na.omit or na.exclude.", call. = FALSE)
     pf <- dm_fe_parse(formula)
     clv <- dm_fe_vcov_arg(vcov)
     fixef.rm <- dm_fe_rm_arg(fixef.rm, glm = TRUE)

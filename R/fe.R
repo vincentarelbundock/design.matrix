@@ -907,8 +907,10 @@ dm_fe_center <- function(mt, mf, contrasts) {
 #' * Offsets (the `offset` argument and `offset()` terms) are subtracted
 #'   from the response, as in [fixest::feols()]; `fitted()` and `predict()`
 #'   include them.
-#' * Not supported with FE: `subset`, `compress = TRUE`, `se.fit`
-#'   and intervals in `predict()`, clustering by more than one variable.
+#' * Not supported with FE: `subset`, `compress = TRUE`, `na.action`
+#'   other than `na.omit` and `na.exclude` (in memory and remotely),
+#'   `se.fit` and intervals in `predict()`, clustering by more than one
+#'   variable.
 #'   For remote data, the response and `weights` are column names,
 #'   `DBI::SQL()` or R expressions, as without FE (expressions with no SQL
 #'   translation are evaluated in R, in batches).
@@ -943,6 +945,7 @@ NULL
 ## parent frame.
 dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, model,
                      vcov, fixef.rm, dots) {
+    if (!is.null(call$na.action)) dm_fe_na_kind(eval(call$na.action, env))
     if (isTRUE(compress)) stop("`compress = TRUE` is not supported with fixed effects.", call. = FALSE)
     if (!is.null(call$subset)) stop("`subset` is not supported with fixed effects.", call. = FALSE)
     checkmate::assert_number(tol, lower = 0, finite = TRUE)

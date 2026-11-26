@@ -38,7 +38,7 @@ design_glm(
 \item{family}{A family object, function or name, as in \code{\link[stats:glm]{stats::glm()}}.}
 
 \item{data, weights, na.action, start, offset, contrasts}{As in \code{\link[stats:glm]{stats::glm()}} (\code{na.action}: \code{na.omit}, \code{na.exclude} or
-\code{na.fail}). With a design matrix, \code{weights} and \code{offset} are numeric
+\code{na.fail}; with fixed effects \code{na.omit} or \code{na.exclude}). With a design matrix, \code{weights} and \code{offset} are numeric
 vectors with one value per row, and \code{data}, \code{na.action} and \code{contrasts}
 do not apply. For remote data, \code{weights} and \code{offset} are column
 names, \code{DBI::SQL()} expressions or R expressions over the columns
@@ -168,8 +168,9 @@ levels not in the fit); remotely, per-row results are tables.
 \code{fit$fe_iter} holds the iterations of conjugate gradients of each
 step (0 for a direct solve).
 \item Not supported with FE: \code{start}, \code{compress = TRUE} (compression is
-turned off), \code{na.action = na.fail}, clustering by more than one
-variable, a design matrix as first argument.
+turned off), \code{na.action} other than \code{na.omit} and \code{na.exclude},
+clustering by more than one variable, a design matrix as first
+argument.
 }
 
 \strong{What is kept.} As in \code{\link[=design_lm]{design_lm()}}: the coefficients, the factor \code{R}

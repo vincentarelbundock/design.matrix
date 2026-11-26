@@ -8,7 +8,6 @@
 #   weights not allowed";
 # * a two-column response, a subset leaving no rows: other errors remotely
 #   than in memory;
-# * na.action = na.pass with FE: fits in memory, refused remotely.
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
 library(design.matrix)
@@ -229,8 +228,16 @@ expect_error(design_lm(ch ~ x | id, d),
 expect_error(design_lm(cbind(y, x) ~ z | id, d),
              "Multivariate responses are not supported.", fixed = TRUE)
 expect_error(design_lm(yna ~ x | id, d, na.action = na.fail),
-             "missing values in object", fixed = TRUE)
-expect_inherits(design_lm(yna ~ x | id, d, na.action = na.pass), "design_lm")
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, d, na.action = na.fail),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_lm(yna ~ x | id, d, na.action = na.pass),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, d, na.action = function(x) x),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, d, na.action = na.fail, foo = 1),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_inherits(design_lm(yna ~ x | id, d, na.action = "na.exclude"), "design_lm")
 expect_error(design_lm(y ~ x | id, d, subset = x > 0),
              "`subset` is not supported with fixed effects.", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, d, compress = TRUE),
@@ -260,9 +267,16 @@ expect_error(design_lm(~ x | id, con, table = "d"),
 expect_error(design_lm(ch ~ x | id, con, table = "d"),
              "`response` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
 expect_error(design_lm(yna ~ x | id, con, table = "d", na.action = na.fail),
-             "For remote data, `na.action` must be na.omit, na.exclude.", fixed = TRUE)
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, con, table = "d", na.action = na.fail),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_lm(yna ~ x | id, con, table = "d", na.action = na.pass),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, con, table = "d", na.action = function(x) x),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", na.action = na.fail, foo = 1),
-             "For remote data, `na.action` must be na.omit, na.exclude.", fixed = TRUE)
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_inherits(design_lm(yna ~ x | id, con, table = "d", na.action = "na.exclude"), "design_lm")
 expect_error(design_lm(y ~ x | id, con, table = "d", foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", foo = 1, weights = wneg),
@@ -290,7 +304,9 @@ expect_error(design_glm(cbind(b1, fails, k) ~ x | id, binomial, d),
 expect_error(design_glm(k ~ x | id, poisson, d, na.action = na.fail),
              "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, na.action = na.pass),
-             "`na.action` must be na.omit, na.exclude, na.fail.", fixed = TRUE)
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, d, na.action = function(x) x),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, start = 1),
              "`start` is not supported with fixed effects.", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, foo = 1),
@@ -316,6 +332,10 @@ expect_error(design_glm(f ~ x | id, poisson, con, table = "d"),
 expect_error(design_glm(cbind(b1, fails, k) ~ x | id, binomial, con, table = "d"),
              "A two-column response needs two columns (successes and failures).", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, con, table = "d", na.action = na.fail),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, con, table = "d", na.action = na.pass),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, con, table = "d", na.action = function(x) x),
              "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, con, table = "d", foo = 1),
              "Unknown arguments: foo", fixed = TRUE)

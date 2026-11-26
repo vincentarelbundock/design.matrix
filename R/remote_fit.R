@@ -22,7 +22,8 @@
 #' (one more pass over the data, with a message naming the expression;
 #' `engine = "sql"` refuses). Compression stays exact, since the computed values are columns
 #' of that table. `na.action` can be [na.omit()] (default), [na.exclude()],
-#' [na.fail()] or [na.pass()], with the results or errors of [lm()]. The
+#' [na.fail()] or [na.pass()], with the results or errors of [lm()] (with
+#' fixed effects, `na.omit` or `na.exclude`, as in memory). The
 #' rows used are those with no missing model variable, response, weight or
 #' offset, and factor levels are those of these rows, as in memory.
 #'
@@ -98,6 +99,15 @@ dm_na_kind <- function(na.action, allowed = c("omit", "exclude", "fail", "pass")
     }
     stop(sprintf("%s`na.action` must be %s.", what,
                  paste(paste0("na.", allowed), collapse = ", ")), call. = FALSE)
+}
+
+## na.action of a fit with fixed effects: na.omit or na.exclude, in memory
+## and remotely.
+dm_fe_na_kind <- function(na.action) {
+    k <- tryCatch(dm_na_kind(na.action), error = function(e) "")
+    if (!k %in% c("omit", "exclude"))
+        stop("With fixed effects, `na.action` must be na.omit or na.exclude.", call. = FALSE)
+    k
 }
 
 ## The input stage of the fits on a formula (design_lm(), design_glm() and
@@ -217,9 +227,8 @@ dm_fe_main_terms <- function(mt_aug, main) {
 ## frame in memory. A GLM's response: dmglm_remote_response() (a factor
 ## as 0/1, the columns of cbind(a, b) as `resp`).
 dm_problem_remote <- function(call, env, formula, source, contrasts, dots, family, fe, clv) {
-    na <- if (is.null(call$na.action)) "omit" else
-        dm_na_kind(eval(call$na.action, env), if (is.null(fe)) c("omit", "exclude", "fail", "pass") else c("omit", "exclude"),
-                   "For remote data, ")
+    ## (with FE, the callers allow na.omit and na.exclude only)
+    na <- if (is.null(call$na.action)) "omit" else dm_na_kind(eval(call$na.action, env), what = "For remote data, ")
     if (!is.null(fe)) {
         nms <- names(dots) %||% rep("", length(dots))
         keys <- c("table", "sql", "engine", "chunk_size")
