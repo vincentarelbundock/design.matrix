@@ -264,6 +264,39 @@ for (fo in list(y ~ x1 * f2 + ch + lg, y ~ splines::ns(z, 3) + f1)) {
     }
 }
 
+## SQL expressions as weights and groups; residuals and sandwich meats
+set.seed(11)
+ds <- data.frame(y = rnorm(300), x = rnorm(300), f = sample(letters[1:4], 300, TRUE),
+                 cl = sample(1:12, 300, TRUE))
+ds$y[5] <- NA
+DBI::dbWriteTable(con, "ds", ds)
+dk <- ds[!is.na(ds$y), ]
+X <- model.matrix(y ~ x * f, dk)
+fit <- lm(y ~ x * f, dk)
+e <- unname(residuals(fit))
+for (engine in c("sql", "chunked")) {
+    D <- design_matrix(y ~ x * f, con, table = "ds", engine = engine, chunk_size = 64)
+    m <- design_moments(D, weights = DBI::SQL("1 + abs(x)"))
+    expect_true(same(m$xtx, crossprod(X, (1 + abs(dk$x)) * X)), info = engine)
+    expect_true(same(m$xty, crossprod(X, (1 + abs(dk$x)) * dk$y)), info = engine)
+    expect_true(same(colSums(D, group = DBI::SQL("cl % 3")), rowsum(X, dk$cl %% 3)), info = engine)
+    expect_true(same(colMeans(D, group = "cl", weights = DBI::SQL("2 * x")),
+                     rowsum(2 * dk$x * X, dk$cl) / as.vector(table(dk$cl))), info = engine)
+    R <- design_residuals(D, coef(fit))
+    expect_equal(dim(R), dim(D), info = engine)
+    expect_true(same(design_moments(R, weights = DBI::SQL('".resid" * ".resid"'))$xtx,
+                     crossprod(X, e^2 * X)), info = engine)
+    expect_true(same(colSums(R, group = "cl", weights = ".resid"), rowsum(e * X, dk$cl)), info = engine)
+    expect_true(same(design_moments(R, y = ".resid")$xty[, 1], rep(0, ncol(X))) ||
+                max(abs(design_moments(R, y = ".resid")$xty)) < 1e-8, info = engine)
+}
+Rl <- design_residuals(design_matrix(log(abs(y)) ~ x, con, table = "ds"), coef(lm(log(abs(y)) ~ x, dk)))
+expect_true(same(design_moments(Rl, y = ".resid")$xty[, 1], c(0, 0)) ||
+            max(abs(design_moments(Rl, y = ".resid")$xty)) < 1e-8)
+expect_error(design_moments(design_matrix(y ~ x, con, table = "ds"), weights = DBI::SQL("nope + 1")),
+             "invalid SQL expression")
+expect_error(design_residuals(design_matrix(y ~ x, con, table = "ds"), 1), "len")
+
 ## errors
 expect_error(design_matrix(y ~ x1, con), "exactly one of")
 expect_error(design_matrix(y ~ nope, con, table = "d"))

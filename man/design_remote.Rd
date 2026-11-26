@@ -34,9 +34,12 @@
 \item{...}{Not used.}
 
 \item{group}{For \code{colSums()} and \code{colMeans()}, the name of a column of the
-remote data whose values define the groups.}
+remote data whose values define the groups, or a SQL expression over
+the columns (\code{DBI::SQL()}).}
 
-\item{weights}{The name of a numeric column of weights.}
+\item{weights}{The name of a numeric column of weights, or a SQL
+expression over the columns (\code{DBI::SQL()}), such as the residuals of
+\code{\link[=design_residuals]{design_residuals()}}.}
 
 \item{reorder}{Only \code{TRUE} (groups sorted) is supported.}
 

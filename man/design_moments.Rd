@@ -15,8 +15,9 @@ or the names of one or more numeric columns.
 For a design in memory: a numeric vector or matrix with one row per row
 of \code{x}.}
 
-\item{weights}{Optional weights: the name of a numeric column for a
-remote design, a numeric vector for a design in memory.}
+\item{weights}{Optional weights: for a remote design, the name of a
+numeric column or a SQL expression over the columns (\code{DBI::SQL()});
+for a design in memory, a numeric vector.}
 }
 \value{
 A list with \code{xtx} (\verb{X'WX}), \code{xty} (\verb{X'Wy}, one column per

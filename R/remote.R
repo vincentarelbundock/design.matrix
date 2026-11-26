@@ -627,6 +627,85 @@ dm_remote_column <- function(D, x, what, several = FALSE) {
     x
 }
 
+## A `weights` or `group` argument: a column name, or a SQL expression
+## (`DBI::SQL()`) over the columns of the remote data. An expression is
+## computed as an extra column of the source, so that both engines (and
+## the handling of missing values) treat it as any other column.
+## Returns list(D = the design to use, col = the column name, or NULL).
+dm_remote_arg <- function(D, x, what) {
+    if (is.null(x)) return(list(D = D, col = NULL))
+    if (!inherits(x, "SQL")) return(list(D = D, col = dm_remote_column(D, x, what)))
+    checkmate::assert_string(as.character(x), .var.name = what)
+    col <- paste0("__dm_arg_", what)
+    list(D = dm_remote_extend(D, stats::setNames(as.character(x), col), what), col = col)
+}
+
+## The design over the same rows, with extra columns `exprs` (named SQL
+## expressions over the columns of the source) added to the source.
+dm_remote_extend <- function(D, exprs, what = "expression") {
+    con <- dm_con(D)
+    items <- sprintf("(%s) AS %s", exprs, dm_qi(D, names(exprs)))
+    select <- sprintf("SELECT s.*, %s FROM (%s) AS s", paste(items, collapse = ", "), D$src$select)
+    proto <- tryCatch(DBI::dbGetQuery(con, sprintf("SELECT * FROM (%s) AS s LIMIT 0", select)),
+                      error = function(e) stop(sprintf("`%s`: invalid SQL expression: %s", what,
+                                                       conditionMessage(e)), call. = FALSE))
+    D$src$select <- select
+    D$src$proto <- proto
+    D$src$types <- vapply(proto, dm_col_type, "")
+    ## the extra columns are not in the base table: batches read a copy
+    D$src$base_table <- NULL
+    D
+}
+
+#' Residuals of a linear fit on a remote design
+#'
+#' `design_residuals(D, beta)` returns the remote design `D` (see
+#' [design_remote]) over the same rows, with two more columns in its remote
+#' data: `.fitted`, the linear predictor `X %*% beta`, and `.resid`, the
+#' response minus `.fitted`. They can be used, like any column, as the
+#' `weights`, `group` or `y` of [design_moments()], `colSums()` and
+#' `colMeans()`, which also accept SQL expressions (`DBI::SQL()`) over the
+#' columns. This is what sandwich covariance matrices need, as sums over
+#' the rows:
+#'
+#' ```
+#' R <- design_residuals(D, beta)
+#' meat_hc <- design_moments(R, weights = DBI::SQL('".resid" * ".resid"'))$xtx
+#' scores  <- colSums(R, group = "cluster", weights = ".resid")  # G x p
+#' meat_cl <- crossprod(scores)
+#' ```
+#'
+#' The predictions are those of [design_predict()], kept in a temporary view
+#' (SQL engine) or table (chunked engine), so each use of the result
+#' recomputes or rereads them.
+#'
+#' @param x A remote design.
+#' @param beta Coefficients, a numeric vector of length `ncol(x)`.
+#' @param y The name of the response column, or `NULL` (default) for the
+#'   response of the formula.
+#' @return A remote design.
+#' @export
+design_residuals <- function(x, beta, y = NULL) {
+    checkmate::assert_class(x, "dm_remote")
+    checkmate::assert_numeric(beta, len = x$p, any.missing = FALSE)
+    yy <- dm_remote_y(x, y)
+    if (is.null(yy)) stop("Give `y`: the design has no response.", call. = FALSE)
+    if (length(yy$cols) != 1L) stop("`y` must be a single column.", call. = FALSE)
+    ysql <- if (yy$response) x$vars[[yy$cols]]$sql else sprintf("CAST(s.%s AS DOUBLE)", dm_qi(x, yy$cols))
+    if (is.null(ysql))
+        stop("The response has no SQL translation; give `y`, a column of the remote data.", call. = FALSE)
+    taken <- intersect(c(".fitted", ".resid"), names(x$src$types))
+    if (length(taken))
+        stop(sprintf("The remote data already has a column `%s`.", taken[1L]), call. = FALSE)
+    view <- design_predict(x, beta, column = ".fitted")
+    out <- x
+    out$src$select <- sprintf("SELECT * FROM %s", dm_qi(x, unclass(view)[1L]))
+    out$src$base_table <- NULL
+    out <- dm_remote_extend(out, c(.resid = sprintf("%s - s.\".fitted\"", ysql)))
+    out$src$view <- view
+    out
+}
+
 ## The response column of a formula design (for design_moments()).
 dm_remote_y <- function(D, y) {
     if (!is.null(y)) return(list(cols = dm_remote_column(D, y, "y", several = TRUE), response = FALSE))
@@ -647,8 +726,9 @@ dm_remote_y <- function(D, y) {
 #'   or the names of one or more numeric columns.
 #'   For a design in memory: a numeric vector or matrix with one row per row
 #'   of `x`.
-#' @param weights Optional weights: the name of a numeric column for a
-#'   remote design, a numeric vector for a design in memory.
+#' @param weights Optional weights: for a remote design, the name of a
+#'   numeric column or a SQL expression over the columns (`DBI::SQL()`);
+#'   for a design in memory, a numeric vector.
 #' @return A list with `xtx` (`X'WX`), `xty` (`X'Wy`, one column per
 #'   response, or `NULL`), `yty` (`y'Wy`, a matrix, or `NULL`), `n` (rows)
 #'   and `sumw` (sum of the weights, `n` without weights).
@@ -660,7 +740,9 @@ dm_remote_y <- function(D, y) {
 design_moments <- function(x, y = NULL, weights = NULL) {
     if (inherits(x, "dm_remote")) {
         yy <- dm_remote_y(x, y)
-        if (!is.null(weights)) dm_remote_column(x, weights, "weights")
+        wa <- dm_remote_arg(x, weights, "weights")
+        x <- wa$D
+        weights <- wa$col
         out <- dm_compressed_moments(x, yy, weights)
         if (is.null(out))
             out <- if (x$engine == "sql") dm_sql_moments(x, yy, weights) else dm_chunked_moments(x, yy, weights)
@@ -781,10 +863,13 @@ crossprod.dm_remote <- function(x, y = NULL, ...) {
 }
 
 dm_remote_colsums <- function(x, group, weights, reorder, mean) {
-    if (!is.null(weights)) dm_remote_column(x, weights, "weights")
     if (!isTRUE(reorder))
         stop("Remote designs support only `reorder = TRUE`.", call. = FALSE)
-    if (!is.null(group)) dm_remote_column(x, group, "group")
+    wa <- dm_remote_arg(x, weights, "weights")
+    ga <- dm_remote_arg(wa$D, group, "group")
+    x <- ga$D
+    weights <- wa$col
+    group <- ga$col
     out <- dm_compressed_colsums(x, group, weights, mean)
     if (!is.null(out)) return(out)
     if (x$engine == "sql") dm_sql_colsums(x, group, weights, mean)
@@ -798,8 +883,11 @@ setOldClass("dm_remote")
 #' @param na.rm,dims Only the defaults are supported.
 #' @param ... Not used.
 #' @param group For `colSums()` and `colMeans()`, the name of a column of the
-#'   remote data whose values define the groups.
-#' @param weights The name of a numeric column of weights.
+#'   remote data whose values define the groups, or a SQL expression over
+#'   the columns (`DBI::SQL()`).
+#' @param weights The name of a numeric column of weights, or a SQL
+#'   expression over the columns (`DBI::SQL()`), such as the residuals of
+#'   [design_residuals()].
 #' @param reorder Only `TRUE` (groups sorted) is supported.
 #' @export
 setMethod("colSums", "dm_remote", function(x, na.rm = FALSE, dims = 1, ..., group = NULL,
