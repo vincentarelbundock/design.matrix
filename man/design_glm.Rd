@@ -10,11 +10,8 @@ design_glm(
   family = stats::gaussian,
   data,
   weights,
-  subset,
   na.action,
   start = NULL,
-  etastart,
-  mustart,
   offset,
   control = list(),
   contrasts = NULL,
@@ -28,8 +25,6 @@ design_glm(
   object,
   newdata = NULL,
   type = c("link", "response"),
-  se.fit = FALSE,
-  dispersion = NULL,
   na.action = stats::na.pass,
   ...
 )
@@ -40,11 +35,11 @@ design_glm(
 
 \item{family}{A family object, function or name, as in \code{\link[stats:glm]{stats::glm()}}.}
 
-\item{data, weights, subset, na.action, start, etastart, mustart, offset, contrasts}{As in \code{\link[stats:glm]{stats::glm()}}. With a design matrix, \code{weights}, \code{offset},
-\code{etastart} and \code{mustart} are numeric vectors with one value per row, and
-\code{data}, \code{subset}, \code{na.action} and \code{contrasts} do not apply. For remote
-data, \code{weights} and \code{offset} name columns (strings or bare names), and
-\code{subset}, \code{etastart} and \code{mustart} are not supported.}
+\item{data, weights, na.action, start, offset, contrasts}{As in \code{\link[stats:glm]{stats::glm()}} (\code{na.action}: \code{na.omit}, \code{na.exclude} or
+\code{na.fail}). With a design matrix, \code{weights} and \code{offset} are numeric
+vectors with one value per row, and \code{data}, \code{na.action} and \code{contrasts}
+do not apply. For remote data, \code{weights} and \code{offset} name columns
+(strings, bare names or variables holding a string).}
 
 \item{control}{A list of arguments of \code{\link[stats:glm.control]{stats::glm.control()}}.}
 
@@ -56,7 +51,8 @@ data, \code{weights} and \code{offset} name columns (strings or bare names), and
 
 \item{y}{With a design matrix as first argument, the response: a numeric
 vector, a factor, or a two-column matrix of successes and failures (as
-in \code{\link[=glm.fit]{glm.fit()}}). With a remote design, the name of the response column.}
+in \code{\link[=glm.fit]{glm.fit()}}). With a remote design, the name of the response column,
+or the names of two columns (successes and failures).}
 
 \item{...}{For remote data: \code{table}, \code{sql}, \code{engine} and \code{chunk_size}; see
 \link{design_remote}. Otherwise not used.}
@@ -69,11 +65,6 @@ predictions are those of the fit's rows (which need \code{model = TRUE}).}
 
 \item{type}{\code{"link"} (the linear predictor) or \code{"response"} (the fitted
 means).}
-
-\item{se.fit}{Return standard errors of the predictions?}
-
-\item{dispersion}{The dispersion used for standard errors (default: that
-of \code{\link[=summary]{summary()}}).}
 }
 \value{
 An object of class \code{"design_glm"}: a list with, among others,
@@ -90,7 +81,7 @@ and a response \code{y} (like \code{\link[stats:glm.fit]{stats::glm.fit()}}), or
 }
 \details{
 \strong{Method.} The iterations are those of \code{\link[=glm.fit]{glm.fit()}}: the same starting
-values (from \code{family$initialize}, \code{mustart}, \code{etastart} or \code{start}), the
+values (from \code{family$initialize}, or \code{start}), the
 same weighted least squares problem at each iteration, solved with
 \link[=design_qr]{qr()} on the scaled design (columns pivoted, and aliased
 columns detected, as in \code{glm.fit()}, with its tolerance
@@ -103,8 +94,8 @@ number of iterations is the same, and the coefficients, covariance
 matrix, deviances and AIC agree to many more digits than \code{epsilon}.
 
 \strong{Compression.} Rows with the same design pattern and the same offset
-have the same fitted value. For the families of \link[stats:family]{stats::family} (and
-\code{\link[=quasi]{quasi()}}, and \code{MASS::negative.binomial()}), the deviance has the form
+have the same fitted value. For every family that \code{design_glm()}
+supports, the deviance has the form
 \code{w * (a(y) + y * h(mu) + k(mu))}, so at fixed coefficients a pattern
 contributes to each iteration only through the sum of its prior weights
 and its weighted mean response, and to the deviance through a constant
@@ -113,8 +104,16 @@ results of the fit on every row, with the same iterations (the first
 iteration, which starts from per-row values, is summed from the rows).
 The AIC is computed from the rows, and the dispersion of the families
 that estimate it from the within-pattern sums of squares. \code{compress}
-works as in \code{\link[=design_lm]{design_lm()}}; other families are never compressed (and
-\code{compress = TRUE} is an error for them).
+works as in \code{\link[=design_lm]{design_lm()}}.
+
+\strong{Families.} The families of \link[stats:family]{stats::family}: \code{binomial}, \code{poisson},
+\code{gaussian}, \code{Gamma}, \code{inverse.gaussian}, \code{quasibinomial}, \code{quasipoisson}
+and \code{quasi} (with variance \code{"constant"}, \code{"mu(1-mu)"}, \code{"mu"}, \code{"mu^2"}
+or \code{"mu^3"}), with the links \code{identity}, \code{log}, \code{logit}, \code{probit},
+\code{cloglog}, \code{cauchit}, \code{inverse}, \code{sqrt} and \code{1/mu^2}. These are the
+families and links that also have a SQL translation, so that every fit
+works in memory and on remote data alike; other family objects are an
+error.
 
 \strong{Remote data.} \code{data} can be a DuckDB connection (with \code{table} or
 \code{sql}) or Parquet paths, and the first argument a remote design (see
@@ -138,7 +137,7 @@ recomputed.
 \strong{Methods.} \code{\link[=coef]{coef()}}, \code{\link[=vcov]{vcov()}} (\code{NA} for aliased coefficients, scaled
 by the dispersion), \code{\link[=summary]{summary()}} (coefficient table, dispersion, null and
 residual deviance, AIC, iterations), \code{\link[=predict]{predict()}} (\code{type = "link"} or
-\code{"response"}, with \code{se.fit}), \code{\link[=residuals]{residuals()}} (types \code{"deviance"},
+\code{"response"}), \code{\link[=residuals]{residuals()}} (types \code{"deviance"},
 \code{"pearson"}, \code{"working"} and \code{"response"}), \code{\link[=fitted]{fitted()}}, \code{\link[=deviance]{deviance()}},
 \code{\link[=df.residual]{df.residual()}}, \code{\link[=nobs]{nobs()}}, \code{\link[=logLik]{logLik()}} (hence \code{\link[=AIC]{AIC()}} and \code{\link[=BIC]{BIC()}}),
 \code{\link[=family]{family()}}, \code{\link[=formula]{formula()}}, \code{\link[=terms]{terms()}}, \code{\link[=model.frame]{model.frame()}} and \code{print()}.
@@ -146,8 +145,11 @@ residual deviance, AIC, iterations), \code{\link[=predict]{predict()}} (\code{ty
 \strong{Differences with \code{glm()}.} The result is not a \code{glm} object: it has
 no \code{qr}, \code{effects}, \code{residuals}, \code{fitted.values} or \code{weights}
 components, so functions that expect those (such as \code{anova.glm()} or
-\code{plot.lm()}) do not apply. \code{method}, \code{x}, \code{singular.ok = FALSE} and
-\code{type = "terms"} in \code{predict()} are not supported. The null deviance of a
+\code{plot.lm()}) do not apply. Every option works in memory and on remote
+data alike; so \code{subset}, \code{etastart}, \code{mustart}, \code{method}, \code{x},
+\code{singular.ok = FALSE}, \code{na.action} other than \code{na.omit}, \code{na.exclude} and
+\code{na.fail}, and \code{se.fit} and \code{type = "terms"} in \code{predict()} are not
+supported. The null deviance of a
 fit with an offset and an intercept is refitted, as \code{glm()} does (also
 for a design matrix, where \code{glm.fit()} would not). Extra arguments do not
 go to \code{\link[=glm.control]{glm.control()}}: give \code{control = list(maxit = 50)}.

@@ -2,7 +2,7 @@
 ## dense matrix (remote data: remote_glm.R).
 ##
 ## The iterations are those of glm.fit(), step for step: same starting
-## values (family$initialize, mustart, etastart, start), same weighted least
+## values (family$initialize, or start), same weighted least
 ## squares problem at each iteration (solved with qr() on the scaled design,
 ## lm()'s pivoting with glm.fit()'s tolerance), same step halving, the same
 ## convergence rule and the same warnings. Only the products change:
@@ -40,7 +40,7 @@
 #' *Remote data* below).
 #'
 #' **Method.** The iterations are those of [glm.fit()]: the same starting
-#' values (from `family$initialize`, `mustart`, `etastart` or `start`), the
+#' values (from `family$initialize`, or `start`), the
 #' same weighted least squares problem at each iteration, solved with
 #' [qr()][design_qr] on the scaled design (columns pivoted, and aliased
 #' columns detected, as in `glm.fit()`, with its tolerance
@@ -53,8 +53,8 @@
 #' matrix, deviances and AIC agree to many more digits than `epsilon`.
 #'
 #' **Compression.** Rows with the same design pattern and the same offset
-#' have the same fitted value. For the families of [stats::family] (and
-#' [quasi()], and `MASS::negative.binomial()`), the deviance has the form
+#' have the same fitted value. For every family that `design_glm()`
+#' supports, the deviance has the form
 #' `w * (a(y) + y * h(mu) + k(mu))`, so at fixed coefficients a pattern
 #' contributes to each iteration only through the sum of its prior weights
 #' and its weighted mean response, and to the deviance through a constant
@@ -63,8 +63,16 @@
 #' iteration, which starts from per-row values, is summed from the rows).
 #' The AIC is computed from the rows, and the dispersion of the families
 #' that estimate it from the within-pattern sums of squares. `compress`
-#' works as in [design_lm()]; other families are never compressed (and
-#' `compress = TRUE` is an error for them).
+#' works as in [design_lm()].
+#'
+#' **Families.** The families of [stats::family]: `binomial`, `poisson`,
+#' `gaussian`, `Gamma`, `inverse.gaussian`, `quasibinomial`, `quasipoisson`
+#' and `quasi` (with variance `"constant"`, `"mu(1-mu)"`, `"mu"`, `"mu^2"`
+#' or `"mu^3"`), with the links `identity`, `log`, `logit`, `probit`,
+#' `cloglog`, `cauchit`, `inverse`, `sqrt` and `1/mu^2`. These are the
+#' families and links that also have a SQL translation, so that every fit
+#' works in memory and on remote data alike; other family objects are an
+#' error.
 #'
 #' **Remote data.** `data` can be a DuckDB connection (with `table` or
 #' `sql`) or Parquet paths, and the first argument a remote design (see
@@ -88,7 +96,7 @@
 #' **Methods.** [coef()], [vcov()] (`NA` for aliased coefficients, scaled
 #' by the dispersion), [summary()] (coefficient table, dispersion, null and
 #' residual deviance, AIC, iterations), [predict()] (`type = "link"` or
-#' `"response"`, with `se.fit`), [residuals()] (types `"deviance"`,
+#' `"response"`), [residuals()] (types `"deviance"`,
 #' `"pearson"`, `"working"` and `"response"`), [fitted()], [deviance()],
 #' [df.residual()], [nobs()], [logLik()] (hence [AIC()] and [BIC()]),
 #' [family()], [formula()], [terms()], [model.frame()] and `print()`.
@@ -96,8 +104,11 @@
 #' **Differences with `glm()`.** The result is not a `glm` object: it has
 #' no `qr`, `effects`, `residuals`, `fitted.values` or `weights`
 #' components, so functions that expect those (such as `anova.glm()` or
-#' `plot.lm()`) do not apply. `method`, `x`, `singular.ok = FALSE` and
-#' `type = "terms"` in `predict()` are not supported. The null deviance of a
+#' `plot.lm()`) do not apply. Every option works in memory and on remote
+#' data alike; so `subset`, `etastart`, `mustart`, `method`, `x`,
+#' `singular.ok = FALSE`, `na.action` other than `na.omit`, `na.exclude` and
+#' `na.fail`, and `se.fit` and `type = "terms"` in `predict()` are not
+#' supported. The null deviance of a
 #' fit with an offset and an intercept is refitted, as `glm()` does (also
 #' for a design matrix, where `glm.fit()` would not). Extra arguments do not
 #' go to [glm.control()]: give `control = list(maxit = 50)`.
@@ -105,12 +116,12 @@
 #' @param formula A model formula, as in [stats::glm()], a [design_matrix()]
 #'   (then give the response as `y`) or a remote design.
 #' @param family A family object, function or name, as in [stats::glm()].
-#' @param data,weights,subset,na.action,start,etastart,mustart,offset,contrasts
-#'   As in [stats::glm()]. With a design matrix, `weights`, `offset`,
-#'   `etastart` and `mustart` are numeric vectors with one value per row, and
-#'   `data`, `subset`, `na.action` and `contrasts` do not apply. For remote
-#'   data, `weights` and `offset` name columns (strings or bare names), and
-#'   `subset`, `etastart` and `mustart` are not supported.
+#' @param data,weights,na.action,start,offset,contrasts
+#'   As in [stats::glm()] (`na.action`: `na.omit`, `na.exclude` or
+#'   `na.fail`). With a design matrix, `weights` and `offset` are numeric
+#'   vectors with one value per row, and `data`, `na.action` and `contrasts`
+#'   do not apply. For remote data, `weights` and `offset` name columns
+#'   (strings, bare names or variables holding a string).
 #' @param control A list of arguments of [stats::glm.control()].
 #' @param compress `"auto"`, `TRUE` or `FALSE`: fit on the design patterns
 #'   (see Details).
@@ -118,7 +129,8 @@
 #'   [residuals()], [fitted()] and [predict()] without `newdata`.
 #' @param y With a design matrix as first argument, the response: a numeric
 #'   vector, a factor, or a two-column matrix of successes and failures (as
-#'   in [glm.fit()]). With a remote design, the name of the response column.
+#'   in [glm.fit()]). With a remote design, the name of the response column,
+#'   or the names of two columns (successes and failures).
 #' @param ... For remote data: `table`, `sql`, `engine` and `chunk_size`; see
 #'   [design_remote]. Otherwise not used.
 #' @return An object of class `"design_glm"`: a list with, among others,
@@ -309,8 +321,7 @@ dmglm_initialize <- function(family, y, weights, nobs, start) {
 ## for which the fit on patterns is exact.
 dmglm_compressible <- function(family) {
     family$family %in% c("gaussian", "binomial", "poisson", "Gamma", "inverse.gaussian",
-                         "quasibinomial", "quasipoisson", "quasi") ||
-        startsWith(family$family, "Negative Binomial(")
+                         "quasibinomial", "quasipoisson", "quasi")
 }
 
 ## Families with a fixed dispersion of 1 (summary.glm()).
