@@ -10,7 +10,6 @@
  *  dm_fe_struct_gsum(): grouped sums of the design's structured moments,
  *                      the weights and other columns, for every FE at once;
  *  dm_fe_code_int():   integer codes of an integer-valued vector;
- *  dm_fe_singletons(): iterative removal of singletons;
  *  dm_fe_ichol(), dm_fe_pcg(): IC(0) and preconditioned conjugate
  *                      gradients for the reduced system.
  *
@@ -364,38 +363,6 @@ SEXP dm_fe_code_int(SEXP v, SEXP maxrange_)
     SET_VECTOR_ELT(out, 1, ScalarInteger(G));
     SET_VECTOR_ELT(out, 2, vals);
     UNPROTECT(3);
-    return out;
-}
-
-/* Rows kept after dropping singletons iteratively (a row alone in its
-   level of some fixed effect), or NULL when no row is dropped. */
-SEXP dm_fe_singletons(SEXP codes_, SEXP G_)
-{
-    int nk = LENGTH(codes_);
-    const int *G = INTEGER(G_);
-    R_xlen_t n = XLENGTH(VECTOR_ELT(codes_, 0));
-    char *keep = (char *) R_alloc((size_t) n, 1);
-    memset(keep, 1, (size_t) n);
-    int Gmax = 0;
-    for (int k = 0; k < nk; k++) if (G[k] > Gmax) Gmax = G[k];
-    int *cnt = (int *) R_alloc((size_t) Gmax + 1, sizeof(int));
-    R_xlen_t dropped = 0;
-    int changed = 1;
-    while (changed) {
-	changed = 0;
-	for (int k = 0; k < nk; k++) {
-	    const int *c = INTEGER(VECTOR_ELT(codes_, k));
-	    memset(cnt, 0, sizeof(int) * ((size_t) G[k] + 1));
-	    for (R_xlen_t i = 0; i < n; i++) if (keep[i]) cnt[c[i]]++;
-	    for (R_xlen_t i = 0; i < n; i++)
-		if (keep[i] && cnt[c[i]] == 1) { keep[i] = 0; dropped++; changed = 1; }
-	}
-    }
-    if (!dropped) return R_NilValue;
-    SEXP out = PROTECT(allocVector(LGLSXP, n));
-    int *o = LOGICAL(out);
-    for (R_xlen_t i = 0; i < n; i++) o[i] = keep[i];
-    UNPROTECT(1);
     return out;
 }
 

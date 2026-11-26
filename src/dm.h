@@ -47,7 +47,6 @@ SEXP dm_fe_crosstab(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_fe_components(SEXP, SEXP, SEXP, SEXP);
 SEXP dm_fe_struct_gsum(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_fe_code_int(SEXP, SEXP);
-SEXP dm_fe_singletons(SEXP, SEXP);
 SEXP dm_fe_nested(SEXP, SEXP, SEXP);
 SEXP dm_fe_lookup(SEXP, SEXP);
 SEXP dm_fe_ichol(SEXP, SEXP, SEXP, SEXP, SEXP);

@@ -45,7 +45,6 @@ static const R_CallMethodDef CallEntries[] = {
     {"dm_fe_components", (DL_FUNC) &dm_fe_components, 4},
     {"dm_fe_struct_gsum", (DL_FUNC) &dm_fe_struct_gsum, 7},
     {"dm_fe_code_int", (DL_FUNC) &dm_fe_code_int, 2},
-    {"dm_fe_singletons", (DL_FUNC) &dm_fe_singletons, 2},
     {"dm_fe_nested", (DL_FUNC) &dm_fe_nested, 3},
     {"dm_fe_lookup", (DL_FUNC) &dm_fe_lookup, 2},
     {"dm_fe_ichol", (DL_FUNC) &dm_fe_ichol, 5},
