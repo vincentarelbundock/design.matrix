@@ -1,0 +1,51 @@
+WITH b AS (SELECT (s.g) AS __dm_g, s.f1 AS __dm_c1, s.f2 AS __dm_c2, CAST(s.xd1 AS DOUBLE) AS __dm_v3, CAST(s.xd2 AS DOUBLE) AS __dm_v4 FROM (SELECT * FROM d) AS s WHERE ((s.f1 IS NOT NULL)) AND ((s.f2 IS NOT NULL)) AND (((CAST(s.xd1 AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.xd1 AS DOUBLE)))) AND (((CAST(s.xd2 AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.xd2 AS DOUBLE))))) SELECT __dm_g, __dm_c1, __dm_c2, SUM(1) AS __dm_m1, SUM(CAST(1 AS DOUBLE)) AS __dm_m2, SUM(__dm_v3) AS __dm_m3, SUM(__dm_v4) AS __dm_m4 FROM b GROUP BY ALL
+
+╭─ Summary ───────────╮
+│ Total Time: 0.0081s │
+╰─────────────────────╯
+╭─ Execute ────────────────────────────────╮
+│ 0 rows                               0µs │
+╰─────────────────────┬────────────────────╯
+╭─ Explain Analyze ───┴────────────────────╮
+│ 0 rows                               0µs │
+╰─────────────────────┬────────────────────╯
+╭─ Projection ────────┴────────────────────╮
+│ Projections:                             │
+│ CAST(#0 AS INTEGER),                     │
+│ __internal_decompress_string(#1),        │
+│ __internal_decompress_string(#2), #3,    │
+│ #4, #5, #6                               │
+│ 200 rows                             0µs │
+╰─────────────────────┬────────────────────╯
+╭─ Hash Group By ─────┴────────────────────╮
+│ Groups: #0, #1, #2                       │
+│ Aggregates: sum_no_overflow(#3),         │
+│             sum(#4), sum(#5), sum(#6)    │
+│ 200 rows                          20.0ms │
+╰─────────────────────┒┎───────────────────╯
+╭─ Projection ────────┚┖───────────────────╮
+│ Projections: __dm_g, __dm_c1, __dm_c2,   │
+│              1, 1.0, __dm_v3, __dm_v4    │
+│ 1,000,000 rows                       0µs │
+╰─────────────────────┒┎───────────────────╯
+╭─ Projection ────────┚┖───────────────────╮
+│ Projections:                             │
+│ CAST(#0 AS TINYINT),                     │
+│ __internal_compress_string_uinteger(#1), │
+│ __internal_compress_string_uinteger(#2), │
+│ #3, #4                                   │
+│ 1,000,000 rows                    10.0ms │
+╰─────────────────────┒┎───────────────────╯
+╭─ Projection ────────┚┖───────────────────╮
+│ Projections: __dm_g, __dm_c1, __dm_c2,   │
+│              __dm_v3, __dm_v4            │
+│ 1,000,000 rows                       0µs │
+╰─────────────────────┒┎───────────────────╯
+╭─ Table Scan ────────┚┖───────────────────╮
+│ Table: memory.main.d                     │
+│ Type: Sequential Scan                    │
+│ Projections: f1, f2, xd1, xd2, g         │
+│ Row Groups Scanned: 9 / 9                │
+│ 1,000,000 rows                    20.0ms │
+╰──────────────────────────────────────────╯
+

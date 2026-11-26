@@ -1,0 +1,35 @@
+SELECT SUM(CAST(((CASE WHEN (COALESCE(isfinite(CAST((CAST(s.y AS DOUBLE)) AS DOUBLE)), FALSE)) THEN 0 ELSE 1 END)) AS DOUBLE)) AS s1, SUM(CAST(((CASE WHEN (((((COALESCE(isfinite(CAST((CAST(s.w AS DOUBLE)) AS DOUBLE)), FALSE)) OR (((abs((CAST(s.w AS DOUBLE)))) = CAST('Infinity' AS DOUBLE))))) AND (((CAST(s.w AS DOUBLE)) >= CAST('0' AS DOUBLE))))) THEN 0 ELSE 1 END)) AS DOUBLE)) AS s2, SUM(CAST(((CASE WHEN (((abs((CAST(s.w AS DOUBLE)))) = CAST('Infinity' AS DOUBLE))) THEN 1 ELSE 0 END)) AS DOUBLE)) AS s3, SUM(CAST(((CASE WHEN (((CAST(s.w AS DOUBLE)) <> CAST('0' AS DOUBLE))) THEN 1 ELSE 0 END)) AS DOUBLE)) AS s4 FROM (SELECT * FROM d) AS s WHERE ((s.f1 IS NOT NULL)) AND ((s.f2 IS NOT NULL)) AND (((CAST(s.xd1 AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.xd1 AS DOUBLE)))) AND (((CAST(s.xd2 AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.xd2 AS DOUBLE)))) AND (((CAST(s.y AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.y AS DOUBLE)))) AND (((CAST(s.w AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.w AS DOUBLE))))
+
+╭─ Summary ───────────╮
+│ Total Time: 0.0039s │
+╰─────────────────────╯
+╭─ Execute ───────────────────────────────────────────────────────────────────────╮
+│ 0 rows                                                                      0µs │
+╰────────────────────────────────────────┬────────────────────────────────────────╯
+╭─ Explain Analyze ──────────────────────┴────────────────────────────────────────╮
+│ 0 rows                                                                      0µs │
+╰────────────────────────────────────────┬────────────────────────────────────────╯
+╭─ Ungrouped Aggregate ──────────────────┴────────────────────────────────────────╮
+│ Aggregates: sum(#0), sum(#1), sum(#2), sum(#3)                                  │
+│ 1 row                                                                       0µs │
+╰────────────────────────────────────────┒┎───────────────────────────────────────╯
+╭─ Projection ───────────────────────────┚┖───────────────────────────────────────╮
+│ Projections:                                                                    │
+│ CAST(CASE  WHEN (COALESCE(isfinite(y), false)) THEN (0) ELSE 1 END AS DOUBLE),  │
+│ CAST(CASE  WHEN (COALESCE(isfinite(#1), false)) THEN (0) ELSE 1 END AS DOUBLE), │
+│ CAST(CASE  WHEN (false) THEN (1) ELSE 0 END AS DOUBLE),                         │
+│ CAST(CASE  WHEN (true) THEN (1) ELSE 0 END AS DOUBLE)                           │
+│ 1,000,000 rows                                                           10.0ms │
+╰────────────────────────────────────────┒┎───────────────────────────────────────╯
+╭─ Projection ───────────────────────────┚┖───────────────────────────────────────╮
+│ Projections: y, CAST(w AS DOUBLE)                                               │
+│ 1,000,000 rows                                                              0µs │
+╰────────────────────────────────────────┒┎───────────────────────────────────────╯
+╭─ Table Scan ───────────────────────────┚┖───────────────────────────────────────╮
+│ Table: memory.main.d                                                            │
+│ Type: Sequential Scan                                                           │
+│ Projections: y, w                                                               │
+│ Row Groups Scanned: 9 / 9                                                       │
+│ 1,000,000 rows                                                              0µs │
+╰─────────────────────────────────────────────────────────────────────────────────╯
+

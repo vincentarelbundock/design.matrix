@@ -1,0 +1,43 @@
+WITH b AS (SELECT (CAST(s.xd1 AS DOUBLE) - CAST('1.5162500000000001' AS DOUBLE)) AS __dm_v1, (CAST(s.xd2 AS DOUBLE) - CAST('1.47725' AS DOUBLE)) AS __dm_v2, s.f2 AS __dm_c3, CAST(s.y AS DOUBLE) AS __dm_v4 FROM (SELECT * FROM dm_mat_0000009a5e1c02a4746e9) AS s WHERE TRUE) SELECT __dm_v1, __dm_v2, __dm_c3, SUM(1) AS __dm_m1, SUM(CAST(1 AS DOUBLE)) AS __dm_m2 FROM b GROUP BY ALL LIMIT 1000001
+
+╭─ Summary ───────────╮
+│ Total Time: 0.0067s │
+╰─────────────────────╯
+╭─ Execute ───────────────────────────────────────╮
+│ 0 rows                                      0µs │
+╰────────────────────────┬────────────────────────╯
+╭─ Explain Analyze ──────┴────────────────────────╮
+│ 0 rows                                      0µs │
+╰────────────────────────┬────────────────────────╯
+╭─ Projection ───────────┴────────────────────────╮
+│ Projections:                                    │
+│ #0, #1, __internal_decompress_string(#2), #3,   │
+│ #4                                              │
+│ 196 rows                                    0µs │
+╰────────────────────────┬────────────────────────╯
+╭─ Hash Group By ────────┴────────────────────────╮
+│ Groups: #0, #1, #2                              │
+│ Aggregates: sum_no_overflow(#3), sum(#4)        │
+│ 196 rows                                 20.0ms │
+╰────────────────────────┒┎───────────────────────╯
+╭─ Projection ───────────┚┖───────────────────────╮
+│ Projections: __dm_v1, __dm_v2, __dm_c3, 1, 1.0  │
+│ 1,000,000 rows                              0µs │
+╰────────────────────────┒┎───────────────────────╯
+╭─ Projection ───────────┚┖───────────────────────╮
+│ Projections:                                    │
+│ #0, #1, __internal_compress_string_uinteger(#2) │
+│ 1,000,000 rows                           10.0ms │
+╰────────────────────────┒┎───────────────────────╯
+╭─ Projection ───────────┚┖───────────────────────╮
+│ Projections: __dm_v1, __dm_v2, __dm_c3          │
+│ 1,000,000 rows                              0µs │
+╰────────────────────────┒┎───────────────────────╯
+╭─ Table Scan ───────────┚┖───────────────────────╮
+│ Table: "temp".main.dm_mat_0000009a5e1c02a4746e9 │
+│ Type: Sequential Scan                           │
+│ Projections: f2, xd1, xd2                       │
+│ Row Groups Scanned: 9 / 9                       │
+│ 1,000,000 rows                           10.0ms │
+╰─────────────────────────────────────────────────╯
+
