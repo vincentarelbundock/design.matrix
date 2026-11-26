@@ -62,7 +62,7 @@
 full <- list(
     n = c(1e3, 1e4, 1e5, 1e6),
     k = c(1, 5, 10),
-    package = c("design_lm", "design_lm (DuckDB)", "feols", "felm", "dbreg (DuckDB)"))
+    package = c("design_lm", "design_lm (DuckDB)", "feols", "dbreg (DuckDB)"))
 preset_quick <- list(n = c(1e3, 1e4, 1e5), k = 1, package = c("design_lm", "feols"))
 scale <- list(
     n = c(1e7, 5e7),
@@ -216,7 +216,7 @@ coef_diff <- function(b, r) {
 }
 
 deps <- list("design_lm" = "design.matrix", "design_lm (DuckDB)" = c("design.matrix", "duckdb"),
-             "feols" = "fixest", "felm" = "lfe", "dbreg (DuckDB)" = c("dbreg", "duckdb"))
+             "feols" = "fixest", "dbreg (DuckDB)" = c("dbreg", "duckdb"))
 cpu <- tryCatch(trimws(sub(".*:", "", grep("^model name", readLines("/proc/cpuinfo"), value = TRUE)[1])),
                 error = function(e) "unknown")
 # The machine, the package versions and the thresholds, next to the results.

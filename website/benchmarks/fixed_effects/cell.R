@@ -54,10 +54,6 @@ suppressPackageStartupMessages(switch(package,
         setFixest_nthreads(1)
         data.table::setDTthreads(1)
     },
-    "felm" = {
-        options(lfe.threads = 1)
-        library(lfe)
-    },
     "dbreg (DuckDB)" = {
         library(dbreg)
         # The default (100 iterations of alternating projections) stops with
@@ -70,7 +66,6 @@ fit <- switch(package,
     "design_lm" = function() design_lm(f, d),
     "design_lm (DuckDB)" = function() design_lm(f, con, table = "d"),
     "feols" = function() feols(f, d, vcov = "iid", notes = FALSE),
-    "felm" = function() felm(f, d),
     "dbreg (DuckDB)" = function() dbreg(f, conn = con, table = "d", vcov = "iid"))
 
 # Peak resident memory of this process (Linux): reset the high-water mark,
