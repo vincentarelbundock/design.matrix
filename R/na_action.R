@@ -70,9 +70,7 @@ napredict.dm_remote_exclude <- function(omit, x, ...) {
     sel <- sprintf("SELECT * FROM %s UNION ALL BY NAME SELECT s.* FROM (%s) AS s WHERE NOT COALESCE(%s, FALSE)",
                    DBI::dbQuoteIdentifier(con, unclass(x)[1L]), D0$src$select, D0$filter)
     name <- dm_tmp_name("dm_out")
-    view <- sprintf("CREATE TEMPORARY VIEW %s AS %s", DBI::dbQuoteIdentifier(con, name), sel)
-    if (is.null(attr(x, "holder"))) DBI::dbExecute(con, view)
-    else dm_sql_send(attr(x, "holder"), view, DBI::dbExecute, log = FALSE)
+    DBI::dbExecute(con, sprintf("CREATE TEMPORARY VIEW %s AS %s", DBI::dbQuoteIdentifier(con, name), sel))
     structure(name, class = "dm_remote_table", connection = con, holder = attr(x, "holder"))
 }
 

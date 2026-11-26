@@ -326,12 +326,16 @@ dm_col_type <- function(x) {
 
 dm_qi <- function(D, x) as.character(DBI::dbQuoteIdentifier(dm_con(D), x))
 
-## Run a query (with the option design.matrix.remote_debug, print it; the
-## macros of pmax, pmin and log are created by the first query that uses
-## them: dm_sql_send()).
-dm_query <- function(D, sql) dm_sql_send(D$src$holder, sql, DBI::dbGetQuery)
+## Run a query (with the option design.matrix.remote_debug, print it).
+dm_query <- function(D, sql) {
+    if (isTRUE(getOption("design.matrix.remote_debug"))) message(sql)
+    DBI::dbGetQuery(dm_con(D), sql)
+}
 
-dm_execute <- function(D, sql) dm_sql_send(D$src$holder, sql, DBI::dbExecute)
+dm_execute <- function(D, sql) {
+    if (isTRUE(getOption("design.matrix.remote_debug"))) message(sql)
+    DBI::dbExecute(dm_con(D), sql)
+}
 
 ## Names of temporary tables, views and columns: a counter (8 hex digits,
 ## right after the prefix) and a token of the process, without using (or
@@ -744,10 +748,10 @@ dm_remote_cols <- function(D, x, what, several = FALSE, numeric = TRUE) {
 ## The design over the same rows, with extra columns `exprs` (named SQL
 ## expressions over the columns of the source) added to the source.
 dm_remote_extend <- function(D, exprs, what = "expression") {
+    con <- dm_con(D)
     items <- sprintf("(%s) AS %s", exprs, dm_qi(D, names(exprs)))
     select <- sprintf("SELECT s.*, %s FROM (%s) AS s", paste(items, collapse = ", "), D$src$select)
-    proto <- tryCatch(dm_sql_send(D$src$holder, sprintf("SELECT * FROM (%s) AS s LIMIT 0", select),
-                                  DBI::dbGetQuery, log = FALSE),
+    proto <- tryCatch(DBI::dbGetQuery(con, sprintf("SELECT * FROM (%s) AS s LIMIT 0", select)),
                       error = function(e) stop(sprintf("`%s`: invalid SQL expression: %s", what,
                                                        conditionMessage(e)), call. = FALSE))
     D$src$select <- select
