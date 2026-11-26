@@ -61,7 +61,8 @@
 ## builds a new frame (a view) on top of
 ## the frame of the columns passed as `along`, and keeps all their columns.
 ## Combining columns takes the later frame (they must come from the same
-## design). In memory `along` is ignored.
+## design, and one frame must descend from the other: each frame records
+## its lineage, see dm_frame_later()). In memory `along` is ignored.
 ##
 ## Getting values into R: dmp_collect(col) returns the values (in memory the
 ## vector itself; remotely a SELECT of all rows: only for small data).
@@ -225,13 +226,43 @@ length.dm_rcols <- function(x) length(unclass(x)$sql)
 
 dm_frame_depth <- function(D) D$depth %||% 0L
 
+## The lineage of a frame: the tokens of the frames derived one from the
+## other since the design was made (a design not yet derived has none), so
+## that a frame descends from another when its path extends the other's.
+## NULL when unknown (a derived frame made before frames had paths).
+dm_frame_path <- function(D) {
+    if (!is.null(D$path)) return(D$path)
+    if (dm_frame_depth(D) == 0L) character() else NULL
+}
+
+## Frame `fr`, derived from frame `parent`: its path is the parent's and a
+## new token.
+dm_frame_child <- function(fr, parent) {
+    p <- dm_frame_path(parent)
+    if (is.null(p)) return(fr)
+    dm_tmp$frames <- (dm_tmp$frames %||% 0) + 1
+    fr$path <- c(p, sprintf("f%x", as.integer(dm_tmp$frames)))
+    fr
+}
+
 ## Of two frames of the same design, the later one (which keeps the columns
-## of the earlier one).
+## of the earlier one): the descendant. Frames on two branches (neither
+## descends from the other) cannot be combined. Without a known lineage,
+## the deeper frame.
 dm_frame_later <- function(a, b) {
     if (is.null(a)) return(b)
     if (is.null(b)) return(a)
     if (!identical(a$id, b$id))
         stop("Columns of different remote designs cannot be combined.", call. = FALSE)
+    pa <- dm_frame_path(a)
+    pb <- dm_frame_path(b)
+    if (!is.null(pa) && !is.null(pb) && !identical(pa, pb)) {
+        prefix <- function(u, v) length(u) < length(v) && identical(u, v[seq_along(u)])
+        if (prefix(pa, pb)) return(b)
+        if (prefix(pb, pa)) return(a)
+        stop("Columns built on two different branches of the same remote design cannot be combined; ",
+             "build one from the other (`along`) or freeze them together (dmc_cbind()).", call. = FALSE)
+    }
     if (dm_frame_depth(b) > dm_frame_depth(a)) b else a
 }
 
@@ -446,6 +477,7 @@ dm_rebase <- function(x, frame) {
     if (!identical(x$id, frame$id)) stop("Columns of another remote design.", call. = FALSE)
     x$src <- frame$src
     x$depth <- dm_frame_depth(frame)
+    x$path <- frame$path
     x
 }
 
@@ -464,11 +496,9 @@ dmp_scale <- function(x, s) {
 
 ## A remote design with the columns `col` added to its source (named nm).
 dm_with_columns <- function(x, col, nm) {
-    fr <- unclass(col)$frame
-    if (dm_frame_depth(x) > dm_frame_depth(fr)) fr <- x
-    x <- dm_rebase(x, fr)
+    x <- dm_rebase(x, dm_frame_later(unclass(col)$frame, x))
     sc <- x$scale
-    x <- dm_remote_extend(dm_remote_unscaled(x), stats::setNames(unclass(col)$sql, nm), "column")
+    x <- dm_frame_child(dm_remote_extend(dm_remote_unscaled(x), stats::setNames(unclass(col)$sql, nm), "column"), x)
     x$scale <- sc
     x
 }
@@ -553,6 +583,7 @@ dmp_mult <- function(x, B, along = list()) {
     fr$src$proto <- proto
     fr$src$types <- vapply(proto, dm_col_type, "")
     fr$depth <- dm_frame_depth(x) + 1L
+    fr <- dm_frame_child(fr, x)
     dm_rcols(fr, sprintf("s.%s", dm_qi(x, nm)))
 }
 
@@ -1035,6 +1066,7 @@ dmc_freeze <- function(col, table = FALSE) {
     x <- dm_remote_extend(dm_remote_unscaled(fr), stats::setNames(sql, nm), "column")
     if (table) x <- dm_remote_to_table(x)
     x$depth <- dm_frame_depth(fr) + 1L
+    x <- dm_frame_child(x, fr)
     dm_rcols(x, sprintf("s.%s", dm_qi(x, nm)))
 }
 
@@ -1082,6 +1114,7 @@ dmp_materialize <- function(x, cols = NULL) {
     x <- dm_remote_to_table(dm_remote_unscaled(x), keep)
     x$filter <- "TRUE"
     x$depth <- 0L
+    x$path <- character()
     x$cache <- new.env(parent = emptyenv())
     x$id <- dm_tmp_name("dm")
     x$scale <- sc
@@ -1166,9 +1199,7 @@ dmp_subset <- function(x, keep) {
     if (!dm_is_rcols(keep))
         stop("Rows of a remote design are selected by a logical remote column or a DBI::SQL() predicate.",
              call. = FALSE)
-    fr <- unclass(keep)$frame
-    if (dm_frame_depth(x) > dm_frame_depth(fr)) fr <- x
-    out <- dm_rebase(x, fr)
+    out <- dm_rebase(x, dm_frame_later(unclass(keep)$frame, x))
     out$filter <- sprintf("(%s) AND COALESCE(%s, FALSE)", out$filter, unclass(keep)$sql)
     out$n <- as.numeric(dm_query(out, sprintf("SELECT COUNT(*) AS n FROM (%s) AS s WHERE %s",
                                               out$src$select, out$filter))$n)
