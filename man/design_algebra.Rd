@@ -53,7 +53,7 @@ another \code{design_matrix} with the same rows, or \code{NULL} for \code{t(X) \
 \code{x}. \code{colSums()} and \code{colMeans()}: a vector with one value per column, or with
 \code{group}, a matrix with one row per observed group (sorted by default).
 \code{rowSums()}, \code{rowMeans()} and \code{quadratic_diagonal()}: a vector with one
-value per row.
+value per row (for a remote design, a column: see \link{design_column}).
 }
 \description{
 Products with a \code{design_matrix} are computed directly from

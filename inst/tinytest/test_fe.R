@@ -28,7 +28,7 @@ plain <- function(V) {
 }
 
 if (remote) {
-    con <- DBI::dbConnect(duckdb::duckdb())
+    con <- test_con()
     pq_dir <- tempfile("fe_pq")
     dir.create(pq_dir)
 }
@@ -420,5 +420,5 @@ expect_error(predict(design_lm(y ~ x1 | a, d), d[1:3, c("x1", "b")]), "fixed-eff
 if (remote) {
     expect_error(design_lm(y ~ x1 | zz, con, table = "d"), "No column")
     expect_error(design_lm(y ~ x1 | a, con, table = "d", subset = x1 > 0), "subset")
-    DBI::dbDisconnect(con)
+    test_con_done(con)
 }

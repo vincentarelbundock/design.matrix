@@ -3,6 +3,7 @@
 # thresholds, tie mode, suspect band), the absorption operator
 # (dm_absorb(): project, effects, scores, solve) against dense dummies, the
 # refinement driver (dm_refine()), and the un-centering helpers.
+source("helpers.R")
 library(design.matrix)
 ns <- asNamespace("design.matrix")
 
@@ -188,7 +189,7 @@ expect_equal(ns$dm_uncenter_cov(Tm, V), Tm %*% V %*% t(Tm))
 # of 1) the decision is taken from the data: it follows the exact ratio,
 # computed here by a dense QR on the dummies, in memory and remotely.
 remote <- requireNamespace("DBI", quietly = TRUE) && requireNamespace("duckdb", quietly = TRUE)
-if (remote) con <- DBI::dbConnect(duckdb::duckdb())
+if (remote) con <- test_con()
 set.seed(8)
 n <- 2000
 d <- data.frame(a = sample(50, n, TRUE), b = sample(10, n, TRUE), x1 = rnorm(n), e0 = rnorm(n),
@@ -233,4 +234,4 @@ for (wt in c(FALSE, TRUE)) {
         }
     }
 }
-if (remote) DBI::dbDisconnect(con, shutdown = TRUE)
+if (remote) test_con_done(con)

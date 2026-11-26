@@ -149,7 +149,7 @@ expect_false(is.null(q$centered))
 
 # in memory and remote agree (the remote fit centers too)
 if (requireNamespace("duckdb", quietly = TRUE) && requireNamespace("DBI", quietly = TRUE)) {
-    con <- DBI::dbConnect(duckdb::duckdb())
+    con <- test_con()
     DBI::dbWriteTable(con, "d", d)
     DBI::dbWriteTable(con, "dc", dc)
     for (fo in list(y ~ f + x + I(x^2), y ~ f * log(x) + x)) {
@@ -174,5 +174,5 @@ if (requireNamespace("duckdb", quietly = TRUE) && requireNamespace("DBI", quietl
         expect_true(same(coef(f), coef(r)), info = paste(info, "coef"))
         expect_true(same(vcov(f), vcov(r)), info = paste(info, "vcov"))
     }
-    DBI::dbDisconnect(con, shutdown = TRUE)
+    test_con_done(con)
 }

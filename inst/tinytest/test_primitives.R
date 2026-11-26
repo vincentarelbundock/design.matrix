@@ -58,7 +58,7 @@ expect_null(dmp_patterns(D, d$y, NULL, compress = FALSE))
 
 ## columns: the same R code on numbers and on remote columns
 if (requireNamespace("duckdb", quietly = TRUE)) {
-    con <- DBI::dbConnect(duckdb::duckdb())
+    con <- test_con()
     DBI::dbWriteTable(con, "d", d)
     dd <- DBI::dbReadTable(con, "d")
     R <- design_matrix(y ~ x * f + xd, con, table = "d")
@@ -94,7 +94,7 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     DBI::dbWriteTable(con, "na", data.frame(y = c(1, NA, 3), x = 1:3))
     Rn <- design_matrix(~ x, con, table = "na")
     expect_true(is.na(dm_colsum(dmp_column(Rn, 'CAST(s."y" AS DOUBLE)'))))
-    DBI::dbDisconnect(con)
+    test_con_done(con)
 }
 
 ## ---- contract extensions: coded groups, subsets, arguments ----
@@ -127,7 +127,7 @@ expect_true(same(coef(lpk), coef(lk)))
 expect_equal(ncol(ptk$keys), 1L)
 
 if (requireNamespace("duckdb", quietly = TRUE)) {
-    con <- DBI::dbConnect(duckdb::duckdb())
+    con <- test_con()
     DBI::dbWriteTable(con, "d", d)
     dd <- DBI::dbReadTable(con, "d")
     R <- design_matrix(y ~ x * f + xd, con, table = "d")
@@ -169,5 +169,5 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     lpr <- lm.wfit(as.matrix(ptr$x), ptr$z, ptr$w)
     expect_true(same(coef(lpr), coef(lm(y ~ xd + f, dd, weights = w, offset = round(x)))))
     expect_true(same(design.matrix:::dmp_collect(design.matrix:::dmc_lgamma(w))[1:3], lgamma(dd$w[1:3])))
-    DBI::dbDisconnect(con)
+    test_con_done(con)
 }

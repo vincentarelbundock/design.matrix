@@ -35,7 +35,7 @@ DBI::dbWriteTable(con, "d", d)
 
 = One code, two backends
 
-The same calls work on a data frame and on a DuckDB table: only the data argument changes. Below, every call runs once on `d` and once on the table `"d"`, with the same results. Numbers, matrices and fits are the same R objects in both cases; results with one value per row (such as `D %*% beta`) are vectors in memory and tables in the database, which keep the columns of the data (here `id`) to match the rows.
+The same calls work on a data frame and on a DuckDB table: only the data argument changes. Below, every call runs once on `d` and once on the table `"d"`, with the same results. Numbers, matrices and fits are the same R objects in both cases. Products with one value per row (such as `D %*% beta`) are vectors in memory and lazy columns (`design_column`) in the database; `collect()` reads their values, and `as.data.frame(p, keep = "id")` reads them with a key of the data to match the rows. Results of fits with one value per row (`fitted()`, `predict()`) are tables in the database, which keep the columns of the data.
 
 ```r
 ## designs and their products
@@ -44,8 +44,13 @@ D_db  <- design_matrix(y ~ x + f, con, table = "d")
 all.equal(crossprod(D_mem), crossprod(D_db))
 
 beta <- c(1, 0.5, -1, 2)
-p_db <- as.data.frame(D_db %*% beta)
+p_db <- as.data.frame(D_db %*% beta, keep = "id")
 all.equal(drop(D_mem %*% beta), p_db$.fitted[match(d$id, p_db$id)])
+
+## columns: the same code on both backends
+r_mem <- design_column(D_mem, "y") - D_mem %*% beta
+r_db  <- design_column(D_db, "y") - D_db %*% beta
+all.equal(sum(collect(r_mem)^2), sum(collect(r_db)^2))
 
 ## a linear model
 lm_mem <- design_lm(y ~ x + f, d, weights = w)
@@ -112,16 +117,21 @@ all.equal(colSums(D, group = "cl"), rowsum(X, d$cl), check.attributes = FALSE)
 
 When the rows have few distinct design patterns (factors and discrete numeric variables), these products and `design_lm()` run one `GROUP BY` over the input columns of the design, and compute the result from the design of the patterns, in memory. The option `design.matrix.remote_compress` controls this.
 
-= Predictions
+= Columns and predictions
 
-`D %*% beta` writes the predictions, next to the columns of the remote data, to a temporary view, and returns its name. `as.data.frame()` reads it; a table keeps it.
+`D %*% beta`, `rowSums(D)` and `quadratic_diagonal(D, V)` return a remote column, a `design_column`: a SQL expression over the rows of the design, which nothing evaluates until its values are asked for. `design_column(D, "y")` makes one from a column of the data (or from a `DBI::SQL()` expression), and arithmetic on columns (`+`, `*`, `exp()`, `log()`, comparisons, `is.na()`) builds new ones. `collect()` reads the values into R, `as.data.frame()` reads them as a data frame, with columns of the data given by `keep`, and `compute()` stores a column in a temporary table, so that later queries read it instead of recomputing it. Printing a column shows its SQL and its connection, and reads no row.
 
 ```r
 beta <- solve(crossprod(D), crossprod(D, "y"))
 p <- D %*% beta
-head(as.data.frame(p))
-DBI::dbExecute(con, sprintf("CREATE TABLE preds AS SELECT * FROM %s", p))
+p
+r <- design_column(D, "y") - p
+head(as.data.frame(r, keep = "id", nm = "resid"))
+r2 <- compute(r^2)
+sum(collect(r2))
 ```
+
+A column is valid while its connection is open: the views and temporary tables it reads belong to the session of the connection. To keep values, read them with `as.data.frame()` and write them where they belong.
 
 = Linear models
 

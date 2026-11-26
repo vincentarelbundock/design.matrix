@@ -7,7 +7,7 @@ if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quie
 source("helpers.R")
 library(design.matrix)
 
-con <- DBI::dbConnect(duckdb::duckdb())
+con <- test_con()
 same <- function(a, b, tol = 1e-7) isTRUE(all.equal(unname(a), unname(b), tolerance = tol))
 
 set.seed(7)
@@ -220,5 +220,5 @@ r <- suppressMessages(design_lm(y ~ xd + f, con, table = "d", weights = myfun(xd
 expect_true(r$compressed)
 check_methods(r, lm(y ~ xd + f, d, weights = myfun(xd), offset = log(myfun(z))), "compressed, R expressions")
 
-DBI::dbDisconnect(con)
+test_con_done(con)
 unlink(pq)

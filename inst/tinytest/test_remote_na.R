@@ -24,7 +24,7 @@ g <- expand.grid(a = vals, b = vals)
 d <- data.frame(id = seq_len(nrow(g)), y = 1, a = g$a, b = g$b,
                 f = ifelse(is.na(g$a) & !is.nan(g$a), NA, c("u", "v")[1 + (seq_len(nrow(g)) %% 2)]),
                 i = ifelse(is.nan(g$b), NA, seq_len(nrow(g))), stringsAsFactors = FALSE)
-con <- DBI::dbConnect(duckdb::duckdb())
+con <- test_con()
 DBI::dbWriteTable(con, "d", d)
 R <- design_matrix(y ~ id, con, table = "d")
 col <- function(v) dmp_column(R, sprintf('CAST(s."%s" AS DOUBLE)', v))
@@ -42,7 +42,7 @@ expect_identical(get(a), d$a)
 expect_identical(get(b), d$b)
 
 check <- function(remote, local, what) {
-    expect_true(inherits(remote, "dm_rcols"), info = what)
+    expect_true(inherits(remote, "design_column"), info = what)
     expect_identical(get(remote), as.double(local), info = what)
 }
 
@@ -132,7 +132,7 @@ check(sign(-a), sign(-d$a), "sign of -a")
 ## missing, R's result (x + y) depends on the platform: only missingness
 ## compared there.
 checkm <- function(remote, local, miss, what) {
-    expect_true(inherits(remote, "dm_rcols"), info = what)
+    expect_true(inherits(remote, "design_column"), info = what)
     r <- get(remote)
     expect_identical(r[!miss], as.double(local)[!miss], info = what)
     expect_true(all(is.na(r[miss])), info = what)
@@ -170,4 +170,4 @@ for (vars in list("a", c("a", "b"), "f", c("f", "i"), c("f", "b"))) {
     check(dmc_not_na(kr), dmc_not_na(kl), paste("not_na", paste(vars, collapse = ",")))
 }
 
-DBI::dbDisconnect(con, shutdown = TRUE)
+test_con_done(con)

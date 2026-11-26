@@ -2,9 +2,10 @@
 ## lm() and with the uncompressed computation.
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
+source("helpers.R")
 library(design.matrix)
 
-con <- DBI::dbConnect(duckdb::duckdb())
+con <- test_con()
 same <- function(a, b, tol = 1e-7) isTRUE(all.equal(unname(a), unname(b), tolerance = tol))
 no_compress <- function(expr) {
     op <- options(design.matrix.remote_compress = FALSE)
@@ -221,5 +222,5 @@ for (engine in "auto") {
     expect_true(same(colSums(".resid" * R, group = "cl"), rowsum(e * X, dk$cl)), info = engine)
 }
 
-DBI::dbDisconnect(con)
+test_con_done(con)
 unlink(pq)

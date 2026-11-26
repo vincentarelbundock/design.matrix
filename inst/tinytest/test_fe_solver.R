@@ -11,6 +11,7 @@
 # of the pairwise graphs, R is singular, and the solver must drop a level.
 
 if (!requireNamespace("fixest", quietly = TRUE)) exit_file("fixest not installed")
+source("helpers.R")
 library(design.matrix)
 remote <- requireNamespace("DBI", quietly = TRUE) && requireNamespace("duckdb", quietly = TRUE)
 
@@ -45,7 +46,7 @@ warns <- function(expr) {
     list(value = val, warnings = grep("onjugate|converge|singular", ws, value = TRUE))
 }
 
-if (remote) con <- DBI::dbConnect(duckdb::duckdb())
+if (remote) con <- test_con()
 
 f3 <- y ~ x1 + x2 | indiv_id + year + firm_id
 paths <- list(matfree = list(design.matrix.fe_solver = "pcg", design.matrix.fe_form_max = 0),
@@ -160,4 +161,4 @@ for (fm in c(0, Inf)) {
     }
 }
 
-if (remote) DBI::dbDisconnect(con, shutdown = TRUE)
+if (remote) test_con_done(con)

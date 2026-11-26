@@ -130,13 +130,14 @@ involved: \code{crossprod(x, y)} needs \code{y} to be \code{x} with other scales
 \item \code{colSums(D)}, \code{colMeans(D)}, and with \code{group = "g"} (a column, or a
 \code{DBI::SQL()} expression), the sums or means within groups (sorted as
 \code{\link[base:rowsum]{base::rowsum()}} sorts them).
-\item \code{D \%*\% beta}: the linear predictor, with all the columns of the remote
-data (to join it back), as a temporary view whose name is returned, a
-string of class
-\code{dm_remote_table}; \code{\link[=as.data.frame]{as.data.frame()}} reads it, and its \code{"connection"}
-attribute is the connection where it lives (for a Parquet source, a
-private one). To keep it, create a table from it:
-\code{DBI::dbExecute(con, sprintf("CREATE TABLE preds AS SELECT * FROM \%s", p))}.
+\item \code{D \%*\% beta}, \code{rowSums(D)}, \code{rowMeans(D)} and
+\code{quadratic_diagonal(D, V)}: a remote column (\link{design_column}), a
+lazy SQL expression over the rows of the design, where a design in
+memory returns a vector. Arithmetic on it builds another column;
+\code{\link[=collect]{collect()}} reads its values into R, \code{as.data.frame(p, keep = "id")}
+reads them with columns of the remote data (to join them back), and
+\code{\link[=compute]{compute()}} stores it in a temporary table. \code{design_column(D, "y")}
+makes a column from a column of the remote data.
 \item \code{as.matrix(D)} collects the rows and builds the dense matrix, only when
 there are at most \code{getOption("design.matrix.remote_max_rows", 1e5)} rows
 or with \code{force = TRUE}.
@@ -303,7 +304,10 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     D
     beta <- solve(crossprod(D), crossprod(D, "y"))
     p <- D \%*\% beta
-    head(as.data.frame(p))
+    p
+    head(collect(p))
+    r <- design_column(D, "y") - p
+    head(as.data.frame(r, nm = "resid"))
     summary(D)
     DBI::dbDisconnect(con)
 }

@@ -7,11 +7,14 @@
 ##   design                     column
 ##   ------------------------   -----------------------------------------
 ##   in memory: design_matrix   numeric vector (or matrix: several columns)
-##   remote:    dm_remote       dm_rcols: SQL expressions over the rows of a
-##                              frame (see below)
+##   remote:    dm_remote       design_column: SQL expressions over the rows
+##                              of a frame (see below; made by dm_column())
 ##
-## Nothing here is exported. All functions are internal; their names start
-## with dmp_ (operations on designs), dmc_ (operations on columns) or dm_.
+## The remote column class, design_column, is also the public column type
+## (R/column.R: design_column(), collect(), compute(), as.data.frame(),
+## print/format, and the methods below for arithmetic). Everything else
+## here is internal; names start with dmp_ (operations on designs), dmc_
+## (operations on columns) or dm_.
 ##
 ## ---------------------------------------------------------------------------
 ## Columns
@@ -19,9 +22,10 @@
 ##
 ## A column holds one value per row of a design (in the order of its rows in
 ## memory; remotely, rows have no order). In memory it is a double vector of
-## length nrow(x), or an n x k matrix for k columns. Remotely it is
+## length nrow(x), or an n x k matrix for k columns. Remotely it is an
+## object of class design_column, made by
 ##
-##   dm_rcols(frame, sql)
+##   dm_column(frame, sql)
 ##
 ## with `frame` a dm_remote (its source `s` holds what the expressions read,
 ## its filter selects its rows) and `sql` a character vector, one SQL
@@ -67,7 +71,8 @@
 ## its lineage, see dm_frame_later()). In memory `along` is ignored.
 ##
 ## Getting values into R: dmp_collect(col) returns the values (in memory the
-## vector itself; remotely a SELECT of all rows: only for small data).
+## vector itself; remotely a SELECT of all rows: only for small data). The
+## public collect() calls it, and compute() calls dmc_freeze(table = TRUE).
 ##
 ## ---------------------------------------------------------------------------
 ## Operations on designs
@@ -186,15 +191,18 @@
 ##   dim, dimnames                rows, columns                     done
 ##   as.matrix(D, force)          collected; refused above          done
 ##                                remote_max_rows unless force
-##   D %*% b, D %*% B             table: data columns + predictions done
+##   D %*% b, D %*% B             column (design_column, k = ncol(B)) done
 ##   crossprod(D), (D, s * D),    p x p / p x k matrices            done
 ##   (D, "col" / SQL() / column)
 ##   crossprod(D, numeric w)      no row alignment remotely: error; done (error)
 ##                                use a column or s * D
 ##   colSums/colMeans(s * D,      vectors / G x p matrices          done
 ##     group = col)
-##   rowSums/rowMeans(D)          table (column .rowsum / .rowmean) done
-##   quadratic_diagonal(D, V)     table (column .quad)              done
+##   rowSums/rowMeans(D)          column (labels .rowsum/.rowmean)  done
+##   quadratic_diagonal(D, V)     column (label .quad)              done
+##   design_column(D, "y"/SQL())  column of the remote data         done
+##   collect, as.data.frame,      values in R / data frame (with    done
+##     compute (of a column)      `keep` columns) / temporary table
 ##   qr(D)                        dmqr_chol on X'X with lm()'s      done
 ##                                rule, suspects from products
 ##   qr.coef, qr.qty, qr.R, solve numbers (as in memory)            done
@@ -216,18 +224,20 @@
 ## ---- remote columns ----
 
 ## (`notnull`: columns known never to be NULL, whose sums need no count of
-## missing values)
-dm_rcols <- function(frame, sql, notnull = FALSE) {
+## missing values. An optional `label` field, set by dm_column_label() in
+## the public calls, names the values for as.data.frame().)
+dm_column <- function(frame, sql, notnull = FALSE) {
     ## (parenthesized, so that expressions compose with any operator)
     sql <- as.character(sql)
     sql <- sprintf("(%s)", sql)
-    structure(list(frame = frame, sql = sql, notnull = rep_len(notnull, length(sql))), class = "dm_rcols")
+    structure(list(frame = frame, sql = sql, notnull = rep_len(notnull, length(sql))), class = "design_column")
 }
 
-dm_is_rcols <- function(x) inherits(x, "dm_rcols")
+dm_is_column <- function(x) inherits(x, "design_column")
 
+## (the number of columns k, not of rows; the fitting core relies on it)
 #' @export
-length.dm_rcols <- function(x) length(unclass(x)$sql)
+length.design_column <- function(x) length(unclass(x)$sql)
 
 dm_frame_depth <- function(D) D$depth %||% 0L
 
@@ -265,21 +275,25 @@ dm_frame_later <- function(a, b) {
         prefix <- function(u, v) length(u) < length(v) && identical(u, v[seq_along(u)])
         if (prefix(pa, pb)) return(b)
         if (prefix(pb, pa)) return(a)
-        stop("Columns built on two different branches of the same remote design cannot be combined; ",
-             "build one from the other (`along`) or freeze them together (dmc_cbind()).", call. = FALSE)
+        ## (users meet this with two separate products of one design, as
+        ## D %*% b1 + D %*% b2: remote rows have no key to align them)
+        stop("Columns built on two different branches of the same remote design cannot be combined ",
+             "(remote rows have no key to align them): compute them in one product, as ",
+             "`P <- D %*% cbind(b1, b2)` and then `P[, 1]` and `P[, 2]`; internally, build one from the other ",
+             "(`along`) or freeze them together (dmc_cbind()).", call. = FALSE)
     }
     if (dm_frame_depth(b) > dm_frame_depth(a)) b else a
 }
 
-dm_rcols_frame <- function(...) {
+dm_column_frame <- function(...) {
     f <- NULL
-    for (v in list(...)) if (dm_is_rcols(v)) f <- dm_frame_later(f, unclass(v)$frame)
+    for (v in list(...)) if (dm_is_column(v)) f <- dm_frame_later(f, unclass(v)$frame)
     f
 }
 
 ## SQL of an operand (a remote column, or a number)
-dm_rcols_operand <- function(x) {
-    if (dm_is_rcols(x)) return(unclass(x)$sql)
+dm_column_operand <- function(x) {
+    if (dm_is_column(x)) return(unclass(x)$sql)
     ## (NA is NULL; NaN stays NaN, as in R arithmetic)
     if (length(x) == 1L && is.na(x) && !is.nan(x)) return("CAST(NULL AS DOUBLE)")
     if (is.logical(x) && length(x) == 1L) return(if (x) "TRUE" else "FALSE")
@@ -288,17 +302,17 @@ dm_rcols_operand <- function(x) {
 }
 
 #' @export
-Ops.dm_rcols <- function(e1, e2) {
+Ops.design_column <- function(e1, e2) {
     op <- .Generic
     if (nargs() == 1L) {
-        a <- dm_rcols_operand(e1)
+        a <- dm_column_operand(e1)
         sql <- switch(op, "-" = sprintf("(-%s)", a), "+" = a, "!" = sprintf("(NOT %s)", a),
                       stop(sprintf("`%s` is not supported for remote columns.", op), call. = FALSE))
-        return(dm_rcols(unclass(e1)$frame, sql))
+        return(dm_column(unclass(e1)$frame, sql))
     }
-    frame <- dm_rcols_frame(e1, e2)
-    a <- dm_rcols_operand(e1)
-    b <- dm_rcols_operand(e2)
+    frame <- dm_column_frame(e1, e2)
+    a <- dm_column_operand(e1)
+    b <- dm_column_operand(e2)
     k <- max(length(a), length(b))
     if (!(length(a) %in% c(1L, k)) || !(length(b) %in% c(1L, k)))
         stop("Remote columns with different numbers of columns.", call. = FALSE)
@@ -310,7 +324,7 @@ Ops.dm_rcols <- function(e1, e2) {
     ## the expression), so that NaN or NULL on either side gives NULL.
     if (op %in% c("==", "!=", "<", ">", "<=", ">=")) {
         nn <- function(v, e) {
-            if (dm_is_rcols(e)) return(sprintf("NULLIF(%s, CAST('NaN' AS DOUBLE))", v))
+            if (dm_is_column(e)) return(sprintf("NULLIF(%s, CAST('NaN' AS DOUBLE))", v))
             if (is.nan(e)) "CAST(NULL AS DOUBLE)" else v
         }
         a <- nn(a, e1)
@@ -323,30 +337,30 @@ Ops.dm_rcols <- function(e1, e2) {
         "<" = , ">" = , "<=" = , ">=" = sprintf("(%s %s %s)", a, op, b),
         "&" = sprintf("(%s AND %s)", a, b), "|" = sprintf("(%s OR %s)", a, b),
         stop(sprintf("`%s` is not supported for remote columns.", op), call. = FALSE))
-    dm_rcols(frame, sql)
+    dm_column(frame, sql)
 }
 
 ## is.na() and friends, with R's semantics (NA is NULL remotely): is.na
 ## TRUE for NA or NaN, is.nan for NaN only, is.finite FALSE for NA, NaN and
 ## +-Inf, is.infinite TRUE for +-Inf only. Never NA.
 #' @export
-is.na.dm_rcols <- function(x) !dmc_notnan(x)
+is.na.design_column <- function(x) !dmc_notnan(x)
 
 #' @export
-is.nan.dm_rcols <- function(x)
-    dm_rcols(unclass(x)$frame, sprintf("COALESCE(isnan(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
+is.nan.design_column <- function(x)
+    dm_column(unclass(x)$frame, sprintf("COALESCE(isnan(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
              notnull = TRUE)
 
 #' @export
-is.finite.dm_rcols <- function(x) dmc_is_finite(x)
+is.finite.design_column <- function(x) dmc_is_finite(x)
 
 #' @export
-is.infinite.dm_rcols <- function(x)
-    dm_rcols(unclass(x)$frame, sprintf("COALESCE(isinf(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
+is.infinite.design_column <- function(x)
+    dm_column(unclass(x)$frame, sprintf("COALESCE(isinf(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
              notnull = TRUE)
 
 #' @export
-Math.dm_rcols <- function(x, ...) {
+Math.design_column <- function(x, ...) {
     a <- unclass(x)$sql
     sql <- switch(.Generic,
         exp = sprintf("exp(%s)", a), log = sprintf("ln(%s)", a), sqrt = sprintf("sqrt(%s)", a),
@@ -357,7 +371,7 @@ Math.dm_rcols <- function(x, ...) {
         ## (DuckDB's sign(NaN) is 0, R's NaN)
         sign = sprintf("CASE WHEN isnan(CAST(%s AS DOUBLE)) THEN CAST('NaN' AS DOUBLE) ELSE sign(%s) END", a, a),
         stop(sprintf("%s() is not supported for remote columns.", .Generic), call. = FALSE))
-    dm_rcols(unclass(x)$frame, sql)
+    dm_column(unclass(x)$frame, sql)
 }
 
 ## x^y in SQL (a, b the SQL of the operands, e2 the R operand y), with R's
@@ -366,7 +380,7 @@ Math.dm_rcols <- function(x, ...) {
 ## an infinite power, or -Inf with a power that is not an integer, gives
 ## NaN. A power that is a nonzero integer (as y^2) needs none of this.
 dm_sql_pow <- function(a, b, e2) {
-    if (!dm_is_rcols(e2) && is.numeric(e2) && length(e2) == 1L && is.finite(e2) && e2 != 0 && e2 == round(e2))
+    if (!dm_is_column(e2) && is.numeric(e2) && length(e2) == 1L && is.finite(e2) && e2 != 0 && e2 == round(e2))
         return(sprintf("pow(%s, %s)", a, b))
     sprintf(paste("(CASE WHEN %2$s = 0 OR %1$s = 1 THEN CAST(1 AS DOUBLE)",
                   "WHEN %1$s < 0 AND (isinf(CAST(%2$s AS DOUBLE)) OR (isinf(CAST(%1$s AS DOUBLE)) AND %2$s <> floor(%2$s)))",
@@ -380,28 +394,28 @@ dm_sql_pow <- function(a, b, e2) {
 ## finite number on one side (every use in the fits), the column is kept
 ## where it is missing or beyond the number.
 dmc_pmax <- function(x, y) {
-    f <- dm_rcols_frame(x, y)
+    f <- dm_column_frame(x, y)
     if (is.null(f)) return(pmax(x, y))
     dm_sql_pext(f, x, y, "greatest", "<=")
 }
 
 dmc_pmin <- function(x, y) {
-    f <- dm_rcols_frame(x, y)
+    f <- dm_column_frame(x, y)
     if (is.null(f)) return(pmin(x, y))
     dm_sql_pext(f, x, y, "least", ">=")
 }
 
 dm_sql_pext <- function(f, x, y, fun, cmp) {
-    num <- function(v) !dm_is_rcols(v) && is.numeric(v) && length(v) == 1L && is.finite(v)
-    a <- dm_rcols_operand(x)
-    b <- dm_rcols_operand(y)
+    num <- function(v) !dm_is_column(v) && is.numeric(v) && length(v) == 1L && is.finite(v)
+    a <- dm_column_operand(x)
+    b <- dm_column_operand(y)
     nan <- "CAST('NaN' AS DOUBLE)"
     if (num(x) || num(y)) {
         if (num(x)) { cc <- a; v <- b } else { cc <- b; v <- a }
-        return(dm_rcols(f, sprintf("CASE WHEN NULLIF(%1$s, %3$s) %4$s %2$s THEN %2$s ELSE %1$s END",
+        return(dm_column(f, sprintf("CASE WHEN NULLIF(%1$s, %3$s) %4$s %2$s THEN %2$s ELSE %1$s END",
                                    v, cc, nan, cmp)))
     }
-    dm_rcols(f, sprintf(paste("CASE WHEN NULLIF(%2$s, %3$s) IS NULL THEN %2$s",
+    dm_column(f, sprintf(paste("CASE WHEN NULLIF(%2$s, %3$s) IS NULL THEN %2$s",
                               "WHEN NULLIF(%1$s, %3$s) IS NULL THEN %1$s ELSE %4$s(%1$s, %2$s) END"),
                         a, b, nan, fun))
 }
@@ -409,7 +423,7 @@ dm_sql_pext <- function(f, x, y, fun, cmp) {
 ## (in memory a numeric vector: `no` with `yes` where test is TRUE and NA
 ## where it is NA, as ifelse() but without its copies and attributes)
 dmc_ifelse <- function(test, yes, no) {
-    f <- dm_rcols_frame(test, yes, no)
+    f <- dm_column_frame(test, yes, no)
     if (is.null(f)) {
         n <- length(test)
         ## (one pass in C, which allocates only the result)
@@ -427,29 +441,29 @@ dmc_ifelse <- function(test, yes, no) {
     }
     ## (NULL where test is NULL, as NA in memory; the simple CASE names the
     ## test once)
-    dm_rcols(f, sprintf("(CASE %s WHEN TRUE THEN %s WHEN FALSE THEN %s END)", dm_rcols_operand(test),
-                        dm_rcols_operand(yes), dm_rcols_operand(no)))
+    dm_column(f, sprintf("(CASE %s WHEN TRUE THEN %s WHEN FALSE THEN %s END)", dm_column_operand(test),
+                        dm_column_operand(yes), dm_column_operand(no)))
 }
 
 ## Columns side by side (cbind).
 dmc_cbind <- function(...) {
     args <- list(...)
-    f <- do.call(dm_rcols_frame, args)
+    f <- do.call(dm_column_frame, args)
     if (is.null(f)) return(do.call(cbind, args))
-    dm_rcols(f, unlist(lapply(args, dm_rcols_operand)),
-             notnull = unlist(lapply(args, function(a) if (dm_is_rcols(a)) unclass(a)$notnull else !is.na(a))))
+    dm_column(f, unlist(lapply(args, dm_column_operand)),
+             notnull = unlist(lapply(args, function(a) if (dm_is_column(a)) unclass(a)$notnull else !is.na(a))))
 }
 
 dmc_rowsums <- function(x) {
-    if (!dm_is_rcols(x)) return(if (is.matrix(x)) rowSums(x) else x)
-    dm_rcols(unclass(x)$frame, sprintf("(%s)", paste(unclass(x)$sql, collapse = " + ")))
+    if (!dm_is_column(x)) return(if (is.matrix(x)) rowSums(x) else x)
+    dm_column(unclass(x)$frame, sprintf("(%s)", paste(unclass(x)$sql, collapse = " + ")))
 }
 
 ## distribution functions: stats in memory, DuckDB macros remotely
 dmc_macro <- function(x, fun, macro) {
-    if (!dm_is_rcols(x)) return(fun(x))
+    if (!dm_is_column(x)) return(fun(x))
     dm_sql_macros(unclass(x)$frame)
-    dm_rcols(unclass(x)$frame, sprintf("%s(%s)", macro, unclass(x)$sql))
+    dm_column(unclass(x)$frame, sprintf("%s(%s)", macro, unclass(x)$sql))
 }
 dmc_pnorm <- function(x) dmc_macro(x, stats::pnorm, "dm_pnorm")
 dmc_qnorm <- function(x) dmc_macro(x, stats::qnorm, "dm_qnorm")
@@ -460,29 +474,29 @@ dmc_mexpm1m <- function(x) dmc_macro(x, function(u) -expm1(-u), "dm_mexpm1m")
 ## deviance residuals (in memory the C code of R's family object, in one
 ## pass; remotely the same arithmetic in SQL)
 dmc_logit_inv <- function(e) {
-    if (!dm_is_rcols(e)) return(stats::binomial()$linkinv(e))
+    if (!dm_is_column(e)) return(stats::binomial()$linkinv(e))
     eps <- .Machine$double.eps
     dmc_ifelse(e < -30, eps / (1 + eps), dmc_ifelse(e > 30, (1 / eps) / (1 + 1 / eps), exp(e) / (1 + exp(e))))
 }
 dmc_logit_mu_eta <- function(e) {
-    if (!dm_is_rcols(e)) return(stats::binomial()$mu.eta(e))
+    if (!dm_is_column(e)) return(stats::binomial()$mu.eta(e))
     dmc_ifelse(e > 30 | e < -30, .Machine$double.eps, exp(e) / ((1 + exp(e)) * (1 + exp(e))))
 }
 dmc_binomial_dev <- function(y, mu, w) {
-    if (is.null(dm_rcols_frame(y, mu, w))) return(stats::binomial()$dev.resids(y, mu, w))
+    if (is.null(dm_column_frame(y, mu, w))) return(stats::binomial()$dev.resids(y, mu, w))
     xlogx <- function(a, b) dmc_ifelse(a != 0, a * log(a / b), 0)
     2 * w * (xlogx(y, mu) + xlogx(1 - y, 1 - mu))
 }
 
 ## qcauchy (remotely through tan(): to rounding, where R uses tanpi())
 dmc_qcauchy <- function(x) {
-    if (!dm_is_rcols(x)) return(stats::qcauchy(x))
+    if (!dm_is_column(x)) return(stats::qcauchy(x))
     dmc_ifelse(x <= 0.5, -1 / tan(pi * x), 1 / tan(pi * (1 - x)))
 }
 
 ## The values of a column in R (remotely: all its rows; for small data).
 dmp_collect <- function(x) {
-    if (!dm_is_rcols(x)) return(x)
+    if (!dm_is_column(x)) return(x)
     fr <- unclass(x)$frame
     sql <- unclass(x)$sql
     res <- dm_query(fr, sprintf("SELECT %s FROM (%s) AS s WHERE %s",
@@ -494,7 +508,7 @@ dmp_collect <- function(x) {
 ## ---- sums over rows ----
 
 dm_colsum <- function(x) {
-    if (!dm_is_rcols(x)) {
+    if (!dm_is_column(x)) {
         if (is.matrix(x)) return(colSums(x))
         return(sum(x))
     }
@@ -517,24 +531,24 @@ dm_colsum <- function(x) {
 ## query remotely): a number per argument.
 dmc_sums <- function(...) {
     a <- list(...)
-    if (any(vapply(a, dm_is_rcols, NA))) return(dm_colsum(do.call(dmc_cbind, a)))
+    if (any(vapply(a, dm_is_column, NA))) return(dm_colsum(do.call(dmc_cbind, a)))
     vapply(a, function(v) sum(v), 0)
 }
 
 ## The mean of a column (in memory as mean() computes it).
-dmc_mean <- function(x) if (dm_is_rcols(x)) dm_colsum(x) / dm_nrows(x) else mean(x)
+dmc_mean <- function(x) if (dm_is_column(x)) dm_colsum(x) / dm_nrows(x) else mean(x)
 
 ## "sql" for a remote design, "" in memory.
 dm_engine <- function(x) if (inherits(x, "dm_remote")) "sql" else ""
 
 dm_nrows <- function(x) {
     if (inherits(x, "dm_remote")) return(x$cache$n %||% x$n)
-    if (dm_is_rcols(x)) return(dm_nrows(unclass(x)$frame))
+    if (dm_is_column(x)) return(dm_nrows(unclass(x)$frame))
     NROW(x)
 }
 
 dmp_colnorms <- function(x) {
-    if (!dm_is_rcols(x)) return(.Call(C_dm_col_norms, if (is.matrix(x)) x else matrix(x, ncol = 1L)))
+    if (!dm_is_column(x)) return(.Call(C_dm_col_norms, if (is.matrix(x)) x else matrix(x, ncol = 1L)))
     sqrt(dm_colsum(x * x))
 }
 
@@ -542,7 +556,7 @@ dmp_colnorms <- function(x) {
 
 dmp_column <- function(x, sql) {
     if (is.null(sql)) return(NULL)
-    if (inherits(x, "dm_remote")) return(dm_rcols(x, sql))
+    if (inherits(x, "dm_remote")) return(dm_column(x, sql))
     sql
 }
 
@@ -557,13 +571,13 @@ dm_rebase <- function(x, frame) {
 }
 
 dm_along_frame <- function(x, along) {
-    f <- do.call(dm_rcols_frame, as.list(along))
+    f <- do.call(dm_column_frame, as.list(along))
     if (is.null(f)) x else dm_rebase(x, f)
 }
 
 dmp_scale <- function(x, s) {
     if (is.null(s)) return(x)
-    if (!dm_is_rcols(s)) return(s * x)
+    if (!dm_is_column(s)) return(s * x)
     x <- dm_rebase(x, unclass(s)$frame)
     x$scale <- dm_remote_scale_sql(x, DBI::SQL(unclass(s)$sql), "*")
     x
@@ -580,7 +594,7 @@ dm_with_columns <- function(x, col, nm) {
 
 dmp_crossprod <- function(x, y = NULL) {
     if (is.null(y)) return(crossprod(x))
-    if (inherits(x, "dm_remote") && !inherits(y, "dm_remote") && !dm_is_rcols(y))
+    if (inherits(x, "dm_remote") && !inherits(y, "dm_remote") && !dm_is_column(y))
         stop("`y` must be a design or a column.", call. = FALSE)
     crossprod(x, y)
 }
@@ -592,7 +606,7 @@ dmp_colsums <- function(x, group = NULL) {
 ## SQL GROUP BY over the frame of columns: list(groups (a data frame of the
 ## group values, sorted as rowsum() sorts them), sums (matrix)).
 dm_group_query <- function(groups, values, nulls = FALSE) {
-    fr <- do.call(dm_rcols_frame, c(groups, values))
+    fr <- do.call(dm_column_frame, c(groups, values))
     gs <- vapply(groups, function(g) unclass(g)$sql, "")
     vs <- unlist(lapply(values, function(v) unclass(v)$sql))
     items <- c(sprintf("%s AS g%d", gs, seq_along(gs)),
@@ -605,7 +619,7 @@ dm_group_query <- function(groups, values, nulls = FALSE) {
 
 dmp_groupsum <- function(col, group) {
     if (dm_is_codes(group)) return(dmp_groupsum_codes(col, group))
-    if (!dm_is_rcols(col) && !dm_is_rcols(group)) {
+    if (!dm_is_column(col) && !dm_is_column(group)) {
         return(rowsum(if (is.matrix(col)) col else matrix(col, ncol = 1L), group, reorder = TRUE))
     }
     res <- dm_group_query(list(group), list(col), nulls = TRUE)
@@ -625,7 +639,7 @@ dmp_groupsum <- function(col, group) {
 
 dmp_crosstab <- function(a, b, w = NULL) {
     if (dm_is_codes(a) && dm_is_codes(b)) return(dmp_crosstab_codes(a, b, w))
-    if (!dm_is_rcols(a) && !dm_is_rcols(b) && !dm_is_rcols(w)) {
+    if (!dm_is_column(a) && !dm_is_column(b) && !dm_is_column(w)) {
         ua <- sort(unique(a), na.last = TRUE, method = "quick")
         ub <- sort(unique(b), na.last = TRUE, method = "quick")
         return(Matrix::sparseMatrix(i = match(a, ua), j = match(b, ub),
@@ -659,7 +673,7 @@ dmp_mult <- function(x, B, along = list()) {
     fr$src$types <- vapply(proto, dm_col_type, "")
     fr$depth <- dm_frame_depth(x) + 1L
     fr <- dm_frame_child(fr, x)
-    dm_rcols(fr, sprintf("s.%s", dm_qi(x, nm)))
+    dm_column(fr, sprintf("s.%s", dm_qi(x, nm)))
 }
 
 dmp_quad <- function(x, V, along = list()) {
@@ -675,7 +689,7 @@ dmp_quad <- function(x, V, along = list()) {
                               list(V, if (is.null(g)) NULL else g$first, design_threads())))
         return(if (is.null(g)) q else q[g$map])
     }
-    zero <- dm_rcols(dm_along_frame(x, along), "CAST(0 AS DOUBLE)")
+    zero <- dm_column(dm_along_frame(x, along), "CAST(0 AS DOUBLE)")
     if (ncol(V) == 0L) return(zero)
     e <- eigen(V, symmetric = TRUE)
     keep <- e$values > 0
@@ -734,11 +748,11 @@ dmp_output <- function(x, cols, memory = identity, na = NULL, design = FALSE, at
     taken <- intersect(names(cols), names(x$src$types))
     if (length(taken)) stop(sprintf("The remote data already has a column `%s`.", taken[1L]), call. = FALSE)
     if (design) return(dm_with_columns(x, do.call(dmc_cbind, unname(cols)), names(cols)))
-    fr <- dm_rebase(dm_remote_unscaled(x), do.call(dm_rcols_frame, unname(cols)))
+    fr <- dm_rebase(dm_remote_unscaled(x), do.call(dm_column_frame, unname(cols)))
     srccols <- names(x$src$types)
     items <- vapply(names(cols), function(nm) {
         v <- cols[[nm]]
-        sprintf("%s AS %s", if (dm_is_rcols(v)) unclass(v)$sql else dm_rcols_operand(v), dm_qi(fr, nm))
+        sprintf("%s AS %s", if (dm_is_column(v)) unclass(v)$sql else dm_column_operand(v), dm_qi(fr, nm))
     }, "")
     sel <- sprintf("SELECT %s FROM (%s) AS s WHERE %s",
                    paste(c(paste0("s.", dm_qi(fr, srccols)), items), collapse = ", "), fr$src$select, fr$filter)
@@ -831,7 +845,7 @@ dm_sql_macros <- function(D) {
 ## (zeros for empty groups), without labels, and use one-pass C kernels in
 ## memory (src/fe.c).
 dmc_codes <- function(codes, G) {
-    if (!dm_is_rcols(codes)) codes <- as.integer(codes)
+    if (!dm_is_column(codes)) codes <- as.integer(codes)
     structure(list(codes = codes, G = as.integer(G)), class = "dm_codes")
 }
 
@@ -840,7 +854,7 @@ dm_is_codes <- function(x) inherits(x, "dm_codes")
 ## sums of columns within coded groups: G x k
 dmp_groupsum_codes <- function(col, group) {
     G <- group$G
-    if (!dm_is_rcols(col) && !dm_is_rcols(group$codes)) {
+    if (!dm_is_column(col) && !dm_is_column(group$codes)) {
         ## (the kernel takes a vector as one column: no copy of a double)
         W <- col
         if (!is.double(W)) storage.mode(W) <- "double"
@@ -864,11 +878,11 @@ dmp_groupsum_codes <- function(col, group) {
 ## memory those calls; remotely one query (GROUP BY GROUPING SETS), whose
 ## rows the frame computes once (the frame of residuals, with its joins).
 dmc_groupsums <- function(col, groups, total = NULL) {
-    remote <- dm_is_rcols(col) && all(vapply(groups, function(g) dm_is_rcols(g$codes), NA))
+    remote <- dm_is_column(col) && all(vapply(groups, function(g) dm_is_column(g$codes), NA))
     if (!remote || length(groups) + (!is.null(total)) < 2L)
         return(list(groups = lapply(groups, function(g) dmp_groupsum(col, g)),
                     total = if (!is.null(total)) dm_colsum(total)))
-    fr <- do.call(dm_rcols_frame, c(list(col, total), lapply(groups, `[[`, "codes")))
+    fr <- do.call(dm_column_frame, c(list(col, total), lapply(groups, `[[`, "codes")))
     gs <- vapply(groups, function(g) unclass(g$codes)$sql, "")
     vs <- unclass(col)$sql
     ts <- if (!is.null(total)) unclass(total)$sql else character()
@@ -909,7 +923,7 @@ dmc_groupsums <- function(col, groups, total = NULL) {
 
 ## weighted counts by pair of coded groups: Ga x Gb dgCMatrix
 dmp_crosstab_codes <- function(a, b, w = NULL) {
-    if (!dm_is_rcols(a$codes) && !dm_is_rcols(b$codes) && !dm_is_rcols(w)) {
+    if (!dm_is_column(a$codes) && !dm_is_column(b$codes) && !dm_is_column(w)) {
         ## (the kernel returns the transposes of the crosstabs of its first
         ## argument with the others, and is fastest when the first is
         ## sorted)
@@ -942,7 +956,7 @@ dm_ct_matrix <- function(ct, nr, nc) {
 dmp_colsums_groups <- function(x, groups, extra = NULL) {
     if (inherits(x, "dm_remote")) {
         s <- x$scale
-        one <- dm_rcols(dm_remote_unscaled(x), if (is.null(s)) "CAST(1 AS DOUBLE)" else s)
+        one <- dm_column(dm_remote_unscaled(x), if (is.null(s)) "CAST(1 AS DOUBLE)" else s)
         ## (the sums of the scale and extra, for every grouping: one query)
         ns <- dmc_groupsums(if (is.null(extra)) one else dmc_cbind(one, one * extra), groups)$groups
         return(lapply(seq_along(groups), function(k) {
@@ -1064,48 +1078,48 @@ dm_colsums_struct_ok <- function(D, G) {
 ## ---- more column functions (requested by the GLM work) ----
 
 ## the number of columns of a column
-dmc_ncol <- function(x) if (dm_is_rcols(x)) length(x) else NCOL(x)
+dmc_ncol <- function(x) if (dm_is_column(x)) length(x) else NCOL(x)
 
 ## one column of a multi-column column
 dmc_col <- function(x, j) {
-    if (!dm_is_rcols(x)) return(if (is.matrix(x)) x[, j] else x)
-    dm_rcols(unclass(x)$frame, unclass(x)$sql[j])
+    if (!dm_is_column(x)) return(if (is.matrix(x)) x[, j] else x)
+    dm_column(unclass(x)$frame, unclass(x)$sql[j])
 }
 
 ## a constant column over the rows of a column's frame (or a design)
 dmc_const <- function(like, value) {
-    if (inherits(like, "dm_remote")) return(dm_rcols(like, dm_sql_double(value)))
-    if (!dm_is_rcols(like)) return(rep(as.double(value), NROW(like)))
-    dm_rcols(unclass(like)$frame, dm_sql_double(value))
+    if (inherits(like, "dm_remote")) return(dm_column(like, dm_sql_double(value)))
+    if (!dm_is_column(like)) return(rep(as.double(value), NROW(like)))
+    dm_column(unclass(like)$frame, dm_sql_double(value))
 }
 
 dmc_lgamma <- function(x) {
-    if (!dm_is_rcols(x)) return(lgamma(x))
-    dm_rcols(unclass(x)$frame, sprintf("lgamma(%s)", unclass(x)$sql))
+    if (!dm_is_column(x)) return(lgamma(x))
+    dm_column(unclass(x)$frame, sprintf("lgamma(%s)", unclass(x)$sql))
 }
 
 ## round half to even, as R's round(x)
 dmc_round <- function(x) {
-    if (!dm_is_rcols(x)) return(round(x))
-    dm_rcols(unclass(x)$frame, sprintf("round_even(%s, 0)", unclass(x)$sql))
+    if (!dm_is_column(x)) return(round(x))
+    dm_column(unclass(x)$frame, sprintf("round_even(%s, 0)", unclass(x)$sql))
 }
 
 ## is.finite, NaN-safe (in DuckDB, NaN = NaN and NaN > 0 are true)
 dmc_is_finite <- function(x) {
-    if (!dm_is_rcols(x)) return(is.finite(x))
-    dm_rcols(unclass(x)$frame, sprintf("COALESCE(isfinite(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql))
+    if (!dm_is_column(x)) return(is.finite(x))
+    dm_column(unclass(x)$frame, sprintf("COALESCE(isfinite(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql))
 }
 
 ## TRUE where x is not missing, FALSE where it is NA or NaN (NULL remotely);
 ## infinite values count as present. Never NA, so that !dmc_notnan(x)
 ## counts the missing values. (In memory one pass in C for a plain vector.)
 dmc_notnan <- function(x) {
-    if (!dm_is_rcols(x)) {
+    if (!dm_is_column(x)) {
         if (is.null(attributes(x)) && (is.double(x) || is.integer(x) || is.logical(x)))
             return(.Call(C_dm_notnan, x))
         return(!is.na(x))
     }
-    dm_rcols(unclass(x)$frame, sprintf("COALESCE(NOT isnan(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
+    dm_column(unclass(x)$frame, sprintf("COALESCE(NOT isnan(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
              notnull = TRUE)
 }
 
@@ -1113,12 +1127,12 @@ dmc_notnan <- function(x) {
 ## TRUE: FALSE or missing), as a column to sum: 1 or 0. In memory a logical
 ## vector, which sums as 0/1.
 dmc_count <- function(cond, negate = FALSE) {
-    if (!dm_is_rcols(cond)) {
+    if (!dm_is_column(cond)) {
         if (anyNA(cond)) cond <- !is.na(cond) & cond
         return(if (negate) !cond else cond)
     }
     sql <- unclass(cond)$sql
-    dm_rcols(unclass(cond)$frame, sprintf(if (negate) "CASE WHEN %s THEN 0 ELSE 1 END" else "CASE WHEN %s THEN 1 ELSE 0 END", sql),
+    dm_column(unclass(cond)$frame, sprintf(if (negate) "CASE WHEN %s THEN 0 ELSE 1 END" else "CASE WHEN %s THEN 1 ELSE 0 END", sql),
              notnull = TRUE)
 }
 
@@ -1134,7 +1148,7 @@ dmc_count <- function(cond, negate = FALSE) {
 ## read, such as the working weights and responses of a GLM with fixed
 ## effects); its rows keep the filter of the design.
 dmc_freeze <- function(col, table = FALSE) {
-    if (!dm_is_rcols(col)) return(col)
+    if (!dm_is_column(col)) return(col)
     fr <- unclass(col)$frame
     sql <- unclass(col)$sql
     nm <- paste0("__dm_f", substr(dm_tmp_name("f"), 3L, 10L), "_", seq_along(sql))
@@ -1142,7 +1156,7 @@ dmc_freeze <- function(col, table = FALSE) {
     if (table) x <- dm_remote_to_table(x)
     x$depth <- dm_frame_depth(fr) + 1L
     x <- dm_frame_child(x, fr)
-    dm_rcols(x, sprintf("s.%s", dm_qi(x, nm)))
+    dm_column(x, sprintf("s.%s", dm_qi(x, nm)))
 }
 
 ## The frame of a remote design as a temporary table of its rows used (with
@@ -1171,7 +1185,7 @@ dm_remote_used <- function(x, cols) {
     sql <- function(v) {
         if (is.null(v)) return(character())
         if (dm_is_codes(v)) return(sql(v$codes))
-        if (dm_is_rcols(v)) return(unclass(v)$sql)
+        if (dm_is_column(v)) return(unclass(v)$sql)
         if (is.list(v)) return(unlist(lapply(v, sql), use.names = FALSE))
         character()
     }
@@ -1207,7 +1221,7 @@ finite_rows <- function(x) {
     ## a remote design: a logical column (every entry of the row finite)
     if (inherits(x, "dm_remote")) {
         P <- dmp_mult(x, diag(1, ncol(x)))
-        return(dm_rcols(unclass(P)$frame,
+        return(dm_column(unclass(P)$frame,
                         paste(sprintf("COALESCE(isfinite(%s), FALSE)", unclass(P)$sql), collapse = " AND ")))
     }
     checkmate::assert_class(x, "design_matrix")
@@ -1249,11 +1263,11 @@ dmp_min_nonzero <- function(x) {
 dmp_y <- function(x, y) {
     if (!inherits(x, "dm_remote")) return(dmqr_y(y, nrow(x)))
     D <- dm_remote_unscaled(x)
-    if (dm_is_rcols(y)) return(list(Y = y, vec = length(y) == 1L, cols = NULL))
-    if (inherits(y, "SQL")) return(list(Y = dm_rcols(D, as.character(y)), vec = TRUE, cols = NULL))
+    if (dm_is_column(y)) return(list(Y = y, vec = length(y) == 1L, cols = NULL))
+    if (inherits(y, "SQL")) return(list(Y = dm_column(D, as.character(y)), vec = TRUE, cols = NULL))
     if (is.character(y)) {
         dm_remote_column(D, y, "y", several = TRUE)
-        return(list(Y = dm_rcols(D, sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, y))), vec = length(y) == 1L,
+        return(list(Y = dm_column(D, sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, y))), vec = length(y) == 1L,
                     cols = if (length(y) > 1L) y))
     }
     stop("For a remote design, `y` must name columns of its data, or be a DBI::SQL() expression.", call. = FALSE)
@@ -1267,11 +1281,11 @@ dmp_y <- function(x, y) {
 ## for instance with dmc_on()).
 dmp_subset <- function(x, keep) {
     if (!inherits(x, "dm_remote")) {
-        if (dm_is_rcols(keep)) stop("A remote column cannot select rows of a design in memory.", call. = FALSE)
+        if (dm_is_column(keep)) stop("A remote column cannot select rows of a design in memory.", call. = FALSE)
         return(x[if (is.logical(keep) && !anyNA(keep)) keep else !is.na(keep) & keep, ])
     }
-    if (inherits(keep, "SQL")) keep <- dm_rcols(x, as.character(keep))
-    if (!dm_is_rcols(keep))
+    if (inherits(keep, "SQL")) keep <- dm_column(x, as.character(keep))
+    if (!dm_is_column(keep))
         stop("Rows of a remote design are selected by a logical remote column or a DBI::SQL() predicate.",
              call. = FALSE)
     out <- dm_rebase(x, dm_frame_later(unclass(keep)$frame, x))
@@ -1287,8 +1301,8 @@ dmp_subset <- function(x, keep) {
 ## the column itself). Valid when its expressions read columns of the
 ## source of x.
 dmc_on <- function(col, x) {
-    if (!dm_is_rcols(col)) return(col)
-    dm_rcols(x, unclass(col)$sql)
+    if (!dm_is_column(col)) return(col)
+    dm_column(x, unclass(col)$sql)
 }
 
 ## ---- arguments of a fit (round 7 of 2hba) ----
@@ -1335,7 +1349,7 @@ dmp_resolve <- function(x, exprs, env, logical = character(), data = NULL) {
             sqls[[nm]] <- if (nm %in% logical) sprintf("s.%s", col) else sprintf("CAST(s.%s AS DOUBLE)", col)
         }
     }
-    cols <- lapply(names(exprs), function(nm) if (is.null(sqls[[nm]])) NULL else dm_rcols(x, sqls[[nm]]))
+    cols <- lapply(names(exprs), function(nm) if (is.null(sqls[[nm]])) NULL else dm_column(x, sqls[[nm]]))
     names(cols) <- names(exprs)
     list(x = x, cols = cols, evaluated = items)
 }

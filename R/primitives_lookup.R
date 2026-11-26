@@ -66,7 +66,7 @@ dmc_lookup <- function(values, key, levels = NULL, along = list()) {
         as.double(values)
     }
     if (dm_is_codes(key)) key <- key$codes
-    if (!dm_is_rcols(key)) {
+    if (!dm_is_column(key)) {
         if (is.null(levels)) {
             if (!is.integer(key)) key <- as.integer(key)
             ## (a matrix of values gives an n x k matrix, in one call)
@@ -81,7 +81,7 @@ dmc_lookup <- function(values, key, levels = NULL, along = list()) {
     }
     vm <- if (mat) values else matrix(values, ncol = 1L)
     vcols <- paste0("v", seq_len(ncol(vm)))
-    frame <- do.call(dm_rcols_frame, c(list(key), as.list(along)))
+    frame <- do.call(dm_column_frame, c(list(key), as.list(along)))
     con <- dm_con(frame)
     q <- function(x) dm_qi(frame, x)
     ksql <- unclass(key)$sql
@@ -113,7 +113,7 @@ dmc_lookup <- function(values, key, levels = NULL, along = list()) {
     fr$src$types <- vapply(fr$src$proto, dm_col_type, "")
     fr$depth <- dm_frame_depth(frame) + 1L
     fr <- dm_frame_child(fr, frame)
-    dm_rcols(fr, sprintf("s.%s", q(col)))
+    dm_column(fr, sprintf("s.%s", q(col)))
 }
 
 dmc_lookup_flags <- function(flags, key, along = list()) {
@@ -156,7 +156,7 @@ dmc_key <- function(x, vars, data = NULL) {
     if (inherits(x, "dm_remote")) {
         miss <- setdiff(vars, names(x$src$types))
         if (length(miss)) stop(sprintf("No column `%s` in the remote data.", miss[1L]), call. = FALSE)
-        return(dm_rcols(x, sprintf("s.%s", dm_qi(x, vars))))
+        return(dm_column(x, sprintf("s.%s", dm_qi(x, vars))))
     }
     d <- if (is.null(data)) x$vars else data
     miss <- setdiff(vars, names(d))
@@ -171,7 +171,7 @@ dmc_key <- function(x, vars, data = NULL) {
 ## cannot be NaN: only IS NOT NULL (isnan() would not take text); a double
 ## column, or any other expression, is NaN-checked as well.
 dmc_not_na <- function(key) {
-    if (!dm_is_rcols(key)) return(if (anyNA(key)) stats::complete.cases(key) else rep(TRUE, NROW(key)))
+    if (!dm_is_column(key)) return(if (anyNA(key)) stats::complete.cases(key) else rep(TRUE, NROW(key)))
     frame <- unclass(key)$frame
     sql <- unclass(key)$sql
     types <- frame$src$types
@@ -179,11 +179,11 @@ dmc_not_na <- function(key) {
     plain <- !is.na(cols) & !types[cols] %in% "double"
     one <- ifelse(plain, sprintf("(%s) IS NOT NULL", sql),
                   sprintf("COALESCE(NOT isnan(CAST(%s AS DOUBLE)), FALSE)", sql))
-    dm_rcols(frame, sprintf("(%s)", paste(one, collapse = " AND ")))
+    dm_column(frame, sprintf("(%s)", paste(one, collapse = " AND ")))
 }
 
 dmc_dense_codes <- function(key, along = list()) {
-    if (!dm_is_rcols(key)) {
+    if (!dm_is_column(key)) {
         cd <- dm_fe_code_term(key, names(key))
         ## (in memory, also the rows per level: n)
         return(list(codes = dmc_codes(cd$codes, cd$G), levels = cd$levels, n = cd$n))
@@ -273,14 +273,14 @@ dm_fe_code_term <- function(d, vars) {
 dmc_subset <- function(col, keep, x2) {
     if (is.null(col)) return(NULL)
     if (dm_is_codes(col)) stop("Codes change with the rows: compute them again.", call. = FALSE)
-    if (dm_is_rcols(col)) return(dmc_on(col, x2))
+    if (dm_is_column(col)) return(dmc_on(col, x2))
     k <- if (is.logical(keep) && !anyNA(keep)) keep else !is.na(keep) & keep
     if (is.data.frame(col) || is.matrix(col)) col[k, , drop = FALSE] else col[k]
 }
 
 dmp_nested <- function(a, b) {
     if (identical(a, b)) return(TRUE)
-    if (!dm_is_rcols(a$codes) && !dm_is_rcols(b$codes))
+    if (!dm_is_column(a$codes) && !dm_is_column(b$codes))
         return(.Call(C_dm_fe_nested, a$codes, b$codes, b$G))
     ct <- dmp_crosstab(a, b) # Ga x Gb
     all(diff(ct@p) == 1L)

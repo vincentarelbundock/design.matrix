@@ -18,7 +18,7 @@ dm$g <- factor(dm$g)
 modes <- list(memory = list(name = "memory", data = list(dm)))
 has_duckdb <- requireNamespace("duckdb", quietly = TRUE) && requireNamespace("DBI", quietly = TRUE)
 if (has_duckdb) {
-    con <- DBI::dbConnect(duckdb::duckdb())
+    con <- test_con()
     DBI::dbWriteTable(con, "d", d)
     pq <- tempfile(fileext = ".parquet")
     DBI::dbExecute(con, sprintf("COPY d TO '%s' (FORMAT PARQUET)", pq))
@@ -216,5 +216,5 @@ expect_error(design_glm(yp ~ x, fam_other, dm), "supports the families")
 expect_error(design_glm(yp ~ x, quasi(variance = "mu", link = power(1/3)), dm), "supports the families")
 if (has_duckdb) {
     expect_error(design_glm(yp ~ x, fam_other, con, table = "d"), "supports the families")
-    DBI::dbDisconnect(con)
+    test_con_done(con)
 }
