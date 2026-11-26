@@ -104,7 +104,8 @@
 #'   parameters; `fixef()` (the generic of fixest or nlme, when loaded)
 #'   returns the FE values, also in `fit$fixef`, normalized as for
 #'   [design_lm()]; `predict()` gives the link or the response (`NA` for
-#'   levels not in the fit); remotely, per-row results are tables.
+#'   levels not in the fit); remotely, per-row results are tables. The in-sample
+#'   methods read the training source when called.
 #'   `fit$fe_iter` holds the iterations of conjugate gradients of each
 #'   step (0 for a direct solve).
 #' * Not supported with FE: `start`, `compress = TRUE` (compression is

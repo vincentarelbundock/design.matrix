@@ -685,14 +685,13 @@ dm_fe_suspects <- function(x, cols, A, xcols, M, scale, dxx, tol) {
 ## x and the response z (weights w, NULL for none; n rows), and the total
 ## sum of squares of z around its weighted mean.
 dm_fe_moments <- function(x, z, w, xcols, n) {
-    wz <- if (is.null(w)) z else w * z
-    xtx <- unname(if (is.null(w)) dmp_crossprod(x) else dmp_crossprod(x, dmp_scale(x, w)))
-    xty <- unname(dmp_crossprod(x, wz))[, 1L]
-    sm <- dmc_moments(z, w, n)
+    mo <- lm_moments(x, z, w, n)
+    xtx <- unname(mo$xtx)
+    xty <- unname(mo$xty)[, 1L]
     if (!all(is.finite(xtx)) || !all(is.finite(xty))) stop("NA/NaN/Inf in 'x'", call. = FALSE)
     XtX <- xtx[xcols, xcols, drop = FALSE]
     Xty <- xty[xcols]
-    list(M = rbind(cbind(XtX, Xty), c(Xty, sm[1L])), tss = sm[4L])
+    list(M = rbind(cbind(XtX, Xty), c(Xty, mo$yty)), tss = mo$tss)
 }
 
 ## The residuals e = z - X b - sum_k fe_k[code_k] of a fit with FE (b: the
@@ -704,7 +703,8 @@ dm_fe_residuals <- function(x, cols, xcols, b, fe) {
     ## (remotely the product and the lookups of the FE bind on the frame of
     ## z and w, at the sums of dmc_fe_resid())
     r <- dmc_fe_resid(cols$z, dmp_mult(x, beta), cols$w, fe, cols$codes)
-    list(xte = unname(dmp_crossprod(x, r[[1L]]))[, 1L], Be = lapply(r[[2L]], function(m) m[, 1L]),
+    xte <- dmp_crossprod(x, r[[1L]], compress = FALSE)
+    list(xte = unname(xte)[, 1L], Be = lapply(r[[2L]], function(m) m[, 1L]),
          rss = r[[3L]], we = drop(r[[1L]]))
 }
 
@@ -900,7 +900,8 @@ dm_fe_uncenter <- function(est, Tm, icol) {
 #'   `predict(fit, newdata)` is `X b` plus the FE values of the rows' levels
 #'   (`NA` for levels not in the fit). With remote data, `fitted()` and
 #'   `predict()` return tables and `residuals()` a remote design, as for
-#'   remote fits without FE.
+#'   remote fits without FE. These methods read the source rows when called;
+#'   keep the training source available and unchanged for in-sample results.
 #' * Offsets (the `offset` argument and `offset()` terms) are subtracted
 #'   from the response, as in [fixest::feols()]; `fitted()` and `predict()`
 #'   include them.
@@ -1044,11 +1045,7 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
     rm1 <- isTRUE(bounds$one) && fixef.rm %in% c("infinite_coef", "perfect_fit")
     nsingle <- nperfect <- 0
     repeat {
-        cds <- unname(lapply(keys, dmc_dense_codes))
-        ## (remotely the codes, read one by one below, bound together on one
-        ## frame, so that they still combine)
-        bound <- dmc_bind(lapply(cds, `[[`, "codes"))
-        for (k in seq_along(cds)) cds[[k]]$codes <- bound[[k]]
+        cds <- unname(lapply(keys, dmc_dense_codes, raw = TRUE))
         if (!rm_single && !rm0 && !rm1) break
         ## per level: rows, rows with a response not 0, not 1 (without
         ## bounds, the rows per level: no columns to form; in memory they
@@ -1091,26 +1088,17 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
     if (!is.null(clv)) {
         m <- match(clv, names(pf$fe))
         if (is.na(m)) {
-            cl <- dmc_dense_codes(clkey)$codes
+            cl <- dmc_dense_codes(clkey, raw = TRUE)$codes
         } else {
             cl <- cds[[m]]$codes
         }
         if (cl$G < 2L) stop("Clustered standard errors need at least two clusters.", call. = FALSE)
     }
-    ## the design over the latest frame of the columns (remotely their
-    ## pending codes bound together, one on the other: one chain of frames)
-    ## Remotely the rows used are then copied to a temporary table
-    ## (dmp_materialize()), which every later query scans, instead of
-    ## recomputing the codes' joins; x_rows keeps the design over the data,
-    ## whose rows not used pad the results with na.exclude.
-    used <- list(z, w, more, lapply(cds, `[[`, "codes"), cl)
-    x <- dmp_rebase(x, used)
-    x_rows <- x
-    ## (remotely, only the columns that the design and these columns read)
-    x <- dmp_materialize(x, cols = used)
+    ## Keep the filtered source for grouped summaries and on-demand row outputs.
+    x <- dmp_rebase(x, list(z, w, more, lapply(cds, `[[`, "codes"), cl))
     on <- function(col) dmc_on(col, x)
-    oncodes <- function(g) if (!is.null(g)) dmc_codes(on(g$codes), g$G)
-    list(x = x, x_rows = x_rows,
+    oncodes <- function(g) dm_cols_map(g, on)
+    list(x = x, x_rows = x,
          cols = list(z = on(z), w = on(w), codes = lapply(cds, function(cd) oncodes(cd$codes)), cl = oncodes(cl)),
          more = lapply(more, on), levels = lapply(cds, `[[`, "levels"), nsingle = as.integer(nsingle),
          nperfect = as.integer(nperfect), rows = rows)
@@ -1123,7 +1111,7 @@ dm_fe_estimate <- function(x, cols, tol, cluster) {
     ctr <- if (isTRUE(getOption("design.matrix.fe_center", TRUE))) dmp_center(x) else NULL
     if (!is.null(ctr)) {
         xc <- ctr$x
-        on <- function(g) if (is.null(g)) NULL else dmc_codes(dmc_on(g$codes, xc), g$G)
+        on <- function(g) dm_cols_map(g, function(col) dmc_on(col, xc))
         cc <- list(z = dmc_on(cols$z, xc), w = dmc_on(cols$w, xc), codes = lapply(cols$codes, on),
                    cl = on(cols$cl))
         est <- dm_fe_core(xc, cc, tol, opts, cluster)

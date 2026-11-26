@@ -67,7 +67,10 @@ dmc_lookup <- function(values, key, levels = NULL) {
     } else {
         as.double(values)
     }
-    if (dm_is_codes(key)) key <- key$codes
+    if (dm_is_codes(key)) {
+        levels <- key$levels %||% levels
+        key <- key$codes
+    }
     if (!dm_is_column(key)) {
         if (is.null(levels)) {
             if (!is.integer(key)) key <- as.integer(key)
@@ -183,7 +186,7 @@ dmc_complete <- function(key) {
     dm_column(frame, sprintf("(%s)", paste(one, collapse = " AND ")))
 }
 
-dmc_dense_codes <- function(key) {
+dmc_dense_codes <- function(key, raw = FALSE) {
     if (!dm_is_column(key)) {
         cd <- dm_fe_code_term(key, names(key))
         ## (in memory, also the rows per level: n)
@@ -193,15 +196,34 @@ dmc_dense_codes <- function(key) {
     key <- dm_column_bind(key)
     frame <- unclass(key)$frame
     sql <- unclass(key)$sql
-    lv <- dm_query(frame, sprintf("SELECT DISTINCT %s FROM (%s) AS s WHERE %s",
-                                  paste(sprintf("%s AS k%d", sql, seq_along(sql)), collapse = ", "),
-                                  frame$src$select, frame$filter))
+    fields <- sprintf("%s AS k%d", sql, seq_along(sql))
+    composite <- raw && length(sql) > 1L
+    if (composite) {
+        ## A lossless scalar key for GROUPING SETS and joins on a tuple.
+        ## Keep the original columns for R's level order and fixef labels.
+        parts <- paste(sprintf("%s, 'ASC NULLS LAST'", sql), collapse = ", ")
+        tuple <- sprintf("hex(create_sort_key(%s))", parts)
+        fields <- c(fields, sprintf("%s AS tuple", tuple))
+    }
+    select <- if (raw) "SELECT" else "SELECT DISTINCT"
+    if (raw) fields <- c(fields, "COUNT(*) AS n")
+    lv <- dm_query(frame, paste(select, paste(fields, collapse = ", "), "FROM (",
+                                frame$src$select, ") AS s WHERE", frame$filter,
+                                if (raw) "GROUP BY ALL" else ""))
+    counts <- lv$n
+    tuple_values <- lv$tuple
+    lv$n <- lv$tuple <- NULL
     for (j in seq_along(lv)) if (is.factor(lv[[j]])) lv[[j]] <- as.character(lv[[j]])
-    ## (sorted as in memory, dm_fe_code(): radix order, strings in the C locale)
-    lv <- lv[do.call(order, c(unname(as.list(lv)), method = "radix")), , drop = FALSE]
+    ord <- do.call(order, c(unname(as.list(lv)), method = "radix"))
+    lv <- lv[ord, , drop = FALSE]
     rownames(lv) <- NULL
-    codes <- dmc_lookup(seq_len(nrow(lv)), key, lv)
-    list(codes = dmc_codes(codes, nrow(lv)), levels = lv)
+    if (!raw) {
+        codes <- dmc_lookup(seq_len(nrow(lv)), key, lv)
+        return(list(codes = dmc_codes(codes, nrow(lv)), levels = lv))
+    }
+    g <- dmc_codes(if (composite) dm_column(frame, tuple) else key, nrow(lv))
+    g$levels <- if (composite) data.frame(tuple = tuple_values[ord]) else lv
+    list(codes = g, levels = lv, n = counts[ord])
 }
 
 ## ---- codes in memory (dmc_dense_codes()) ----

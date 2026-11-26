@@ -1005,7 +1005,14 @@ dm_with_columns <- function(x, col, nm) {
     x
 }
 
-dmp_crossprod <- function(x, y = NULL) {
+dmp_crossprod <- function(x, y = NULL, compress = TRUE) {
+    ## A refinement step reads the residual column once. Skip the pattern
+    ## estimate and aggregate its products directly.
+    if (!compress && inherits(x, "dm_remote") && dm_is_column(y)) {
+        yc <- dm_remote_cols(x, y, "y")
+        return(dm_remote_moments(dm_remote_unscaled(yc$D), yc$sql, yc$D$scale,
+                                 gram = FALSE, compress = FALSE)$xty)
+    }
     if (is.null(y)) return(crossprod(x))
     if (inherits(x, "dm_remote") && !inherits(y, "dm_remote") && !dm_is_column(y))
         stop("`y` must be a design or a column.", call. = FALSE)
@@ -1249,14 +1256,20 @@ dm_sql_macros <- function(D) {
 
 ## ---- coded groups, multi-group sums (the kernels of the fixed effects) ----
 
-## A grouping given as integer codes 1..G (no missing values): `codes` an
-## integer vector in memory, a remote column of integer codes remotely.
+## In memory, codes are integers 1..G. A remote FE grouping carries the
+## source key and its level table; public coded groupings use integer codes.
 ## Grouped sums with coded groups return all G groups in code order
 ## (zeros for empty groups), without labels, and use one-pass C kernels in
 ## memory (src/fe.c).
 dmc_codes <- function(codes, G) {
     if (!dm_is_column(codes)) codes <- as.integer(codes)
     structure(list(codes = codes, G = as.integer(G)), class = "dm_codes")
+}
+
+## Fixed effects can group directly on source keys. Translate the returned
+## group labels to solver indices only after DuckDB has aggregated the rows.
+dm_group_index <- function(g, values) {
+    if (is.null(g$levels)) as.integer(values) else match(values, g$levels[[1L]])
 }
 
 dm_is_codes <- function(x) inherits(x, "dm_codes")
@@ -1273,7 +1286,7 @@ dmp_groupsum_codes <- function(col, group) {
     res <- dm_group_query(list(group$codes), list(col), nulls = TRUE)
     k <- dm_ncols(col)
     out <- matrix(0, G, k)
-    i <- as.integer(res$g1)
+    i <- dm_group_index(group, res$g1)
     for (j in seq_len(k)) {
         v <- as.double(res[[paste0("v", j)]])
         v[as.numeric(res[[paste0("n", j)]]) > 0] <- NA_real_
@@ -1310,7 +1323,7 @@ dmc_groupsums <- function(col, groups, total = NULL) {
         r <- gk[[j]]
         for (l in seq_along(gs)[-j]) r <- r & !gk[[l]]
         m <- matrix(0, groups[[j]]$G, k)
-        i <- as.integer(res[[paste0("g", j)]][r])
+        i <- dm_group_index(groups[[j]], res[[paste0("g", j)]][r])
         for (u in seq_len(k)) {
             v <- as.double(res[[paste0("v", u)]][r])
             v[as.numeric(res[[paste0("vn", u)]][r]) > 0] <- NA_real_
@@ -1343,7 +1356,7 @@ dmp_crosstab_codes <- function(a, b, w = NULL) {
     }
     res <- dm_group_query(list(a$codes, b$codes), if (is.null(w)) list() else list(w))
     ## (the pairs, one per row, through the kernel of the rows in memory)
-    ct <- .Call(C_dm_fe_crosstabs, as.integer(res$g2), list(as.integer(res$g1)), as.double(res$v1), b$G,
+    ct <- .Call(C_dm_fe_crosstabs, dm_group_index(b, res$g2), list(dm_group_index(a, res$g1)), as.double(res$v1), b$G,
                 a$G, design_threads())[[1L]]
     dm_ct_matrix(ct, a$G, b$G)
 }
@@ -1361,20 +1374,22 @@ dm_ct_matrix <- function(ct, nr, nc) {
 ## counts without one), extra = G x k sums of scale * extra) per grouping.
 ## In memory: one pass of the structured kernel for all groupings when it
 ## applies (dm_fe_struct_gsum), else the row kernels; remotely, one GROUP BY
-## per grouping for the design and one query for the sums of the scale and
-## extra (dmc_groupsums()).
+## per grouping combines the design, scale, and extra column sums.
 dmp_colsums_groups <- function(x, groups, extra = NULL) {
     if (inherits(x, "dm_remote")) {
         s <- x$scale
         one <- dm_column(dm_remote_unscaled(x), if (is.null(s)) "CAST(1 AS DOUBLE)" else s)
-        ## (the sums of the scale and extra, for every grouping: one query)
-        ns <- dmc_groupsums(if (is.null(extra)) one else dmc_cbind(one, one * extra), groups)$groups
-        return(lapply(seq_along(groups), function(k) {
-            g <- groups[[k]]
+        totals <- if (is.null(extra)) one else dmc_cbind(one, one * extra)
+        x <- dmp_rebase(x, list(totals, groups))
+        return(lapply(groups, function(g) {
+            cs <- dm_sql_colsums(x, unclass(g$codes)$sql, s, FALSE,
+                                 group_totals = unclass(totals)$sql)
+            i <- dm_group_index(g, cs$keys)
             S <- matrix(0, g$G, ncol(x))
-            cs <- dmp_colsums(x, group = g$codes)
-            S[as.integer(rownames(cs)), ] <- unname(cs)
-            list(S = S, n = ns[[k]][, 1L], extra = if (!is.null(extra)) ns[[k]][, -1L, drop = FALSE])
+            S[i, ] <- cs$sums
+            ns <- matrix(0, g$G, ncol(cs$totals))
+            ns[i, ] <- cs$totals
+            list(S = S, n = ns[, 1L], extra = if (!is.null(extra)) ns[, -1L, drop = FALSE])
         }))
     }
     ## in memory: the plain design and its row scale

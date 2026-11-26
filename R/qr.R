@@ -224,6 +224,8 @@ dmqr_remote <- function(x, tol, Y = NULL) {
     cn <- colnames(x)
     if (!is.null(cn)) colnames(R) <- cn[ch$pivot]
     structure(list(design = x, R = R, rank = ch$rank, pivot = ch$pivot, tol = tol, G = unname(G),
+                   response_ss = if (is.null(mc)) mo$yty else mc$yty,
+                   weight_sum = if (is.null(mc)) mo$sumw else mc$sumw,
                    centered = ch$centered, xty = mo$xty, xty_of = if (!is.null(mo$xty)) unclass(Y)$sql),
               class = "design_qr")
 }

@@ -150,8 +150,8 @@ dm_fe_glm_estimate <- function(x, cols, codes, cl, family, control) {
     run <- function(xx, on) {
         cc <- cols
         for (nm in c("y", "w", "n", "off", "a", "b", "y0")) if (!is.null(cc[[nm]])) cc[[nm]] <- on(cc[[nm]])
-        cd <- lapply(codes, function(g) dmc_codes(on(g$codes), g$G))
-        cl2 <- if (!is.null(cl)) dmc_codes(on(cl$codes), cl$G)
+        cd <- dm_cols_map(codes, on)
+        cl2 <- dm_cols_map(cl, on)
         solver <- dm_fe_solver(xx, cd, tol, opts)
         fit <- dmglm_fit(xx, cc, family, NULL, control, TRUE, FALSE, wmsg = "negative weights not allowed",
                          solver = solver)

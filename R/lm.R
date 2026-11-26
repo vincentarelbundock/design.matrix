@@ -330,7 +330,11 @@ dmfit_ls <- function(x, z, w, tol, intercept, sums = TRUE) {
         ## mss = b'Gb - (sum w f)^2 / sum w, with the intercept column of G
         ## giving sum w f; dmc_ls_sums() below when cancellation would
         ## cost accuracy
-        zz <- dmc_sums(wsq(z), ww + 0 * z)
+        zz <- if (is.null(w) && length(q$response_ss) == 1L) {
+            c(q$response_ss, q$weight_sum)
+        } else {
+            dmc_sums(wsq(z), ww + 0 * z)
+        }
         bh <- sum(mo$b * mo$h)
         rss_m <- zz[1L] - bh
         ic <- match(which(colnames(x) == "(Intercept)"), q$pivot[seq_len(q$rank)])
