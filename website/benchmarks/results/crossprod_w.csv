@@ -1,0 +1,5 @@
+"expression","min","median","mem_alloc"
+"model.matrix, then crossprod","73.79ms","101.82ms","NA"
+"design_matrix, then crossprod","20.79ms"," 21.23ms","NA"
+"prebuilt X","12.5ms"," 17.45ms","NA"
+"prebuilt design matrix"," 2.77ms","  3.04ms","NA"

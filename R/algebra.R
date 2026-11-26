@@ -423,21 +423,11 @@ quadratic_diagonal <- function(x, V) {
     if (is.null(g)) q else q[g$map]
 }
 
-#' Which rows of a design matrix are finite?
-#'
-#' `finite_rows(x)` is `rowSums(!is.finite(as.matrix(x))) == 0`, computed
-#' without forming the dense matrix: `TRUE` for each row whose entries are
-#' all finite, `FALSE` for a row with any `NA`, `NaN` or infinite entry,
-#' including entries that overflow (such as the product of two large numeric
-#' variables) and, for a combination of designs, scaled sums that overflow.
-#' Use `all(finite_rows(x))` before algebra that requires finite input.
-#'
-#' @param x A `design_matrix`.
-#' @return A logical vector with one value per row.
-#' @examples
-#' d <- data.frame(x = c(1, NA, 3, Inf), f = gl(2, 2))
-#' finite_rows(design_matrix(~ x * f, d))
-#' @export
+## Which rows of a design matrix are finite: rowSums(!is.finite(as.matrix(x)))
+## == 0, computed without forming the dense matrix (TRUE for each row whose
+## entries are all finite, FALSE for a row with any NA, NaN or infinite entry,
+## including entries that overflow, such as the product of two large numeric
+## variables, and, for a combination of designs, scaled sums that overflow).
 finite_rows <- function(x) {
     checkmate::assert_class(x, "design_matrix")
     J <- as_jac(x)

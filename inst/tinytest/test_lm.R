@@ -166,19 +166,21 @@ expect_error(design_lm(cbind(y, x) ~ f, d), "Multivariate")
 expect_error(design_lm(y ~ x, d, compress = "yes"), "compress")
 expect_error(design_lm(y ~ x, d[0, ]), "0 \\(non-NA\\) cases")
 
-# design_lm_fit() --------------------------------------------------------------
+# design_lm() on a design matrix --------------------------------------------------------------
 
 dc <- d[complete.cases(d), ]
 D <- design_matrix(y ~ x * f + f2, dc)
-b <- design_lm_fit(D, dc$y, weights = dc$w, offset = dc$o)
+b <- design_lm(D, y = dc$y, weights = dc$w, offset = dc$o)
 a <- lm(y ~ x * f + f2, dc, weights = w, offset = o)
 expect_true(same_fit(a, b))
 expect_equal(residuals(b), residuals(a))
 expect_equal(predict(b, dc[1:5, ]), predict(a, dc[1:5, ]) - dc$o[1:5])
 expect_equal(summary(b)$r.squared, summary(a)$r.squared)
 D0 <- design_matrix(y ~ 0 + f, dc)
-expect_equal(summary(design_lm_fit(D0, dc$y))$r.squared, summary(lm(y ~ 0 + f, dc))$r.squared)
-expect_error(design_lm_fit(D, dc$y[-1]))
+expect_equal(summary(design_lm(D0, y = dc$y))$r.squared, summary(lm(y ~ 0 + f, dc))$r.squared)
+expect_error(design_lm(D, y = dc$y[-1]))
+expect_error(design_lm(D, dc, y = dc$y), "do not apply")
+expect_error(design_lm(y ~ f, dc, y = dc$y), "applies only")
 
 # Fuzz: random formulas, weights, offsets, missing values -------------------
 

@@ -1,0 +1,5 @@
+"expression","min","median","mem_alloc"
+"base_sparse(sfo, big)","  1.65s"," 1.76s","NA"
+"fast_sparse(sfo, big)"," 49.07ms","50.45ms","NA"
+"Matrix::sparse.model.matrix(sfo, big)","997.35ms"," 1.17s","NA"
+"MatrixModels::model.Matrix(sfo, big, sparse = TRUE)","889.89ms"," 1.06s","NA"

@@ -108,7 +108,9 @@ D <- design_matrix(y ~ xd + f1, con, table = "d")
 check_fit(design_lm(D), lm(y ~ xd + f1, dd), "remote design")
 check_fit(design_lm(D, weights = "w"), lm(y ~ xd + f1, dd, weights = w), "remote design, weighted")
 D2 <- design_matrix(~ xd + f1, con, table = "d", na.action = stats::na.omit)
-expect_error(design_lm(D2), "Give `y`")
+expect_error(design_lm(D2), "give `y`")
+expect_error(design_lm(D, data = con), "With a design matrix")
+expect_error(design_lm(y ~ xd, con, table = "d", y = "y"), "`y` applies only")
 dk <- dd[stats::complete.cases(dd[c("xd", "f1")]), ]
 check_fit(design_lm(D2, y = "w"), lm(w ~ xd + f1, dk), "remote design, y column")
 ## a response column with missing values: lm.fit()'s error, as in memory

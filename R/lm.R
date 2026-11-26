@@ -16,8 +16,9 @@
 #' Linear models without the model matrix
 #'
 #' `design_lm()` fits a linear model by least squares, like [stats::lm()],
-#' without forming the dense model matrix. `design_lm_fit()` does the same
-#' from a [design_matrix()] and a response, like [stats::lm.fit()].
+#' without forming the dense model matrix. Given a [design_matrix()] and a
+#' response `y` instead of a formula and data, it fits that design, like
+#' [stats::lm.fit()].
 #'
 #' **Method.** The fit uses [qr()][design_qr] on the (weighted) design
 #' matrix: `R` is the Cholesky factor of `X'WX`, computed from factor codes
@@ -71,23 +72,28 @@
 #' supported. With `na.action = na.omit`, offsets of `newdata` are taken
 #' for the rows kept (`predict.lm()` would recycle them).
 #'
-#' @param formula,data,subset,weights,na.action,offset,contrasts As in
-#'   [stats::lm()].
+#' @param formula A model formula, as in [stats::lm()], or a
+#'   [design_matrix()] (then give the response as `y`).
+#' @param data,subset,weights,na.action,offset,contrasts As in [stats::lm()].
+#'   With a design matrix, `weights` and `offset` are numeric vectors with one
+#'   value per row, and `data`, `subset`, `na.action` and `contrasts` do not
+#'   apply. `data` can also be remote (a DuckDB connection with `table` or
+#'   `sql`, or Parquet paths; see [design_remote]); `weights` then names a
+#'   column, as with a remote design.
+#' @param y With a design matrix as first argument, the numeric response,
+#'   one value per row. With a remote design (see [design_remote]), the name
+#'   of the response column (default: the response of its formula).
 #' @param compress `"auto"`, `TRUE` or `FALSE`: fit on the sufficient
 #'   statistics of rows that share a design pattern (see Details).
-#' @param tol In `design_lm()` and `design_lm_fit()`, the tolerance for
+#' @param tol In `design_lm()`, the tolerance for
 #'   detecting aliased columns, as in [stats::lm.fit()]. In `predict()`, the
 #'   tolerance of the check for non-estimable predictions from a
 #'   rank-deficient fit, as in [stats::predict.lm()].
 #' @param model Keep the model frame and its design matrix, for
 #'   [residuals()], [fitted()] and [model.frame()].
-#' @param x A `design_matrix`.
-#' @param y A numeric response vector with one value per row of `x`.
 #' @param ... For remote data (a DuckDB connection or Parquet paths as
-#'   `data`, or as `newdata` in `predict()`), `table`, `sql`, `engine` and
-#'   `chunk_size`; see [design_remote]. With a remote design as `formula`,
-#'   `y`, the name of the response column (default: the response of its
-#'   formula). Otherwise not used.
+#'   `data`, or as `newdata` in `predict()`): `table`, `sql`, `engine` and
+#'   `chunk_size`; see [design_remote]. Otherwise not used.
 #' @return An object of class `"design_lm"`: a list with, among others,
 #'   `coefficients`, `sigma`, `df.residual`, `nobs`, `rank`, `pivot`, `R`
 #'   (the `p` by `p` factor of [design_qr], columns in pivoted order),
@@ -113,26 +119,35 @@
 #' @export
 design_lm <- function(formula, data, subset, weights, na.action, offset,
                       contrasts = NULL, compress = "auto", tol = 1e-07,
-                      model = TRUE, ...) {
+                      model = TRUE, y = NULL, ...) {
+    if (inherits(formula, c("design_matrix", "dm_remote"))) {
+        if (!missing(data) || !missing(subset) || !missing(na.action) || !is.null(contrasts))
+            stop("With a design matrix, give the response as `y`; `data`, `subset`, ",
+                 "`na.action` and `contrasts` do not apply.", call. = FALSE)
+        if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
+        w <- if (missing(weights)) NULL else weights
+        if (inherits(formula, "dm_remote")) {
+            ## a remote design (see remote_lm.R): `y` and `weights` name columns
+            if (!missing(offset)) stop("Offsets are not supported for remote data.", call. = FALSE)
+            if (!is.null(formula$scale))
+                stop("Fit an unscaled remote design, with `weights` naming a column.", call. = FALSE)
+            if (!is.null(w)) dm_remote_column(formula, w, "weights")
+            yy <- dm_remote_y(formula, y)
+            if (is.null(yy) || length(yy$cols) != 1L)
+                stop("With a remote design, give `y`, the name of one column (or use a design with a response).",
+                     call. = FALSE)
+            fit <- dm_remote_lm_fit(formula, yy, w, compress, tol)
+        } else {
+            fit <- dmfit_design(formula, y, w, if (missing(offset)) NULL else offset, compress, tol)
+        }
+        fit$call <- match.call()
+        return(fit)
+    }
+    if (!is.null(y)) stop("`y` applies only when the first argument is a design matrix.", call. = FALSE)
     dmfit_check_compress(compress)
     checkmate::assert_number(tol, lower = 0, finite = TRUE)
     checkmate::assert_flag(model)
     cl <- match.call()
-    ## a remote design (see remote_lm.R): design_lm(D, y = "col", weights = "w")
-    if (inherits(formula, "dm_remote")) {
-        dots <- list(...)
-        if (length(setdiff(names(dots), "y"))) stop("Unknown arguments: ", paste(setdiff(names(dots), "y"), collapse = ", "), call. = FALSE)
-        if (!is.null(formula$scale))
-            stop("Fit an unscaled remote design, with `weights` naming a column.", call. = FALSE)
-        w <- if (missing(weights)) NULL else weights
-        if (!is.null(w)) dm_remote_column(formula, w, "weights")
-        yy <- dm_remote_y(formula, dots$y)
-        if (is.null(yy) || length(yy$cols) != 1L)
-            stop("Give `y`, the name of one column (or a design with a response).", call. = FALSE)
-        fit <- dm_remote_lm_fit(formula, yy, w, compress, tol)
-        fit$call <- cl
-        return(fit)
-    }
     ## remote data (see remote_lm.R)
     if (!missing(data) && dm_is_remote_source(data)) {
         if (!missing(subset)) stop("`subset` is not supported for remote data.", call. = FALSE)
@@ -171,10 +186,9 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
     fit
 }
 
-#' @rdname design_lm
-#' @export
-design_lm_fit <- function(x, y, weights = NULL, offset = NULL,
-                          compress = "auto", tol = 1e-07) {
+## design_lm() on a design matrix x and a response y.
+dmfit_design <- function(x, y, weights = NULL, offset = NULL,
+                         compress = "auto", tol = 1e-07) {
     checkmate::assert_class(x, "design_matrix")
     dmfit_check_compress(compress)
     checkmate::assert_number(tol, lower = 0, finite = TRUE)
@@ -186,7 +200,6 @@ design_lm_fit <- function(x, y, weights = NULL, offset = NULL,
     intercept <- if (!is.null(tt)) attr(tt, "intercept") > 0L else
         "(Intercept)" %in% colnames(x)
     fit <- dmfit_lm(x, y, weights, offset, compress, tol, intercept = intercept)
-    fit$call <- match.call()
     fit$data <- list(design = x, y = y, weights = weights, offset = offset)
     fit
 }
