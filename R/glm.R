@@ -443,7 +443,7 @@ dmglm_design <- function(x, y, weights, offset, start, family, control, compress
     intercept <- if (!is.null(tt)) attr(tt, "intercept") > 0L else "(Intercept)" %in% colnames(x)
     cols <- dmglm_mem_cols(y, weights, offset, dmglm_kind(family))
     dmglm_check_design(cols)
-    dmglm_fit(x, cols, family, start, control, intercept, compress, wmsg = "missing or negative weights not allowed")
+    dmglm_fit(x, cols, family, start, control, intercept, compress, wmsg = "negative weights not allowed")
 }
 
 ## The checks of a fit on a design (no rows dropped): no missing response

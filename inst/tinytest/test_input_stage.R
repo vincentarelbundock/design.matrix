@@ -318,6 +318,22 @@ expect_error(design_glm(k ~ x | id, poisson, con, table = "d", foo = 1, weights 
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(f ~ x | id, poisson, con, table = "d", weights = ch),
              "`weights` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
+# Negative weights on a design matrix: the wording of lm() or glm()
+Dm <- design_matrix(~ x, d)
+Dr <- design_matrix(~ x, con, table = "d")
+expect_error(design_lm(Dm, y = d$y, weights = d$wneg),
+             "missing or negative weights not allowed", fixed = TRUE)
+expect_error(design_lm(Dr, y = "y", weights = wneg),
+             "missing or negative weights not allowed", fixed = TRUE)
+expect_error(design_glm(Dm, binomial, y = d$b1, weights = d$wneg),
+             "negative weights not allowed", fixed = TRUE)
+expect_error(design_glm(Dr, binomial, y = "b1", weights = wneg),
+             "negative weights not allowed", fixed = TRUE)
+expect_false(grepl("missing", tryCatch(design_glm(Dm, binomial, y = d$b1, weights = d$wneg),
+                                       error = conditionMessage)))
+expect_false(grepl("missing", tryCatch(design_glm(Dr, binomial, y = "b1", weights = wneg),
+                                       error = conditionMessage)))
+
 # Offsets of the wrong length (a matrix offset), two problems, na.action,
 # contrasts, non-numeric offsets and subsets, zero weights
 expect_error(design_lm(y ~ x, d, offset = cbind(z, z)),

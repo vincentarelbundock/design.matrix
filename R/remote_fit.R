@@ -447,8 +447,7 @@ dm_remote_glm_design <- function(D, y, weights, offset, family, start, control, 
                        r$cols$offset, k, resp$cbind, weighted = !is.null(r$cols$weights))
     dmglm_check_design(cols)
     intercept <- attr(D$plan$terms, "intercept") > 0L && !isTRUE(D$plan$drop_intercept)
-    fit <- dmglm_fit(D, cols, family, start, control, intercept, compress,
-                     wmsg = "missing or negative weights not allowed")
+    fit <- dmglm_fit(D, cols, family, start, control, intercept, compress, wmsg = "negative weights not allowed")
     fit$offset_call <- offset
     fit$env <- env
     fit
