@@ -954,7 +954,7 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     ## response and weights as columns (remote_fit.R)
     base <- design_problem(call, env, pf$main, data, contrasts, dots, fe = pf, clv = clv)
     if (is.matrix(base$y)) stop("Multivariate responses are not supported.", call. = FALSE)
-    if (!is.numeric(base$y) && !dm_is_rcols(base$y)) stop("The response must be numeric.", call. = FALSE)
+    if (!is.numeric(base$y) && !dm_is_column(base$y)) stop("The response must be numeric.", call. = FALSE)
     ## an offset: the fit is that of y - offset
     if (!is.null(base$off)) {
         base$y <- base$y - base$off
@@ -1108,7 +1108,7 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
     ## (dmp_materialize()), which every later query scans, instead of
     ## recomputing the codes' joins; x_rows keeps the design over the data,
     ## whose rows not used pad the results with na.exclude.
-    x <- dm_rebase(x, if (length(last)) dm_rcols_frame(last[[1L]]))
+    x <- dm_rebase(x, if (length(last)) dm_column_frame(last[[1L]]))
     x_rows <- x
     ## (remotely, only the columns that the design and these columns read)
     x <- dmp_materialize(x, cols = list(z, w, more, lapply(cds, `[[`, "codes"), cl))

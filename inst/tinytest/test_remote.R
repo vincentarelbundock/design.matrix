@@ -54,7 +54,7 @@ check_remote <- function(Dr, M, dd, rows, info) {
     b <- suppressWarnings(colMeans(dd$w[rows] * M, group = g))
     expect_true(same(a, b), info = paste(info, "colMeans(group, weights)"))
     beta <- rnorm(ncol(M))
-    p <- as.data.frame(Dr %*% beta)
+    p <- as.data.frame(Dr %*% beta, keep = "id")
     p <- p[order(p$id), ]
     expect_identical(p$id, dd$id[rows], info = paste(info, "prediction rows"))
     expect_true(same(p$.fitted, drop(M %*% beta)), info = paste(info, "predictions"))
@@ -143,7 +143,7 @@ for (engine in "auto") {
     expect_identical(is.na(crossprod(Dr)), is.na(crossprod(M)), info = engine)
     expect_true(same(colSums(Dr, group = "g"), colSums(M, group = nd$g)), info = engine)
     expect_identical(is.na(colSums(Dr, group = "g")), is.na(colSums(M, group = nd$g)), info = engine)
-    p <- as.data.frame(Dr %*% seq_len(4))
+    p <- as.data.frame(Dr %*% seq_len(4), keep = "z")
     p <- p[order(p$z), ]
     expect_identical(is.na(p$.fitted), c(FALSE, TRUE, TRUE, TRUE, FALSE), info = engine)
     expect_true(same(p$.fitted, drop(M %*% seq_len(4))), info = engine)
@@ -231,14 +231,17 @@ expect_equal(as.matrix(design_matrix(D, dd[1:5, ])), as.matrix(design_matrix(M, 
 D2 <- design_matrix(D, con, table = "d", na.action = stats::na.omit)
 expect_true(same(crossprod(D2), crossprod(design_matrix(M, dd, na.action = stats::na.omit))))
 
-## predictions kept in a table; scaled predictions; scaled as.matrix()
+## predictions: a remote column (design_column), stored by compute(); scaled
+## predictions; scaled as.matrix()
 beta <- seq_len(ncol(D))
-tab <- D %*% beta
-expect_inherits(tab, "dm_remote_table")
-DBI::dbExecute(con, sprintf("CREATE TABLE preds AS SELECT * FROM %s", tab))
-p <- DBI::dbGetQuery(con, "SELECT id, \".fitted\" FROM preds ORDER BY id")
+col <- D %*% beta
+expect_inherits(col, "design_column")
+expect_equal(length(col), 1L)
+p <- as.data.frame(compute(col), keep = "id")
+p <- p[order(p$id), ]
+expect_identical(names(p), c("id", ".fitted"))
 expect_true(same(p$.fitted, drop(M %*% beta)))
-ps <- as.data.frame((DBI::SQL("2 * x1") * D / "w") %*% beta)
+ps <- as.data.frame((DBI::SQL("2 * x1") * D / "w") %*% beta, keep = c("id", "x1", "w"))
 ps <- ps[order(ps$id), ]
 expect_true(same(ps$.fitted, drop(M %*% beta) * 2 * ps$x1 / ps$w))
 expect_equal(unname(as.matrix(-D)), unname(as.matrix(-M)))
@@ -249,7 +252,7 @@ B <- cbind(a = coef(fit), b = -coef(fit))
 ref <- as.matrix(design_matrix(fit, newdata = dd)) %*% B
 for (engine in "auto") {
     Df <- suppressMessages(design_matrix(fit, newdata = con, table = "d", engine = engine))
-    p <- as.data.frame(Df %*% B)
+    p <- as.data.frame(Df %*% B, keep = "id")
     p <- p[order(p$id), ]
     expect_true(all(c("id", "a", "b") %in% names(p)))
     expect_true(same(as.matrix(p[c("a", "b")]), ref), info = engine)

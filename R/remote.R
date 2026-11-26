@@ -99,13 +99,14 @@
 #' * `colSums(D)`, `colMeans(D)`, and with `group = "g"` (a column, or a
 #'   `DBI::SQL()` expression), the sums or means within groups (sorted as
 #'   [base::rowsum()] sorts them).
-#' * `D %*% beta`: the linear predictor, with all the columns of the remote
-#'   data (to join it back), as a temporary view whose name is returned, a
-#'   string of class
-#'   `dm_remote_table`; [as.data.frame()] reads it, and its `"connection"`
-#'   attribute is the connection where it lives (for a Parquet source, a
-#'   private one). To keep it, create a table from it:
-#'   `DBI::dbExecute(con, sprintf("CREATE TABLE preds AS SELECT * FROM %s", p))`.
+#' * `D %*% beta`, `rowSums(D)`, `rowMeans(D)` and
+#'   `quadratic_diagonal(D, V)`: a remote column ([design_column]), a
+#'   lazy SQL expression over the rows of the design, where a design in
+#'   memory returns a vector. Arithmetic on it builds another column;
+#'   [collect()] reads its values into R, `as.data.frame(p, keep = "id")`
+#'   reads them with columns of the remote data (to join them back), and
+#'   [compute()] stores it in a temporary table. `design_column(D, "y")`
+#'   makes a column from a column of the remote data.
 #' * `as.matrix(D)` collects the rows and builds the dense matrix, only when
 #'   there are at most `getOption("design.matrix.remote_max_rows", 1e5)` rows
 #'   or with `force = TRUE`.
@@ -176,7 +177,10 @@
 #'     D
 #'     beta <- solve(crossprod(D), crossprod(D, "y"))
 #'     p <- D %*% beta
-#'     head(as.data.frame(p))
+#'     p
+#'     head(collect(p))
+#'     r <- design_column(D, "y") - p
+#'     head(as.data.frame(r, nm = "resid"))
 #'     summary(D)
 #'     DBI::dbDisconnect(con)
 #' }
@@ -720,7 +724,7 @@ dm_remote_column <- function(D, x, what, several = FALSE) {
 ## moved to their frame). Returns list(D = the design to use, sql, names).
 ## `numeric`: named columns must be numeric.
 dm_remote_cols <- function(D, x, what, several = FALSE, numeric = TRUE) {
-    if (dm_is_rcols(x)) {
+    if (dm_is_column(x)) {
         return(list(D = dm_rebase(D, dm_frame_later(unclass(x)$frame, D)), sql = unclass(x)$sql, names = NULL))
     }
     if (inherits(x, "SQL")) {
@@ -783,7 +787,8 @@ dm_remote_gram_xty <- function(x, Y = NULL) {
 
 ## X %*% beta written to a temporary view, or to the table `name`, with
 ## the columns `keep` (default: all)
-## of the remote data. Returns the name, of class dm_remote_table.
+## of the remote data. Returns the name, of class dm_remote_table (the
+## view under the frame of dmp_mult(); public products return columns).
 dm_remote_predict <- function(x, beta, name = NULL, column = ".fitted", keep = NULL, overwrite = FALSE) {
     checkmate::assert_class(x, "dm_remote")
     p <- x$p
@@ -834,7 +839,12 @@ as.data.frame.dm_remote_table <- function(x, ...) {
 `%*%.dm_remote` <- function(x, y) {
     if (!inherits(x, "dm_remote"))
         stop("Only `design %*% beta` is supported, with the design first.", call. = FALSE)
-    dm_remote_predict(x, y)
+    ## a remote column (design_column), as a vector in memory
+    k <- if (is.matrix(y)) ncol(y) else 1L
+    lab <- if (k == 1L) ".fitted" else colnames(y)
+    if (k > 1L && (is.null(lab) || anyNA(lab) || any(lab == "") || anyDuplicated(lab)))
+        lab <- paste0(".fitted", seq_len(k))
+    dm_column_label(dmp_mult(x, y), lab)
 }
 
 ## Scaled rows, as `w * D` for a design in memory: the scale is a SQL
@@ -916,7 +926,7 @@ crossprod.dm_remote <- function(x, y = NULL, ...) {
     }
     ## X' diag(s_x) Y for columns: names, a DBI::SQL() expression, or the
     ## remote columns of the fitting core (primitives.R)
-    if (!dm_is_rcols(y) && !inherits(y, "SQL") && !is.character(y))
+    if (!dm_is_column(y) && !inherits(y, "SQL") && !is.character(y))
         stop("For a remote design, `y` must be another remote design, column names or a DBI::SQL() expression.",
              call. = FALSE)
     yc <- dm_remote_cols(x, y, "y", several = TRUE)
@@ -968,14 +978,14 @@ setMethod("colMeans", "dm_remote", function(x, na.rm = FALSE, dims = 1, ..., gro
 #' @export
 setMethod("rowSums", "dm_remote", function(x, na.rm = FALSE, dims = 1, ...) {
     dm_defaults_only(na.rm, dims)
-    dmp_output(x, list(.rowsum = dmp_mult(x, rep(1, ncol(x)))))
+    dm_column_label(dmp_mult(x, rep(1, ncol(x))), ".rowsum")
 })
 
 #' @rdname design_remote
 #' @export
 setMethod("rowMeans", "dm_remote", function(x, na.rm = FALSE, dims = 1, ...) {
     dm_defaults_only(na.rm, dims)
-    dmp_output(x, list(.rowmean = dmp_mult(x, rep(1 / ncol(x), ncol(x)))))
+    dm_column_label(dmp_mult(x, rep(1 / ncol(x), ncol(x))), ".rowmean")
 })
 
 ## The rows of a remote design where a logical remote column, or a

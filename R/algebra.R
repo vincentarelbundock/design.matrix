@@ -230,7 +230,7 @@ jac_kernel_ok <- function(J) {
 #'   `x`. `colSums()` and `colMeans()`: a vector with one value per column, or with
 #'   `group`, a matrix with one row per observed group (sorted by default).
 #'   `rowSums()`, `rowMeans()` and `quadratic_diagonal()`: a vector with one
-#'   value per row.
+#'   value per row (for a remote design, a column: see [design_column]).
 #' @examples
 #' d <- data.frame(x = rnorm(100), f = gl(4, 25), g = gl(2, 1, 100))
 #' D <- design_matrix(~ x * f, d)
@@ -419,7 +419,8 @@ quadratic_diagonal <- function(x, V) {
     p <- ncol(x)
     checkmate::assert_matrix(V, mode = "numeric", nrows = p, ncols = p, any.missing = FALSE)
     checkmate::assert_true(all(is.finite(V)))
-    ## a vector in memory, a table with the column .quad remotely
+    ## a vector in memory, a remote column (design_column) remotely
+    if (inherits(x, "dm_remote")) return(dm_column_label(dmp_quad(x, V), ".quad"))
     dmp_output(x, list(.quad = dmp_quad(x, V)), memory = function(d) d$.quad)
 }
 

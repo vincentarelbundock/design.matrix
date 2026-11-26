@@ -153,7 +153,7 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     nopath <- function(v) {
         v <- unclass(v)
         v$frame$path <- NULL
-        structure(v, class = "dm_rcols")
+        structure(v, class = "design_column")
     }
     expect_equal(design.matrix:::dm_frame_later(unclass(nopath(lk))$frame, unclass(nopath(lk3))$frame)$depth,
                  unclass(lk3)$frame$depth)

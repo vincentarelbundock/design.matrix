@@ -28,7 +28,7 @@ Three choices follow from this, and the rest of the page describes them:
   [Frame and plan], [The model frame of R, and the fixed transformations, levels and contrasts that new data must reuse], [`R/frame.R`, `R/prep.R`, `R/plan.R`],
   [Design], [Checks, contrasts and column names as in R; the dense fill], [`src/modelmatrix.c`, `R/design_matrix.R`],
   [Kernels], [Products with the design from codes and numbers], [`src/kernels.c`, `src/structured.c`, `R/algebra.R`],
-  [Primitives], [Operations on designs and columns, in memory and remote], [`R/primitives.R`, `R/primitives_lookup.R`],
+  [Primitives], [Operations on designs and columns, in memory and remote; the public column type], [`R/primitives.R`, `R/primitives_lookup.R`, `R/column.R`],
   [Fits], [Least squares, IRLS, fixed effects], [`R/qr.R`, `R/lm.R`, `R/glm.R`, `R/fe.R`, `R/fe_glm.R`, `R/na_action.R`, `src/fe.c`, `src/fused.c`],
   [Remote], [Designs over DuckDB tables, queries and Parquet files], [`R/remote.R`, `R/remote_sql.R`, `R/remote_fit.R`, `R/remote_compress.R`],
 )
@@ -100,18 +100,22 @@ The cost is a few passes over the rows and memory of order $p^2$. The price is t
   columns: 3,
   table.header([], [In memory], [Remote]),
   [Design], [`design_matrix`], [`dm_remote`: a source, a plan, and how to compute each variable in SQL],
-  [Column], [numeric vector or matrix], [SQL expressions over the rows of a frame],
+  [Column], [numeric vector or matrix], [`design_column`: SQL expressions over the rows of a frame],
 )
 
 The operations are products with the design ($X'X$, $X'c$, $X B$, $op("rowSums")((X V) circle.small X)$), sums and grouped sums of columns, crosstabs of two groupings, lookups of a value per level, subsets, and arithmetic on columns (`+`, `*`, `exp()`, `log()`, comparisons, the functions the GLM families need). Arithmetic on a remote column builds SQL; nothing runs until a sum is asked for. Missing values follow R: SQL `NULL` is `NA`, and sums return `NA` where `sum()` does.
 
 `lm.R`, `glm.R`, `fe.R` and `fe_glm.R` contain no branch on the backend. A fit on a DuckDB table is the same sequence of operations as in memory, which is why its coefficients, aliased columns, covariance and degrees of freedom are those of `lm()` or `glm()` on the same rows.
 
+== One public column type
+
+The remote column of the fitting core is also the column users get (`R/column.R`). `D %*% b`, `rowSums(D)`, `rowMeans(D)` and `quadratic_diagonal(D, V)` of a remote design return a `design_column` where a design in memory returns a vector, and `design_column(D, "y")` or `design_column(D, DBI::SQL(...))` makes one from the data, so that public calls chain: `exp(D %*% b) - design_column(D, "y")` is a column like the ones the fits build. `collect()` reads the values into R (a `SELECT` of every row), `as.data.frame()` reads them with columns of the data (`keep`, for instance a key to match rows), and `compute()` stores the column in a temporary table (the frame of `dmc_freeze(table = TRUE)`). In memory the same calls return the vector itself. A column is valid while its connection is open; the views and temporary tables under it are temporaries of that session. Frames, their depth and lineage stay internal: users see columns, which combine when they come from the same design. Results of fits with one value per row (`fitted()`, `predict()`, `qr.fitted()`) remain tables that keep the columns of the data.
+
 == The SQL engine
 
 For a remote design, the products of the previous section are `GROUP BY` aggregates over factor columns as stored. Levels become codes in R, on the cells that come back, and the $C_t$ are read off the in-memory design of a few prototype rows (every combined level, numeric variables set to 1), so that columns, contrasts and their order are those of `model.matrix()`.
 
-A variable that SQL cannot compute (an R function with no translation) is evaluated in R once, batch by batch, into a column of a temporary table, and is then a column like any other. Results with one value per row (fitted values, residuals, predictions) are views in the database, which keep the columns of the data.
+A variable that SQL cannot compute (an R function with no translation) is evaluated in R once, batch by batch, into a column of a temporary table, and is then a column like any other. Results of fits with one value per row (fitted values, residuals, predictions) are views in the database, which keep the columns of the data; products with the design are columns.
 
 == Compression in the database
 

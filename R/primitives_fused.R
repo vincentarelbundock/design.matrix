@@ -159,7 +159,7 @@ dmp_groupcount <- function(group, n = NULL) {
 ## columns. In memory, the columns themselves (no copy).
 dmc_freeze_all <- function(..., table = FALSE) {
     a <- list(...)
-    if (is.null(do.call(dm_rcols_frame, a))) return(a)
+    if (is.null(do.call(dm_column_frame, a))) return(a)
     m <- dmc_freeze(do.call(dmc_cbind, a), table = table)
     lapply(seq_along(a), function(j) dmc_col(m, j))
 }

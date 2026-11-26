@@ -529,10 +529,10 @@ dm_remote_fit <- function(formula, src, args, env, dots, contrasts = NULL, logic
                             override = override),
                   dm_no_rows = function(e) stop("0 (non-NA) cases", call. = FALSE))
     if (na %in% c("fail", "pass")) dm_remote_fit_na(D, res, na, nonlog, names(offt))
-    cols <- lapply(names(args), function(nm) if (!is.null(res[[nm]])) dm_rcols(D, res[[nm]]$sql))
+    cols <- lapply(names(args), function(nm) if (!is.null(res[[nm]])) dm_column(D, res[[nm]]$sql))
     names(cols) <- names(args)
     off <- c(res[["offset"]]$sql, vapply(res[names(offt)], `[[`, "", "sql"))
-    list(x = D, cols = cols, off = if (length(off)) dm_rcols(D, paste(sprintf("(%s)", off), collapse = " + ")),
+    list(x = D, cols = cols, off = if (length(off)) dm_column(D, paste(sprintf("(%s)", off), collapse = " + ")),
          offk = offk, wk = wk)
 }
 
@@ -600,7 +600,7 @@ dmglm_remote_factor <- function(D, col) {
     proto <- D$src$proto[[col]]
     f <- if (is.factor(proto)) factor(as.character(vals), levels = levels(proto)) else factor(vals)
     first <- DBI::dbQuoteString(dm_con(D), levels(droplevels(f))[1L])
-    dm_rcols(D, sprintf("CASE WHEN CAST(s.%s AS VARCHAR) = %s THEN 0 ELSE 1 END", q, first))
+    dm_column(D, sprintf("CASE WHEN CAST(s.%s AS VARCHAR) = %s THEN 0 ELSE 1 END", q, first))
 }
 
 ## The offsets of new remote data D for a fit: offset() terms of the plan
@@ -629,7 +629,7 @@ dm_remote_new_offset <- function(object, D) {
         if (is.null(a$expr)) pieces <- c(pieces, a$sql) else add(a$expr)
     }
     if (length(exprs)) D$src <- dm_materialize(D$src, exprs, env, chunk_size = D$chunk_size)
-    list(D = D, off = if (length(pieces)) dm_rcols(D, paste(sprintf("(%s)", pieces), collapse = " + ")))
+    list(D = D, off = if (length(pieces)) dm_column(D, paste(sprintf("(%s)", pieces), collapse = " + ")))
 }
 
 ## R expressions over the remote data with no SQL translation (a response,

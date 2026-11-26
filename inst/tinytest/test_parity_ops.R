@@ -21,9 +21,10 @@ DBI::dbExecute(con, sprintf("COPY d TO '%s' (FORMAT PARQUET)", pq))
 
 formulas <- list(sql = y ~ x * f + log(z), r = y ~ x * f + log(z) + splines::ns(z, 2))
 
-## a table of row-wise results, in the order of the rows of M
+## row-wise results (a remote column, read with the key `id`, or a table
+## with the columns of the data), in the order of the rows of M
 by_id <- function(tab, col) {
-    p <- as.data.frame(tab)
+    p <- if (inherits(tab, "design_column")) as.data.frame(tab, keep = "id") else as.data.frame(tab)
     p[[col]][match(dk$id, p$id)]
 }
 
@@ -66,6 +67,8 @@ for (fname in names(formulas)) for (src in names(sources)) {
     ## products
     expect_true(same(by_id(D %*% B[, 1], ".fitted"), drop(X %*% B[, 1])), info = paste(info, "%*% vector"))
     pB <- D %*% B
+    expect_inherits(pB, "design_column")
+    expect_equal(length(pB), 2L)
     expect_true(same(cbind(by_id(pB, "b1"), by_id(pB, "b2")), X %*% B), info = paste(info, "%*% matrix"))
     ## crossprod in every form
     expect_true(same(crossprod(D), crossprod(X)), info = paste(info, "crossprod"))

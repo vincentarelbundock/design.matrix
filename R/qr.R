@@ -231,13 +231,13 @@ dmqr_remote <- function(x, tol, Y = NULL) {
 ## The factorization of a design for a least squares fit of the columns Y:
 ## qr(x), which remotely also computes X'Y in the same scan.
 dmqr_for <- function(x, tol, Y) {
-    if (inherits(x, "dm_remote") && dm_is_rcols(Y)) dmqr_remote(x, tol, Y) else qr(x, tol = tol)
+    if (inherits(x, "dm_remote") && dm_is_column(Y)) dmqr_remote(x, tol, Y) else qr(x, tol = tol)
 }
 
 ## X'Y for the columns Y, from the scan of the factorization when it was
 ## made for them (dmqr_for()), else computed.
 dmqr_xty <- function(q, D, Y) {
-    if (!is.null(q$xty) && dm_is_rcols(Y) && identical(q$xty_of, unclass(Y)$sql)) return(q$xty)
+    if (!is.null(q$xty) && dm_is_column(Y) && identical(q$xty_of, unclass(Y)$sql)) return(q$xty)
     dmp_crossprod(D, Y)
 }
 

@@ -42,7 +42,7 @@ expect_identical(get(a), d$a)
 expect_identical(get(b), d$b)
 
 check <- function(remote, local, what) {
-    expect_true(inherits(remote, "dm_rcols"), info = what)
+    expect_true(inherits(remote, "design_column"), info = what)
     expect_identical(get(remote), as.double(local), info = what)
 }
 
@@ -132,7 +132,7 @@ check(sign(-a), sign(-d$a), "sign of -a")
 ## missing, R's result (x + y) depends on the platform: only missingness
 ## compared there.
 checkm <- function(remote, local, miss, what) {
-    expect_true(inherits(remote, "dm_rcols"), info = what)
+    expect_true(inherits(remote, "design_column"), info = what)
     r <- get(remote)
     expect_identical(r[!miss], as.double(local)[!miss], info = what)
     expect_true(all(is.na(r[miss])), info = what)
