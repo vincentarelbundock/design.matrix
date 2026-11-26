@@ -73,7 +73,7 @@ $M_(s t)$ is a weighted crosstab. In memory it is one pass over the rows in C (`
 - The *structured kernels* (`src/structured.c`) use the factorization above. They are used when every input is finite and no product can overflow; the results then agree with the dense computation up to rounding.
 - The *row kernels* (`src/kernels.c`) list, for each row, the columns that can be non-zero, with their values computed in the order of the dense fill. They handle every other case (so that `0 * Inf` is `NaN` where the dense matrix has it), Jacobians of two designs, and results with one value per row ($X beta$, $op("diag")(X V X')$).
 
-Both can run on several threads (`design_threads()`; the default is one). Results with one value per row do not depend on the number of threads. Sums over rows split the rows into fixed blocks, one per thread, added in a fixed order: they are identical for a given number of threads, and can differ in the last digits between numbers of threads.
+Both can run on several threads (`design_threads()`; as in fixest, the default is half of the available threads, and one during `R CMD check`). Results with one value per row do not depend on the number of threads. Sums over rows split the rows into fixed blocks, one per thread, added in a fixed order: they are identical for a given number of threads, and can differ in the last digits between numbers of threads.
 
 == Patterns
 

@@ -7,7 +7,10 @@
 design_threads(n = NULL)
 }
 \arguments{
-\item{n}{Number of threads. \code{NULL} returns the current setting.}
+\item{n}{Number of threads: an integer, \code{0} for all available threads,
+or a number strictly between 0 and 1 for that fraction of them (rounded
+up). More threads than available are capped, with a warning. \code{NULL}
+returns the current setting.}
 }
 \value{
 The number of threads (invisibly when setting).
@@ -25,11 +28,15 @@ Results are identical for a given number of threads; with different
 numbers of threads they can differ in the last digits. Small problems
 run on one thread.
 
-The default is one thread, or the value of the option
-\code{design.matrix.threads}.
+The default follows fixest: half of the available threads (rounded up),
+and one thread during \verb{R CMD check}. The option \code{design.matrix.threads},
+which takes the same values as \code{n}, replaces that default. The available
+threads are those OpenMP reports, capped by the environment variable
+\code{OMP_THREAD_LIMIT}; without OpenMP, one.
 }
 \examples{
 old <- design_threads()
 design_threads(2)
+design_threads(0.5)
 design_threads(old)
 }
