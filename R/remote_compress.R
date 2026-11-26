@@ -19,15 +19,55 @@
 ## evaluated in R that gives NA on a pattern drops the whole pattern, as
 ## na.omit() drops each of its rows.
 ##
-## Option design.matrix.remote_compress: "auto" (default) tries compression
-## when the first rows have few distinct patterns, and gives up when the
-## patterns exceed min(n / 2, getOption("design.matrix.remote_compress_max",
-## 1e6)); TRUE always compresses (unless every row is distinct); FALSE never.
+## Option design.matrix.remote_compress: "auto" (default) compresses when
+## dm_compress_worth() says so, and gives up when the GROUP BY returns more
+## than min(n / 2, getOption("design.matrix.remote_compress_max", 1e6))
+## patterns; TRUE always compresses (unless every row is distinct); FALSE
+## never.
 
 dm_compress_mode <- function(mode = getOption("design.matrix.remote_compress", "auto")) {
     if (!(isTRUE(mode) || isFALSE(mode) || identical(mode, "auto")))
         stop("Option `design.matrix.remote_compress` must be \"auto\", TRUE or FALSE.", call. = FALSE)
     mode
+}
+
+## Is compression worth it ("auto")? Two steps, before any GROUP BY:
+##  1. continuous keys: a DOUBLE key column whose approximate number of
+##     distinct values, in a sample of rows, exceeds half the sampled rows
+##     makes most rows distinct patterns: skip. (The sample is a system
+##     sample, which reads only some blocks, of 0.1% of the rows, or a
+##     reservoir sample of 10,000 rows for at most a million rows.) Other
+##     types (integers, text, ENUM, logical, dates) go to step 2;
+##  2. an estimate of the number of patterns over all the rows used, by
+##     approx_count_distinct() of a hash of the key columns (missing
+##     values count as values): compress when it is at most
+##     getOption("design.matrix.remote_compress_ratio", 0.1) times the
+##     number of rows and at most getOption("design.matrix.remote_compress_max",
+##     1e6).
+## The real GROUP BY gives up as well when it returns more patterns than
+## that (dm_remote_patterns()).
+dm_compress_worth <- function(D, keys, n) {
+    qk <- paste0("s.", dm_qi(D, keys))
+    dbl <- keys[D$src$types[keys] == "double"]
+    if (length(dbl)) {
+        from <- if (!is.null(D$src$base_table)) sprintf("%s AS s", D$src$base_table)
+                else sprintf("(%s) AS s", D$src$select)
+        smp <- if (n > 1e6) "TABLESAMPLE 0.1% (system)" else "TABLESAMPLE 10000 ROWS"
+        qd <- paste0("s.", dm_qi(D, dbl))
+        res <- dm_query(D, sprintf("SELECT COUNT(*) AS n, %s FROM %s %s WHERE %s",
+                                   paste(sprintf("approx_count_distinct(%s) AS d%d", qd, seq_along(qd)), collapse = ", "),
+                                   from, smp, D$filter))
+        m <- as.numeric(res$n)
+        dd <- vapply(seq_along(dbl), function(j) as.numeric(res[[paste0("d", j)]]), 0)
+        if (m > 0 && any(dd > 0.5 * m)) return(FALSE)
+    }
+    res <- dm_query(D, sprintf("SELECT COUNT(*) AS n, approx_count_distinct(hash(%s)) AS est FROM (%s) AS s WHERE %s",
+                               paste(qk, collapse = ", "), D$src$select, D$filter))
+    est <- as.numeric(res$est)
+    rows <- as.numeric(res$n)
+    D$cache$compress_estimate <- est
+    est <= getOption("design.matrix.remote_compress_ratio", 0.1) * rows &&
+        est <= getOption("design.matrix.remote_compress_max", 1e6)
 }
 
 ## Input columns of the design (not those of the response alone).
@@ -52,14 +92,7 @@ dm_remote_patterns <- function(D, ys = character(), w = NULL, group = NULL, with
     if (n < 2) return(NULL)
     src <- sprintf("(%s) AS s", D$src$select)
     qk <- if (length(keys)) paste0("s.", dm_qi(D, keys)) else character()
-    if (identical(mode, "auto") && length(keys)) {
-        ## few distinct patterns among the first rows?
-        probe <- 100000
-        pr <- dm_query(D, sprintf("SELECT COUNT(*) AS g, SUM(r) AS r FROM (SELECT COUNT(*) AS r FROM (SELECT %s FROM %s WHERE %s LIMIT %d) AS s GROUP BY %s)",
-                                  paste(qk, collapse = ", "), src, D$filter, probe,
-                                  paste(dm_qi(D, keys), collapse = ", ")))
-        if (as.numeric(pr$g) > 0.1 * max(as.numeric(pr$r), 1000)) return(NULL)
-    }
+    if (identical(mode, "auto") && length(keys) && !dm_compress_worth(D, keys, n)) return(NULL)
     cap <- if (isTRUE(mode)) n else min(n / 2, getOption("design.matrix.remote_compress_max", 1e6))
     K <- length(ys)
     wf <- if (is.null(w)) "" else " * __dm_w"

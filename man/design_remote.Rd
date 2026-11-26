@@ -156,11 +156,15 @@ each pattern with its number of rows and the sums of the weights and
 responses, and compute the result from the design of the patterns, in
 memory. This works with both engines (a variable evaluated in R is
 evaluated on the patterns). The option \code{design.matrix.remote_compress}
-controls it: \code{"auto"} (default) tries it when the first 100,000 rows have
-few distinct patterns, and gives up when there are more than
-\code{min(n / 2, getOption("design.matrix.remote_compress_max", 1e6))}
-patterns; \code{TRUE} always compresses (unless every row is distinct);
-\code{FALSE} never does. Designs that keep rows with missing values
+controls it. With \code{"auto"} (default), a design with a continuous
+numeric column (a \code{DOUBLE} column with many distinct values in a sample
+of the rows) is not compressed, at almost no cost; otherwise the number
+of patterns is estimated over all the rows (\code{approx_count_distinct()}),
+and the products are compressed when it is at most
+\code{getOption("design.matrix.remote_compress_ratio", 0.1)} times the number
+of rows and at most \code{getOption("design.matrix.remote_compress_max", 1e6)}.
+\code{TRUE} always compresses (unless every row is distinct); \code{FALSE} never
+does. Designs that keep rows with missing values
 (\code{na.action = na.pass}) are not compressed, nor are products with a
 column or row scale that has missing values.
 

@@ -89,6 +89,47 @@ expect_true(design_lm(y ~ xd * f1, con, table = "d", compress = TRUE)$compressed
 options(op)
 check_fit(design_lm(y ~ xc + f1, con, table = "d", compress = TRUE), lm(y ~ xc + f1, dd), "compress = TRUE")
 
+## the "auto" decision: the queries it runs, and its outcome
+queries <- function(expr, ...) {
+    op <- options(design.matrix.remote_debug = TRUE, ...)
+    on.exit(options(op))
+    q <- character()
+    v <- withCallingHandlers(expr, message = function(m) {
+        q <<- c(q, conditionMessage(m))
+        invokeRestart("muffleMessage")
+    })
+    list(value = v, sql = q)
+}
+has <- function(q, pattern) any(grepl(pattern, q$sql, fixed = TRUE))
+## a continuous DOUBLE key: skipped after a sample, without the estimate
+q <- queries(design_lm(y ~ xc + f1, con, table = "d"))
+expect_false(q$value$compressed)
+expect_true(has(q, "TABLESAMPLE"))
+expect_false(has(q, "approx_count_distinct(hash("))
+check_fit(q$value, lm(y ~ xc + f1, dd), "auto: continuous")
+## a discrete DOUBLE key: sample, estimate, compression
+q <- queries(design_lm(y ~ xd7 + f1, con, table = "d"))
+expect_true(q$value$compressed)
+expect_true(has(q, "TABLESAMPLE") && has(q, "approx_count_distinct(hash(") && has(q, "AS __dm_sy1"))
+## integer keys: no sample, the estimate decides
+q <- queries(design_lm(y ~ xd + f1, con, table = "d"))
+expect_true(q$value$compressed)
+expect_false(has(q, "TABLESAMPLE"))
+q <- queries(design_lm(y ~ id + f1, con, table = "d"))  # an integer id: one pattern per row
+expect_false(q$value$compressed)
+expect_true(has(q, "approx_count_distinct(hash("))
+expect_false(has(q, "AS __dm_sy1"))
+check_fit(q$value, lm(y ~ id + f1, dd), "auto: integer id")
+## the threshold on the estimate
+q <- queries(design_lm(y ~ xd + f1, con, table = "d"), design.matrix.remote_compress_ratio = 1e-6)
+expect_false(q$value$compressed)
+expect_false(has(q, "AS __dm_sy1"))
+## the safety net after the GROUP BY: more than n / 2 patterns
+op <- options(design.matrix.remote_compress_ratio = 1, design.matrix.remote_compress_max = 1e9)
+D <- design_matrix(y ~ id + f1, con, table = "d")
+expect_null(design.matrix:::dm_remote_patterns(D, "y"))
+options(op)
+
 ## printing
 f <- design_lm(y ~ xd + f1, con, table = "d")
 expect_stdout(print(f), "design patterns of 2,9")
