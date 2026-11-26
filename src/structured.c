@@ -22,13 +22,18 @@
  *  Copyright (C) 2026 Vincent Arel-Bundock.  GPL (>= 2).
  */
 
+#define USE_FC_LEN_T
 #include <string.h>
 #include <float.h>
 #include <math.h>
 #include <limits.h>
 #include <R.h>
 #include <Rinternals.h>
+#include <R_ext/BLAS.h>
 #include "dm.h"
+#ifndef FCONE
+# define FCONE
+#endif
 
 #define SMAXC 32
 #define BLOCK 1024
@@ -173,6 +178,44 @@ static tblock *alloc_blocks(const sctx *S)
     return B;
 }
 
+/* The dense part of a design: the terms with a single level (the
+   intercept and products of numeric variables).  Their columns are
+   gathered, block by block, into a BLOCK x q buffer, so that their
+   products with each other, with Y and with B use BLAS (cache blocking
+   and vector instructions) instead of the per-pair loops. */
+typedef struct {
+    int q;          /* columns of the dense part */
+    int *off;       /* per term: first column in the buffer, or -1 */
+    double *buf;    /* BLOCK x q, column-major with leading dimension nb */
+} dpart;
+
+static dpart dense_part(const sctx *S)
+{
+    dpart P;
+    P.off = (int *) R_alloc(S->nt > 0 ? S->nt : 1, sizeof(int));
+    P.q = 0;
+    for (int t = 0; t < S->nt; t++) {
+	if (S->t[t].L == 1) { P.off[t] = P.q; P.q += S->t[t].ns; }
+	else P.off[t] = -1;
+    }
+    P.buf = P.q > 0 ? (double *) R_alloc((size_t) BLOCK * P.q, sizeof(double)) : NULL;
+    return P;
+}
+
+/* Copy the dense terms' products of a block (nb rows) into P->buf. */
+static void gather_dense(const sctx *S, const tblock *Bk, const dpart *P, int nb)
+{
+    for (int t = 0; t < S->nt; t++) {
+	if (P->off[t] < 0) continue;
+	int ns = S->t[t].ns;
+	const double *N = Bk[t].N;
+	for (int u = 0; u < ns; u++) {
+	    double *col = P->buf + (size_t) nb * (P->off[t] + u);
+	    for (int r = 0; r < nb; r++) col[r] = N[r * ns + u];
+	}
+    }
+}
+
 /* Can the structured kernels handle this design?  All factor codes
    present, all inputs finite, moments of a size that fits (`cap` doubles
    in all), and magnitudes bounded so that regrouping products cannot
@@ -308,9 +351,30 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
 	}
     tblock *Bk = alloc_blocks(&S);
     double *wN = (double *) R_alloc(BLOCK, sizeof(double));
+    dpart P = dense_part(&S);
+    int qd = P.q;
+    double *Gd = NULL, *WB = NULL;
+    if (qd > 0) {
+	Gd = (double *) R_alloc((size_t) qd * qd, sizeof(double));
+	memset(Gd, 0, sizeof(double) * (size_t) qd * qd);
+	if (w) WB = (double *) R_alloc((size_t) BLOCK * qd, sizeof(double));
+    }
     for (R_xlen_t i0 = 0; i0 < S.n; i0 += BLOCK) {
 	int nb = (int) (S.n - i0 < BLOCK ? S.n - i0 : BLOCK);
 	for (int t = 0; t < S.nt; t++) term_block(&S.t[t], S.n, i0, nb, Bk[t].F, Bk[t].N);
+	if (qd > 0) {
+	    gather_dense(&S, Bk, &P, nb);
+	    double one = 1.0;
+	    if (w) {
+		for (int c = 0; c < qd; c++)
+		    for (int r = 0; r < nb; r++)
+			WB[r + (size_t) nb * c] = w[i0 + r] * P.buf[r + (size_t) nb * c];
+		F77_CALL(dgemm)("T", "N", &qd, &qd, &nb, &one, P.buf, &nb, WB, &nb,
+				&one, Gd, &qd FCONE FCONE);
+	    } else {
+		F77_CALL(dsyrk)("U", "T", &qd, &nb, &one, P.buf, &nb, &one, Gd, &qd FCONE FCONE);
+	    }
+	}
 	q = 0;
 	for (int t = 0; t < S.nt; t++) {
 	    const sterm *B = &S.t[t];
@@ -318,6 +382,7 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
 	    const double *Nt = Bk[t].N;
 	    int nt = B->ns;
 	    for (int s = 0; s <= t; s++, q++) {
+		if (P.off[s] >= 0 && P.off[t] >= 0) continue; /* dense part: BLAS */
 		const sterm *A = &S.t[s];
 		const int *Fs = Bk[s].F;
 		const double *Ns = Bk[s].N;
@@ -364,6 +429,22 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_)
 	    }
 	}
     }
+    /* moments of pairs of dense terms, from the BLAS accumulation (upper
+       triangle without weights) */
+    if (qd > 0) {
+	q = 0;
+	for (int t = 0; t < S.nt; t++)
+	    for (int s = 0; s <= t; s++, q++) {
+		if (P.off[s] < 0 || P.off[t] < 0) continue;
+		int ns = S.t[s].ns, nt = S.t[t].ns;
+		for (int u = 0; u < ns; u++)
+		    for (int v = 0; v < nt; v++) {
+			int i = P.off[s] + u, j = P.off[t] + v;
+			double g = (w || i <= j) ? Gd[i + (size_t) qd * j] : Gd[j + (size_t) qd * i];
+			acc[q][u + ns * v] = g;
+		    }
+	    }
+    }
     UNPROTECT(2);
     return out;
 }
@@ -385,11 +466,26 @@ SEXP dm_struct_xty(SEXP setup, SEXP vars, SEXP Y_)
 	memset(acc[t], 0, sizeof(double) * (size_t) len);
     }
     tblock *Bk = alloc_blocks(&S);
+    dpart P = dense_part(&S);
+    int qd = P.q;
+    double *Rd = NULL;
+    if (qd > 0) {
+	Rd = (double *) R_alloc((size_t) qd * K, sizeof(double));
+	memset(Rd, 0, sizeof(double) * (size_t) qd * K);
+    }
     for (R_xlen_t i0 = 0; i0 < S.n; i0 += BLOCK) {
 	int nb = (int) (S.n - i0 < BLOCK ? S.n - i0 : BLOCK);
+	for (int t = 0; t < S.nt; t++) term_block(&S.t[t], S.n, i0, nb, Bk[t].F, Bk[t].N);
+	if (qd > 0) {
+	    gather_dense(&S, Bk, &P, nb);
+	    double one = 1.0;
+	    int ldy = (int) S.n;
+	    F77_CALL(dgemm)("T", "N", &qd, &K, &nb, &one, P.buf, &nb, Y + i0, &ldy,
+			    &one, Rd, &qd FCONE FCONE);
+	}
 	for (int t = 0; t < S.nt; t++) {
+	    if (P.off[t] >= 0) continue; /* dense part: BLAS */
 	    const sterm *T = &S.t[t];
-	    term_block(T, S.n, i0, nb, Bk[t].F, Bk[t].N);
 	    const int *F = Bk[t].F;
 	    const double *N = Bk[t].N;
 	    int ns = T->ns, L = T->L;
@@ -408,6 +504,15 @@ SEXP dm_struct_xty(SEXP setup, SEXP vars, SEXP Y_)
 	    }
 	}
     }
+    if (qd > 0) {
+	for (int t = 0; t < S.nt; t++) {
+	    if (P.off[t] < 0) continue;
+	    int ns = S.t[t].ns;
+	    for (int k = 0; k < K; k++)
+		for (int u = 0; u < ns; u++)
+		    acc[t][u + (R_xlen_t) ns * k] = Rd[P.off[t] + u + (size_t) qd * k];
+	}
+    }
     UNPROTECT(2);
     return out;
 }
@@ -424,11 +529,34 @@ SEXP dm_struct_mult(SEXP setup, SEXP vars, SEXP P, SEXP K_)
     double *o = REAL(out);
     memset(o, 0, sizeof(double) * (size_t) S.n * K);
     tblock *Bk = alloc_blocks(&S);
+    dpart DP = dense_part(&S);
+    int qd = DP.q;
+    double *Pd = NULL;
+    if (qd > 0) {
+	/* the dense terms' tables, stacked: qd x K */
+	Pd = (double *) R_alloc((size_t) qd * K, sizeof(double));
+	for (int t = 0; t < S.nt; t++) {
+	    if (DP.off[t] < 0) continue;
+	    int ns = S.t[t].ns;
+	    const double *p = REAL(VECTOR_ELT(P, t));
+	    for (int k = 0; k < K; k++)
+		for (int u = 0; u < ns; u++)
+		    Pd[DP.off[t] + u + (size_t) qd * k] = p[u + (R_xlen_t) ns * k];
+	}
+    }
     for (R_xlen_t i0 = 0; i0 < S.n; i0 += BLOCK) {
 	int nb = (int) (S.n - i0 < BLOCK ? S.n - i0 : BLOCK);
+	for (int t = 0; t < S.nt; t++) term_block(&S.t[t], S.n, i0, nb, Bk[t].F, Bk[t].N);
+	if (qd > 0) {
+	    gather_dense(&S, Bk, &DP, nb);
+	    double one = 1.0;
+	    int ldo = (int) S.n;
+	    F77_CALL(dgemm)("N", "N", &nb, &K, &qd, &one, DP.buf, &nb, Pd, &qd,
+			    &one, o + i0, &ldo FCONE FCONE);
+	}
 	for (int t = 0; t < S.nt; t++) {
+	    if (DP.off[t] >= 0) continue; /* dense part: BLAS */
 	    const sterm *T = &S.t[t];
-	    term_block(T, S.n, i0, nb, Bk[t].F, Bk[t].N);
 	    const int *F = Bk[t].F;
 	    const double *N = Bk[t].N;
 	    const double *p = REAL(VECTOR_ELT(P, t));
