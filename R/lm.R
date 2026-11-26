@@ -157,8 +157,6 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
     fit$offset_call <- P$offset_call
     fit$env <- P$env
     fit$method <- if (inherits(P$x, "xtx_remote")) { if (fit$compressed) "patterns" else "SQL moments" }
-    ## (the rows of a remote design, which later queries reuse)
-    if (!is.null(fit$method)) assign("n", fit$rows, envir = P$x$cache)
     ## (the data of a remote fit or a fit on a design: always kept)
     if (model || is.null(P$frame)) fit$data <- list(design = P$x, y = P$y, weights = P$w, offset = P$off)
     if (model) fit$model <- P$frame

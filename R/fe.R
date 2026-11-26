@@ -224,7 +224,7 @@ xtx_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing,
     if (!is.null(fit$method)) {
         ## nothing to drop
     } else if (model) {
-        fit$model <- prob$x$vars
+        fit$model <- prob$frame
     } else {
         fit$x <- fit$cols <- NULL
     }

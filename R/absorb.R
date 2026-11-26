@@ -763,8 +763,9 @@ xtx_fe_uncenter <- function(est, Tm, icol) {
 #'   groupings, one per FE; `cl`, the cluster grouping or `NULL`), `more` (the
 #'   columns of `problem$more` on those rows), `levels` (per FE, a data frame
 #'   of the levels in code order), `nsingle` and `nperfect` (the rows dropped
-#'   as singletons and as perfectly fit) and `rows` (in memory, the rows of
-#'   the model frame kept). The groupings are for [design_absorb_wls()],
+#'   as singletons and as perfectly fit), `rows` (in memory, the rows of
+#'   the model frame kept) and `frame` (in memory, the model frame of those
+#'   rows; `NULL` remotely). The groupings are for [design_absorb_wls()],
 #'   [design_absorb()] and [design_absorb_fitted()]; `g$G` is the number of
 #'   levels of grouping `g`.
 #' @export
@@ -863,7 +864,7 @@ design_absorb_rows <- function(problem, singletons = TRUE, zero = FALSE, one = F
     list(x = x, x_rows = x,
          cols = list(z = on(z), w = on(w), codes = lapply(cds, function(cd) oncodes(cd$codes)), cl = oncodes(cl)),
          more = lapply(more, on), levels = lapply(cds, `[[`, "levels"), nsingle = as.integer(nsingle),
-         nperfect = as.integer(nperfect), rows = rows)
+         nperfect = as.integer(nperfect), rows = rows, frame = if (!inherits(x, "xtx_remote")) x$vars)
 }
 
 

@@ -1170,6 +1170,9 @@ xtx_p_patterns <- function(x, z, w = NULL, compress = "auto", keys = NULL, fit =
         pt <- xtx_sql_patterns(x, unclass(z)$sql, if (!is.null(w)) unclass(w)$sql,
                               keys = if (!is.null(keys)) unclass(keys)$sql, mode = mode, fit = fit)
         if (is.null(pt)) return(NULL)
+        ## (the rows of the design, which later queries reuse: for a linear
+        ## model, as its fit kept them)
+        if (identical(fit, "lm")) assign("n", sum(pt$n), envir = x$cache)
         pos <- which(pt$sw > 0)
         ws <- pt$sw[pos]
         if (is.null(w) && all(ws == 1)) ws <- NULL

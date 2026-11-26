@@ -110,7 +110,8 @@ xtx_dots <- function(...) {
 ## SQL, or evaluated in R into new columns of the data of D), or NULL.
 ## Returns list(D, off).
 xtx_remote_new_offset <- function(object, D) {
-    tt <- D$plan$terms
+    ## (the terms of the design's plan: those of the fit's specification)
+    tt <- stats::terms(object$spec)
     vars <- attr(tt, "variables")
     exprs <- lapply(attr(tt, "offset"), function(i) vars[[i + 1L]][[2L]])
     names(exprs) <- if (length(exprs)) paste0("offset_term", seq_along(exprs))

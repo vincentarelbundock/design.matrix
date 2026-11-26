@@ -22,8 +22,9 @@ A list: \code{x} (the design of the rows kept; \code{x_rows} the same),
 groupings, one per FE; \code{cl}, the cluster grouping or \code{NULL}), \code{more} (the
 columns of \code{problem$more} on those rows), \code{levels} (per FE, a data frame
 of the levels in code order), \code{nsingle} and \code{nperfect} (the rows dropped
-as singletons and as perfectly fit) and \code{rows} (in memory, the rows of
-the model frame kept). The groupings are for \code{\link[=design_absorb_wls]{design_absorb_wls()}},
+as singletons and as perfectly fit), \code{rows} (in memory, the rows of
+the model frame kept) and \code{frame} (in memory, the model frame of those
+rows; \code{NULL} remotely). The groupings are for \code{\link[=design_absorb_wls]{design_absorb_wls()}},
 \code{\link[=design_absorb]{design_absorb()}} and \code{\link[=design_absorb_fitted]{design_absorb_fitted()}}; \code{g$G} is the number of
 levels of grouping \code{g}.
 }
