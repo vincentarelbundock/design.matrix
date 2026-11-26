@@ -254,8 +254,9 @@ dmfit_response <- function(mf) {
     if (!is.numeric(v) && !is.logical(v))
         stop("The response must be numeric.", call. = FALSE)
     if (is.null(dim(v))) {
-        attributes(v) <- NULL
-        storage.mode(v) <- "double"
+        ## (no copy of a plain double vector)
+        if (!is.null(attributes(v))) attributes(v) <- NULL
+        if (!is.double(v)) storage.mode(v) <- "double"
     } else if (ncol(v) == 1L) {
         v <- as.double(v)
     }
@@ -399,7 +400,9 @@ dmfit_ls <- function(x, z, w, tol, intercept, sums = TRUE) {
     ## (the weighted least squares steps of a GLM need only the solution)
     if (!sums) return(list(coefficients = coef, rank = q$rank, pivot = q$pivot, R = q$R, tol = tol))
     f <- dmp_mult(x, beta, along = list(z, w))
-    r <- z - f
+    ## (in memory, the residual sums in one pass in C)
+    mem <- is.double(f) && is.null(dim(f)) && is.double(z) && is.null(dim(z)) && length(z) == length(f) &&
+        (is.null(w) || (is.double(w) && is.null(dim(w)) && length(w) == length(z)))
     ww <- if (is.null(w)) 1 else w
     ## w v^2, 0 for rows with zero weight (whose squares can overflow)
     wsq <- function(v) if (is.null(w)) v^2 else dmc_ifelse(w > 0, w * v^2, 0)
@@ -421,7 +424,13 @@ dmfit_ls <- function(x, z, w, tol, intercept, sums = TRUE) {
             mss <- max(mss, 0)
         }
     }
+    if (is.null(rss) && mem) {
+        s <- .Call(C_dm_ls_sums, z, f, w, isTRUE(intercept))
+        rss <- s[1L]
+        mss <- s[2L]
+    }
     if (is.null(rss)) {
+        r <- z - f
         rss <- dm_colsum(wsq(r))
         mss <- if (intercept) {
             fbar <- if (is.null(w)) dmc_mean(f) else dm_colsum(w * f) / dm_colsum(w)

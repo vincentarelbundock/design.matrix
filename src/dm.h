@@ -50,6 +50,18 @@ SEXP dm_fe_struct_gsum(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_fe_code_int(SEXP, SEXP);
 SEXP dm_fe_nested(SEXP, SEXP, SEXP);
 SEXP dm_fe_lookup(SEXP, SEXP);
+/* fused.c */
+SEXP dm_ifelse(SEXP, SEXP, SEXP);
+SEXP dm_notnan(SEXP);
+SEXP dm_fe_fitted_add(SEXP, SEXP, SEXP);
+SEXP dm_fe_resid(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP dm_fe_moments(SEXP, SEXP);
+SEXP dm_glm_working(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP dm_poisson_dev(SEXP, SEXP, SEXP);
+SEXP dm_unwrap_vars(SEXP);
+SEXP dm_levels_unused(SEXP, SEXP);
+SEXP dm_ls_sums(SEXP, SEXP, SEXP, SEXP);
+SEXP dm_binomial_ll(SEXP, SEXP, SEXP, SEXP);
 SEXP dm_fe_ichol(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_fe_pcg(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_fe_schur(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
