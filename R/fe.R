@@ -949,12 +949,7 @@ NULL
 ## parent frame.
 dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, model,
                      vcov, fixef.rm, dots) {
-    if (!is.null(call$na.action)) dm_fe_na_kind(eval(call$na.action, env))
-    dmfit_check_compress(compress)
-    if (isTRUE(compress)) stop("`compress = TRUE` is not supported with fixed effects.", call. = FALSE)
-    if (!is.null(call$subset)) stop("`subset` is not supported with fixed effects.", call. = FALSE)
-    checkmate::assert_number(tol, lower = 0, finite = TRUE)
-    checkmate::assert_flag(model)
+    ## (arguments checked by design_lm(): checks.R)
     ## aliasing: fixest's criterion (residual variance below tol times the
     ## variance before the FE), with fixest's default collin.tol = 1e-10
     if (tol_missing) tol <- 1e-10

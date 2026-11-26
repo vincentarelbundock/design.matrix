@@ -202,16 +202,16 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
     dmglm_kind(family)
     control <- do.call(stats::glm.control, as.list(control))
     cl <- match.call()
-    fe <- dm_fe_has_bar(formula)
-    if (inherits(formula, c("design_matrix", "dm_remote"))) {
-        dmfit_check_compress(compress)
-        checkmate::assert_flag(model)
-        if (!identical(vcov, "iid"))
-            stop("`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", call. = FALSE)
-        if (!missing(data) || !missing(na.action) || !is.null(contrasts))
-            stop("With a design matrix, give the response as `y`; `data`, ",
-                 "`na.action` and `contrasts` do not apply.", call. = FALSE)
-        if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
+    ## argument checks (checks.R)
+    design <- inherits(formula, c("design_matrix", "dm_remote"))
+    fe <- !design && dm_fe_has_bar(formula)
+    dm_check_call(design, c(data = !missing(data), na.action = !missing(na.action), contrasts = !is.null(contrasts)),
+                  y, ...)
+    if (!design && !missing(na.action)) {
+        if (fe) dm_fe_na_kind(na.action) else dm_na_kind(na.action, c("omit", "exclude", "fail"))
+    }
+    dm_check_fit_args(compress, model, vcov = vcov, fe = fe, start = start)
+    if (design) {
         ## (remotely, `weights` and `offset` are columns or expressions)
         fit <- if (inherits(formula, "dm_remote")) {
             dm_remote_glm_design(formula, y, if (missing(weights)) NULL else substitute(weights),
@@ -224,20 +224,11 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
         fit$call <- cl
         return(fit)
     }
-    if (!is.null(y)) stop("`y` applies only when the first argument is a design matrix.", call. = FALSE)
-    if (!missing(na.action)) {
-        if (fe) dm_fe_na_kind(na.action) else dm_na_kind(na.action, c("omit", "exclude", "fail"))
-    }
     ## fixed effects (fe_glm.R)
     if (fe) {
         return(dm_fe_glm(cl, parent.frame(), formula, family, if (missing(data)) NULL else data, start, control,
                          contrasts, compress, model, vcov, fixef.rm, dm_dots(...)))
     }
-    ## (the checks of design_lm(), in the same order)
-    if (!identical(vcov, "iid"))
-        stop("`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", call. = FALSE)
-    dmfit_check_compress(compress)
-    checkmate::assert_flag(model)
     ## the design and columns of a data frame or remote data (remote_fit.R)
     P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, dm_dots(...),
                         family = dmglm_kind(family))

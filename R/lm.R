@@ -127,39 +127,30 @@
 design_lm <- function(formula, data, subset, weights, na.action, offset,
                       contrasts = NULL, compress = "auto", tol = 1e-07,
                       model = TRUE, y = NULL, vcov = "iid", fixef.rm = "singleton", ...) {
-    if (inherits(formula, c("design_matrix", "dm_remote"))) {
-        if (!missing(data) || !missing(subset) || !missing(na.action) || !is.null(contrasts))
-            stop("With a design matrix, give the response as `y`; `data`, `subset`, ",
-                 "`na.action` and `contrasts` do not apply.", call. = FALSE)
-        if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
-        if (!identical(vcov, "iid"))
-            stop("`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", call. = FALSE)
-        if (inherits(formula, "dm_remote")) {
-            ## a remote design (see remote_fit.R): `y`, `weights` and `offset`
-            ## are columns, DBI::SQL() or R expressions over the columns
-            if (!is.null(formula$scale))
-                stop("Fit an unscaled remote design, with `weights` naming a column.", call. = FALSE)
-            dmfit_check_compress(compress)
-            fit <- dm_remote_lm_design(formula, substitute(y), if (missing(weights)) NULL else substitute(weights),
-                                       if (missing(offset)) NULL else substitute(offset), compress, tol,
-                                       parent.frame())
+    ## argument checks (checks.R)
+    design <- inherits(formula, c("design_matrix", "dm_remote"))
+    fe <- !design && dm_fe_has_bar(formula)
+    dm_check_call(design, c(data = !missing(data), subset = !missing(subset), na.action = !missing(na.action),
+                            contrasts = !is.null(contrasts)), y, ...)
+    if (fe && !missing(na.action)) dm_fe_na_kind(na.action)
+    dm_check_fit_args(compress, model, tol, vcov, fe = fe, subset = !missing(subset))
+    if (design) {
+        fit <- if (inherits(formula, "dm_remote")) {
+            ## `y`, `weights` and `offset` are columns, DBI::SQL() or R
+            ## expressions over the columns (remote_fit.R)
+            dm_remote_lm_design(formula, substitute(y), if (missing(weights)) NULL else substitute(weights),
+                                if (missing(offset)) NULL else substitute(offset), compress, tol, parent.frame())
         } else {
-            fit <- dmfit_design(formula, y, if (missing(weights)) NULL else weights,
-                                if (missing(offset)) NULL else offset, compress, tol)
+            dmfit_design(formula, y, if (missing(weights)) NULL else weights,
+                         if (missing(offset)) NULL else offset, compress, tol)
         }
         fit$call <- match.call()
         return(fit)
     }
-    if (!is.null(y)) stop("`y` applies only when the first argument is a design matrix.", call. = FALSE)
     ## fixed effects (fe.R)
-    if (dm_fe_has_bar(formula))
+    if (fe)
         return(dm_fe_lm(match.call(), parent.frame(), formula, contrasts, compress, tol, missing(tol),
                         model, vcov, fixef.rm, dm_dots(...)))
-    if (!identical(vcov, "iid"))
-        stop("`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", call. = FALSE)
-    dmfit_check_compress(compress)
-    checkmate::assert_number(tol, lower = 0, finite = TRUE)
-    checkmate::assert_flag(model)
     cl <- match.call()
     ## the design and columns of a data frame or remote data (remote_fit.R)
     P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, dm_dots(...))
@@ -184,8 +175,6 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
 dmfit_design <- function(x, y, weights = NULL, offset = NULL,
                          compress = "auto", tol = 1e-07) {
     checkmate::assert_class(x, "design_matrix")
-    dmfit_check_compress(compress)
-    checkmate::assert_number(tol, lower = 0, finite = TRUE)
     if (is.matrix(y) && ncol(y) == 1L) y <- drop(y)
     checkmate::assert_numeric(y, len = nrow(x))
     y <- as.double(y)
@@ -197,11 +186,6 @@ dmfit_design <- function(x, y, weights = NULL, offset = NULL,
     fit <- dmfit_lm(x, y, weights, offset, compress, tol, intercept = intercept)
     fit$data <- list(design = x, y = y, weights = weights, offset = offset)
     fit
-}
-
-dmfit_check_compress <- function(compress) {
-    if (!(isTRUE(compress) || isFALSE(compress) || identical(compress, "auto")))
-        stop("`compress` must be \"auto\", TRUE or FALSE.", call. = FALSE)
 }
 
 ## The response of a model frame, as model.response(mf, "numeric") but

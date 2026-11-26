@@ -84,11 +84,7 @@ dm_fe_bounds <- function(family) {
 dm_fe_glm <- function(call, env, formula, family, data, start, control, contrasts, compress, model,
                       vcov, fixef.rm, dots) {
     k <- dmglm_kind(family)
-    ## (the checks of dm_fe_lm(), in the same order)
-    dmfit_check_compress(compress)
-    if (isTRUE(compress)) stop("`compress = TRUE` is not supported with fixed effects.", call. = FALSE)
-    if (!is.null(start)) stop("`start` is not supported with fixed effects.", call. = FALSE)
-    checkmate::assert_flag(model)
+    ## (arguments checked by design_glm(): checks.R)
     pf <- dm_fe_parse(formula)
     clv <- dm_fe_vcov_arg(vcov)
     fixef.rm <- dm_fe_rm_arg(fixef.rm, glm = TRUE)

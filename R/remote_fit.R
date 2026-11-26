@@ -402,6 +402,7 @@ dm_remote_fit_na <- function(D, res, na, args, offt) {
 ## design_lm(<remote design>, y = , weights = , offset = ): unevaluated
 ## arguments resolved in `env` against the columns of the design's data.
 dm_remote_lm_design <- function(D, y, weights, offset, compress, tol, env) {
+    if (!is.null(D$scale)) stop("Fit an unscaled remote design, with `weights` naming a column.", call. = FALSE)
     if (is.null(y)) {
         if (is.null(D$response))
             stop("With a remote design, give `y`, the name of one column (or use a design with a response).",
@@ -422,7 +423,6 @@ dm_remote_lm_design <- function(D, y, weights, offset, compress, tol, env) {
 ## The fit of a remote design: the fitting core of lm.R on the remote
 ## primitives (primitives.R).
 dm_remote_lm_fit <- function(D, y, w, off, compress = "auto", tol = 1e-07) {
-    dmfit_check_compress(compress)
     intercept <- attr(D$plan$terms, "intercept") > 0L && !isTRUE(D$plan$drop_intercept)
     out <- dmfit_lm(D, y, w, off, compress, tol, intercept)
     out$method <- if (out$compressed) "patterns" else "SQL moments"

@@ -598,3 +598,21 @@ fw_m <- design_lm(fo_lm, d, weights = wloc * 2)
 fw_r <- suppressMessages(design_lm(fo_lm, con, table = "d", weights = wloc * 2))
 expect_equal(coef(fw_m), coef(fw_r))
 expect_equal(coef(fw_m), coef(lm(y ~ x, d, weights = w)))
+
+# Designs as first argument: the same checks, in the same order (checks.R),
+# for lm and glm, in memory and remotely
+Dm <- design_matrix(y ~ x, d)
+Dr <- design_matrix(y ~ x, con, table = "d")
+for (D in list(Dm, Dr)) {
+    expect_error(design_lm(D, data = d, compress = "no"),
+                 "With a design matrix, give the response as `y`; `data`, `subset`, `na.action` and `contrasts` do not apply.", fixed = TRUE)
+    expect_error(design_glm(D, gaussian, data = d, compress = "no"),
+                 "With a design matrix, give the response as `y`; `data`, `na.action` and `contrasts` do not apply.", fixed = TRUE)
+    expect_error(design_glm(D, gaussian, foo = nosuch, compress = "no"),
+                 "Unknown arguments: foo", fixed = TRUE)
+    expect_error(design_lm(D, vcov = "hc1", compress = "no"),
+                 "`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", fixed = TRUE)
+    expect_error(design_glm(D, gaussian, vcov = "hc1", compress = "no"),
+                 "`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", fixed = TRUE)
+    expect_error(design_lm(D, y = d$y, tol = -1), "tol")
+}
