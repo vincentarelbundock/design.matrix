@@ -10,3 +10,4 @@
 ^Makefile$
 ^website$
 ^_site$
+^\.rlib$

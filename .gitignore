@@ -78,3 +78,6 @@ vignettes/*.pdf
 /website/**/.calepin/
 /website/**/.calepin-entry.*
 /website/reference/
+
+# local library
+/.rlib/

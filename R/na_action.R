@@ -57,22 +57,3 @@ xtx_na_pad <- function(na_act, v, x, pad = stats::napredict) {
     pad(na_act, v)
 }
 
-## na.exclude for a remote fit: results on the rows used, padded with the
-## rows of the data that the fit dropped for missing values (NULL results),
-## as napredict() pads in memory (see napredict.xtx_remote_exclude()).
-xtx_remote_exclude <- function(D) structure(list(design = D), class = "xtx_remote_exclude")
-
-#' @exportS3Method stats::napredict
-napredict.xtx_remote_exclude <- function(omit, x, ...) {
-    if (!inherits(x, "xtx_remote_table")) return(x)
-    D0 <- omit$design
-    con <- attr(x, "connection")
-    sel <- sprintf("SELECT * FROM %s UNION ALL BY NAME SELECT s.* FROM (%s) AS s WHERE NOT COALESCE(%s, FALSE)",
-                   DBI::dbQuoteIdentifier(con, unclass(x)[1L]), D0$src$select, D0$filter)
-    name <- xtx_tmp_name("xtx_out")
-    DBI::dbExecute(con, sprintf("CREATE TEMPORARY VIEW %s AS %s", DBI::dbQuoteIdentifier(con, name), sel))
-    structure(name, class = "xtx_remote_table", connection = con, holder = attr(x, "holder"))
-}
-
-#' @exportS3Method stats::naresid
-naresid.xtx_remote_exclude <- function(omit, x, ...) napredict.xtx_remote_exclude(omit, x, ...)
