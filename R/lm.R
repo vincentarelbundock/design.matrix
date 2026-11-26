@@ -254,8 +254,9 @@ dmfit_response <- function(mf) {
     if (!is.numeric(v) && !is.logical(v))
         stop("The response must be numeric.", call. = FALSE)
     if (is.null(dim(v))) {
-        attributes(v) <- NULL
-        storage.mode(v) <- "double"
+        ## (no copy of a plain double vector)
+        if (!is.null(attributes(v))) attributes(v) <- NULL
+        if (!is.double(v)) storage.mode(v) <- "double"
     } else if (ncol(v) == 1L) {
         v <- as.double(v)
     }

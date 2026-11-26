@@ -295,6 +295,13 @@ dmc_ifelse <- function(test, yes, no) {
     f <- dm_rcols_frame(test, yes, no)
     if (is.null(f)) {
         n <- length(test)
+        ## (one pass in C, which allocates only the result)
+        if (is.logical(test) && n > 0L && length(yes) %in% c(1L, n) && length(no) >= 1L &&
+            is.numeric(yes) && is.numeric(no)) {
+            if (!is.double(yes)) yes <- as.double(yes)
+            if (!is.double(no)) no <- as.double(no)
+            return(.Call(C_dm_ifelse, test, yes, no))
+        }
         out <- rep_len(as.double(no), n)
         i <- which(test)
         out[i] <- if (length(yes) == 1L) yes else yes[i]
@@ -717,8 +724,9 @@ dm_is_codes <- function(x) inherits(x, "dm_codes")
 dmp_groupsum_codes <- function(col, group) {
     G <- group$G
     if (!dm_is_rcols(col) && !dm_is_rcols(group$codes)) {
-        W <- if (is.matrix(col)) col else matrix(col, ncol = 1L)
-        storage.mode(W) <- "double"
+        ## (the kernel takes a vector as one column: no copy of a double)
+        W <- col
+        if (!is.double(W)) storage.mode(W) <- "double"
         return(.Call(C_dm_fe_gsum, group$codes, G, W))
     }
     res <- dm_group_query(list(group$codes), list(col), nulls = TRUE)
@@ -773,11 +781,16 @@ dmp_colsums_groups <- function(x, groups, extra = NULL) {
     if (dm_is_comb(x)) {
         if (!is.null(x$design2)) stop("A combination of two designs has no grouped sums here.", call. = FALSE)
         D <- x$design
-        w <- if (is.null(x$scale)) NULL else rep_len(as.double(x$scale), nrow(D))
+        s <- x$scale
+        w <- if (is.null(s)) NULL
+             else if (is.double(s) && length(s) == nrow(D) && is.null(attributes(s))) s
+             else rep_len(as.double(s), nrow(D))
     }
     G <- vapply(groups, function(g) g$G, 1L)
     codes <- lapply(groups, function(g) g$codes)
-    Y <- if (is.null(extra)) NULL else { E <- if (is.matrix(extra)) extra else matrix(extra, ncol = 1L); storage.mode(E) <- "double"; E }
+    ## (the kernels take a vector as one column: no copy of a double)
+    Y <- extra
+    if (!is.null(Y) && !is.double(Y)) storage.mode(Y) <- "double"
     if (dm_colsums_struct_ok(D, G)) {
         M <- .Call(C_dm_fe_struct_gsum, D$setup, D$vars, w, codes, as.integer(G), Y, TRUE)
         info <- dm_struct_info(D)
@@ -801,7 +814,7 @@ dmp_colsums_groups <- function(x, groups, extra = NULL) {
                 }
                 q <- q + L * ns
             }
-            list(S = S, n = m[1L, ], extra = if (is.null(Y)) NULL else t(m[q + seq_len(ncol(Y)), , drop = FALSE]))
+            list(S = S, n = m[1L, ], extra = if (is.null(Y)) NULL else t(m[q + seq_len(NCOL(Y)), , drop = FALSE]))
         }))
     }
     one <- if (is.null(w)) rep(1, nrow(D)) else w
@@ -859,7 +872,13 @@ dmc_is_finite <- function(x) {
 }
 
 ## TRUE where x is not missing (NA or NaN; infinite values count as present).
-dmc_notnan <- function(x) dmc_is_finite(x) | (abs(x) == Inf)
+## (In memory, as remotely for NULL, a missing value gives NA, not FALSE: in
+## memory one pass in C for a plain vector.)
+dmc_notnan <- function(x) {
+    if (!dm_is_rcols(x) && is.null(attributes(x)) && (is.double(x) || is.integer(x) || is.logical(x)))
+        return(.Call(C_dm_notnan, x))
+    dmc_is_finite(x) | (abs(x) == Inf)
+}
 
 ## The rows where a logical column is TRUE (with negate, where it is not
 ## TRUE: FALSE or missing), as a column to sum: 1 or 0. In memory a logical

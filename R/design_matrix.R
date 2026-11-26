@@ -182,6 +182,10 @@ deparse2 <- function(x) {
 ## C routine evaluates contrasts().
 dm_new_design <- function(t, vars, contrasts, setup = NULL, path = "general",
                           rho = environment()) {
+    ## (plain copies of ALTREP variables, such as factors that stats made
+    ## wrappers by setting their contrasts: the kernels would copy them at
+    ## every call)
+    vars <- .Call(C_dm_unwrap_vars, vars)
     if (is.null(setup)) {
         setup <- .Call(C_dm_setup, t, vars, rho)
     }

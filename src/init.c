@@ -50,6 +50,14 @@ static const R_CallMethodDef CallEntries[] = {
     {"dm_fe_ichol", (DL_FUNC) &dm_fe_ichol, 5},
     {"dm_fe_pcg", (DL_FUNC) &dm_fe_pcg, 16},
     {"dm_fe_schur", (DL_FUNC) &dm_fe_schur, 10},
+    {"dm_ifelse", (DL_FUNC) &dm_ifelse, 3},
+    {"dm_notnan", (DL_FUNC) &dm_notnan, 1},
+    {"dm_fe_fitted_add", (DL_FUNC) &dm_fe_fitted_add, 3},
+    {"dm_fe_resid", (DL_FUNC) &dm_fe_resid, 6},
+    {"dm_fe_moments", (DL_FUNC) &dm_fe_moments, 2},
+    {"dm_glm_working", (DL_FUNC) &dm_glm_working, 7},
+    {"dm_poisson_dev", (DL_FUNC) &dm_poisson_dev, 3},
+    {"dm_unwrap_vars", (DL_FUNC) &dm_unwrap_vars, 1},
     {"dm_omp_max_threads", (DL_FUNC) &dm_omp_max_threads, 0},
     {NULL, NULL, 0}
 };

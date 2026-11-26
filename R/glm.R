@@ -359,7 +359,12 @@ dmglm_cf <- function(k) {
     dev <- switch(k$dev,
         gaussian = function(y, m, w) w * ((y - m)^2),
         binomial = dmc_binomial_dev,
-        poisson = function(y, m, w) dmc_ifelse(y > 0, 2 * w * (y * log(y / m) - (y - m)), 2 * m * w),
+        poisson = function(y, m, w) {
+            ## (in memory one pass in C)
+            if (dmglm_mem_working(list(y, m, w), max(length(y), length(m), length(w))))
+                return(.Call(C_dm_poisson_dev, y, m, w))
+            dmc_ifelse(y > 0, 2 * w * (y * log(y / m) - (y - m)), 2 * m * w)
+        },
         gamma = function(y, m, w) -2 * w * (log(dmc_ifelse(y == 0, 1, y / m)) - (y - m) / m),
         qgamma = function(y, m, w) dmc_pmax(-2 * w * (log(dmc_ifelse(y == 0, 1, y) / m) - (y - m) / m), 0),
         invgauss = function(y, m, w) w * ((y - m)^2) / (y * m^2))
@@ -385,7 +390,14 @@ dmglm_cf <- function(k) {
         a(eta) & b(mu)
     }
     list(linkfun = link$fun, linkinv = link$inv, mu.eta = link$me, variance = variance, valid = valid,
-         dev = dev, sat = sat, mustart = mustart)
+         dev = dev, sat = sat, mustart = mustart, me_is_mu = k$link == "log")
+}
+
+## d mu / d eta at eta, mu = linkinv(eta): for the log link mu itself (the
+## same expression; in memory, no second pass).
+dmglm_mu_eta <- function(cf, eta, mu) {
+    if (isTRUE(cf$me_is_mu) && !dm_is_rcols(eta) && !dm_is_rcols(mu)) return(mu)
+    cf$mu.eta(eta)
 }
 
 ## ---- columns of the response ------------------------------------------------
@@ -628,7 +640,12 @@ dmglm_wls_mean <- function(w2, z) {
 dmglm_working <- function(u, eta, mu, cf) {
     W <- u$W
     v <- cf$variance(mu)
-    me <- cf$mu.eta(eta)
+    me <- dmglm_mu_eta(cf, eta, mu)
+    if (dmglm_mem_working(list(W, eta, mu, u$y, u$off, v, me), length(eta))) {
+        ## in memory: the same values and counts in one pass (C)
+        r <- .Call(C_dm_glm_working, W, eta, mu, u$y, u$off, v, me)
+        return(dmglm_working_checks(r[[3L]], r[[1L]], r[[2L]]))
+    }
     good <- (W > 0) & (me != 0)
     wz <- dmc_freeze(dmc_cbind(dmc_ifelse(good, W * me * me / v, 0),
                                  dmc_ifelse(good, (eta - u$off) + (u$y - mu) / me, 0)),
@@ -638,6 +655,17 @@ dmglm_working <- function(u, eta, mu, cf) {
     s <- dmc_sums(dmc_count((W > 0) & !dmc_notnan(v)), dmc_count((W > 0) & v == 0),
                                dmc_count((W > 0) & !dmc_notnan(me)), dmc_count(good),
                                dmc_count(dmc_is_finite(w2) & dmc_is_finite(z), negate = TRUE))
+    dmglm_working_checks(s, w2, z)
+}
+
+## Can the working columns be computed by the kernel (in memory, plain
+## double vectors of length 1 or n)?
+dmglm_mem_working <- function(cols, n) {
+    all(vapply(cols, function(v) is.double(v) && is.null(dim(v)) && length(v) %in% c(1L, n), NA)) && n > 0L
+}
+
+## The checks of dmglm_working() from its counts s.
+dmglm_working_checks <- function(s, w2, z) {
     if (isTRUE(is.na(s[1L]) || s[1L] > 0)) stop("NAs in V(mu)", call. = FALSE)
     if (isTRUE(s[2L] > 0)) stop("0s in V(mu)", call. = FALSE)
     if (isTRUE(is.na(s[3L]) || s[3L] > 0)) stop("NAs in d(mu)/d(eta)", call. = FALSE)
@@ -673,7 +701,9 @@ dmglm_units <- function(u, cf, k, first = NULL, eta = NULL, mu = NULL) {
             u$wls(wk$w2, wk$z)
         },
         eval = function(beta) {
-            eta <- u$lin(beta) + u$off
+            eta <- u$lin(beta)
+            ## (in memory, no pass to add a zero offset)
+            if (dm_is_rcols(eta) || !identical(u$off, 0)) eta <- eta + u$off
             mu <- dmc_freeze(cf$linkinv(eta))
             v <- cf$valid(eta, mu)
             ext <- if (k$family == "binomial") dmc_count(mu > 1 - eps | mu < eps)
@@ -793,12 +823,17 @@ dmglm_final <- function(lin, cols, cf, k, ck, beta, old, eta0, dev, intercept) {
         eta <- dmc_col(P, 1L) + off
         eta_old <- dmc_col(P, 2L) + off
     }
-    ## (frozen together: columns of one frame)
-    mm <- dmc_freeze(dmc_cbind(cf$linkinv(eta), cf$linkinv(eta_old)))
-    mu <- dmc_col(mm, 1L)
-    me <- cf$mu.eta(eta)
-    mu0 <- dmc_col(mm, 2L)
-    me0 <- cf$mu.eta(eta_old)
+    ## (frozen together: columns of one frame; in memory, no need)
+    if (dm_is_rcols(eta)) {
+        mm <- dmc_freeze(dmc_cbind(cf$linkinv(eta), cf$linkinv(eta_old)))
+        mu <- dmc_col(mm, 1L)
+        mu0 <- dmc_col(mm, 2L)
+    } else {
+        mu <- cf$linkinv(eta)
+        mu0 <- cf$linkinv(eta_old)
+    }
+    me <- dmglm_mu_eta(cf, eta, mu)
+    me0 <- dmglm_mu_eta(cf, eta_old, mu0)
     good0 <- (w > 0) & (me0 != 0)
     w0 <- dmc_ifelse(good0, w * me0 * me0 / cf$variance(mu0), 0)
     r <- (y - mu) / me
