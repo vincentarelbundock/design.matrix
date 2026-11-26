@@ -86,7 +86,6 @@
 ## t(G - 1) for clustered tests), and singletons are dropped iteratively as
 ## feols() does by default.
 
-
 ## ---------------------------------------------------------------------------
 ## The estimator, on the primitives
 ##
@@ -113,26 +112,36 @@
 ## Steps: project (the moments, the FE absorbed) -> pivoted Cholesky ->
 ## solve -> refine (from the residuals) -> degrees of freedom.
 
-## Options of the solver: xtx.fe_solver ("auto", "dense", "chol"
-## or "pcg"), xtx.fe_precond ("auto", default: IC(0) when the
-## reduced system is formed, Jacobi when it is applied matrix-free;
-## "jacobi"; or "ichol", which forms it), xtx.fe_form_max (when
-## to form the reduced system, see xtx_fe_system()) and
-## xtx.fe_refine (steps of iterative refinement: "auto", default,
-## one step whose final pass over the residuals is skipped when the step's
-## correction is negligible, see xtx_fe_core(); or a count, steps always
-## followed by that pass).
-xtx_fe_opts <- function() {
-    solver <- getOption("xtx.fe_solver", "auto")
+#' Options of the fixed-effects solver
+#'
+#' `absorb_control()` collects the options of the solver of fixed effects
+#' (FE) that [design_absorb()] and [design_absorb_wls()] use: by default the
+#' options `xtx.fe_solver` (`"auto"`, `"dense"`, `"chol"` or `"pcg"`),
+#' `xtx.fe_precond` (`"auto"`, default: incomplete Cholesky when the reduced
+#' system is formed, Jacobi when it is applied without being formed;
+#' `"jacobi"`; or `"ichol"`, which always forms it), `xtx.fe_form_max` (when
+#' to form the reduced system: default 25, `0` never, `Inf` always) and
+#' `xtx.fe_refine` (refinement steps: `"auto"`, default, one step whose final
+#' pass over the residuals is skipped when its correction is negligible; or a
+#' count of steps, each followed by that pass).
+#'
+#' Names may change before the first release.
+#'
+#' @param solver,precond,form_max,refine See Details.
+#' @return A list of options for [design_absorb()] and [design_absorb_wls()].
+#' @examples
+#' absorb_control()$solver
+#' @export
+absorb_control <- function(solver = getOption("xtx.fe_solver", "auto"),
+                           precond = getOption("xtx.fe_precond", "auto"),
+                           form_max = getOption("xtx.fe_form_max", 25),
+                           refine = getOption("xtx.fe_refine", "auto")) {
     if (!checkmate::test_choice(solver, c("auto", "dense", "chol", "pcg")))
         stop("Option `xtx.fe_solver` must be \"auto\", \"dense\", \"chol\" or \"pcg\".", call. = FALSE)
-    precond <- getOption("xtx.fe_precond", "auto")
     if (!checkmate::test_choice(precond, c("auto", "ichol", "jacobi")))
         stop("Option `xtx.fe_precond` must be \"auto\", \"ichol\" or \"jacobi\".", call. = FALSE)
-    form_max <- getOption("xtx.fe_form_max", 25)
     if (!checkmate::test_number(form_max, lower = 0))
         stop("Option `xtx.fe_form_max` must be a non-negative number.", call. = FALSE)
-    refine <- getOption("xtx.fe_refine", "auto")
     auto <- identical(refine, "auto")
     if (!auto && !checkmate::test_count(refine))
         stop("Option `xtx.fe_refine` must be \"auto\" or a count.", call. = FALSE)
@@ -494,6 +503,8 @@ xtx_absorb <- function(x, z, w, codes, xcols, opts) {
     }
     variance <- function(dxx) dxx - colSums(B[[1L]])[xi]^2 / sum(nk[[1L]])
     scores <- function(we, cl) {
+        ## (a grouping of design_groups() as codes)
+        cl <- xtx_absorb_codes(cl)[[1L]]
         U <- xtx_p_colsums_groups(xtx_p_scale(x, we), list(cl))[[1L]]$S[, xcols, drop = FALSE]
         ## an FE is nested in the clusters when each of its levels is in
         ## one cluster; otherwise its scores need a correction
@@ -504,11 +515,11 @@ xtx_absorb <- function(x, z, w, codes, xcols, opts) {
         }
         list(U = U, nested = nested)
     }
-    list(G = G, solve = solve, project = project, effects = effects, update = update, cross = cross,
-         variance = variance, scores = scores)
+    structure(list(G = G, solve = solve, project = project, effects = effects, update = update, cross = cross,
+                   variance = variance, scores = scores), class = "xtx_absorb")
 }
 
-xtx_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_final = TRUE) {
+xtx_fe_core <- function(x, cols, tol, opts, warm = NULL, resid_final = TRUE) {
     xcols <- setdiff(seq_len(ncol(x)), which(colnames(x) == "(Intercept)"))
     px <- length(xcols)
     xi <- seq_len(px)
@@ -539,7 +550,7 @@ xtx_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_
                 df.residual = n - length(kp) - dof$fe_dof, nobs = n, tss = mo$tss,
                 tss_within = max(M[px + 1L, px + 1L], 0), info = c(pj$info, list(resid_pass = rf$info)),
                 we = rf$r$we, absorb = A)
-    if (cluster) out <- xtx_fe_cluster(out, cols$cl, out$we)
+    class(out) <- "xtx_absorb_fit"
     out
 }
 
@@ -694,31 +705,6 @@ xtx_fe_negligible <- function(r, Ae, delta, Rc) {
     is.finite(q) && abs(q) <= 1e-20 * r$rss
 }
 
-## Clustered covariance of a fit of xtx_fe_core() (`est`, which keeps its
-## absorption operator), clusters `cl` (a xtx_c_codes() grouping), weighted
-## residuals `we`: adds vcov_cluster and G_cluster to `est`.
-xtx_fe_cluster <- function(est, cl, we) {
-    px <- length(est$xcols)
-    kp <- est$kp
-    rank <- est$rank
-    G <- est$G
-    n <- est$nobs
-    Gc <- cl$G
-    sc <- est$absorb$scores(we, cl)
-    U <- sc$U[, kp, drop = FALSE]
-    nn <- !sc$nested
-    K_cl <- rank + if (any(nn)) sum(G[nn]) - (sum(nn) - 1L) else 1L
-    adj <- Gc / (Gc - 1) * (n - 1) / (n - K_cl)
-    Vc <- matrix(NA_real_, px, px)
-    if (rank) {
-        bk <- est$bread[kp, kp, drop = FALSE]
-        Vc[kp, kp] <- adj * bk %*% crossprod(U) %*% bk
-    }
-    est$vcov_cluster <- Vc
-    est$G_cluster <- Gc
-    est
-}
-
 ## X beta plus the FE values of the rows' levels, as a column (codes: per
 ## FE, integer codes, or, with `levels`, key columns matched to levels).
 ## With beta a p x k matrix and each fe[[k]] a G_k x k matrix, k columns.
@@ -752,19 +738,43 @@ xtx_fe_uncenter <- function(est, Tm, icol) {
     est
 }
 
-## The rows used and the FE codes, on the primitives (one code path): rows
-## with a missing or non-finite response or weight, a zero weight or a
-## missing FE or cluster value are dropped; then, iteratively until none is
-## left, rows in a level of some FE that the FE fit perfectly (grouped
-## counts and sums, a lookup of each row's level counts, xtx_p_subset()):
-## with fixef.rm = "singleton" or "perfect_fit", levels with one row
-## (singletons); with "infinite_coef" or "perfect_fit" and `bounds`, levels
-## whose response is all 0 (bounds$zero) or all 1 (bounds$one), whose FE
-## would be infinite in a GLM (fixest's rule). Every column is computed on
-## the design of the rows kept; `base$more` holds other columns to keep
-## (offset, GLM columns). Returns list(x, cols = list(z, w, codes, cl),
-## more, levels, nsingle, nperfect, rows).
-xtx_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "missing or negative weights not allowed") {
+#' The rows of a fit with fixed effects
+#'
+#' `design_absorb_rows()` selects the rows a fit with fixed effects (FE) uses
+#' and codes the FE on them, with one code path for data in memory and remote
+#' data: rows with a missing or non-finite response or weight, a zero weight,
+#' or a missing FE or cluster value are dropped; then, iteratively until none
+#' is left, rows in a level of some FE that the FE fit perfectly: levels with
+#' one row (singletons, `singletons = TRUE`), and levels whose response is all
+#' 0 (`zero = TRUE`) or all 1 (`one = TRUE`), whose FE would be infinite in a
+#' GLM (fixest's `fixef.rm`).
+#'
+#' Names may change before the first release.
+#'
+#' @param problem The input stage of the fit, a [design_problem()] made with
+#'   `fe` (and `cluster`): its design `x`, response `y` (the response the FE
+#'   are fitted to, such as the response minus an offset), weights `w`, rows
+#'   `rows`, FE and cluster keys `keys`, and `more`, a list of other columns
+#'   of the rows to keep (offset, GLM columns), all of which the fit may set
+#'   before the call.
+#' @param singletons,zero,one Which levels to drop, see Details.
+#' @return A list: `x` (the design of the rows kept; `x_rows` the same),
+#'   `cols` (`z`, the response; `w`, the weights or `NULL`; `codes`, the FE
+#'   groupings, one per FE; `cl`, the cluster grouping or `NULL`), `more` (the
+#'   columns of `problem$more` on those rows), `levels` (per FE, a data frame
+#'   of the levels in code order), `nsingle` and `nperfect` (the rows dropped
+#'   as singletons and as perfectly fit) and `rows` (in memory, the rows of
+#'   the model frame kept). The groupings are for [design_absorb_wls()],
+#'   [design_absorb()] and [design_absorb_fitted()]; `g$G` is the number of
+#'   levels of grouping `g`.
+#' @export
+design_absorb_rows <- function(problem, singletons = TRUE, zero = FALSE, one = FALSE) {
+    checkmate::assert_flag(singletons)
+    checkmate::assert_flag(zero)
+    checkmate::assert_flag(one)
+    base <- problem
+    clv <- problem$cluster
+    fe_names <- names(problem$keys$fe)
     x <- base$x
     z <- base$y
     w <- base$w
@@ -772,7 +782,6 @@ xtx_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "mis
     more <- base$more
     keys <- base$keys$fe
     clkey <- base$keys$cl
-    if (!is.null(w) && xtx_colsum(xtx_c_is_finite(w) & w < 0) > 0) stop(wmsg, call. = FALSE)
     restrict <- function(keep) {
         ## (keep is never missing: the logical columns are NA-safe)
         nd <- xtx_colsum(!keep)
@@ -793,9 +802,9 @@ xtx_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "mis
     if (!is.null(w)) keep <- keep & xtx_c_is_finite(w) & w != 0
     for (k in c(keys, list(clkey))) if (!is.null(k)) keep <- keep & xtx_c_complete(k)
     restrict(keep)
-    rm_single <- fixef.rm %in% c("singleton", "perfect_fit")
-    rm0 <- isTRUE(bounds$zero) && fixef.rm %in% c("infinite_coef", "perfect_fit")
-    rm1 <- isTRUE(bounds$one) && fixef.rm %in% c("infinite_coef", "perfect_fit")
+    rm_single <- singletons
+    rm0 <- zero
+    rm1 <- one
     nsingle <- nperfect <- 0
     repeat {
         cds <- unname(lapply(keys, xtx_c_dense_codes, raw = TRUE))
@@ -839,7 +848,7 @@ xtx_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "mis
     }
     cl <- NULL
     if (!is.null(clv)) {
-        m <- match(clv, names(pf$fe))
+        m <- match(clv, fe_names)
         if (is.na(m)) {
             cl <- xtx_c_dense_codes(clkey, raw = TRUE)$codes
         } else {
@@ -857,20 +866,191 @@ xtx_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "mis
          nperfect = as.integer(nperfect), rows = rows)
 }
 
-## The fit: on the design with numeric variables centered when that is
-## exact (xtx_p_center()), else on the design.
-xtx_fe_estimate <- function(x, cols, tol, cluster) {
-    opts <- xtx_fe_opts()
-    ctr <- if (isTRUE(getOption("xtx.fe_center", TRUE))) xtx_p_center(x) else NULL
-    if (!is.null(ctr)) {
-        xc <- ctr$x
-        on <- function(g) xtx_cols_map(g, function(col) xtx_c_on(col, xc))
-        cc <- list(z = xtx_c_on(cols$z, xc), w = xtx_c_on(cols$w, xc), codes = lapply(cols$codes, on),
-                   cl = on(cols$cl))
-        est <- xtx_fe_core(xc, cc, tol, opts, cluster)
-        est <- xtx_fe_uncenter(est, ctr$T, which(colnames(xc) == "(Intercept)"))
-        if (!is.null(est)) return(est)
-    }
-    xtx_fe_core(x, cols, tol, opts, cluster)
+
+## ---------------------------------------------------------------------------
+## Exports: the operator, the estimator, fitted values, centering
+
+## FE groupings as xtx_c_codes(): those of design_absorb_rows(), or
+## groupings of design_groups() (whose codes, with `levels`, can be NA).
+xtx_absorb_codes <- function(groups) {
+    if (xtx_is_codes(groups) || inherits(groups, "xtx_groups")) groups <- list(groups)
+    if (!is.list(groups) || !length(groups))
+        stop("`groups` must be a list of groupings (design_absorb_rows(), design_groups()).", call. = FALSE)
+    lapply(groups, function(g) {
+        if (xtx_is_codes(g)) return(g)
+        if (inherits(g, "xtx_groups")) {
+            xtx_groups_check(g, "groups", na_ok = TRUE)
+            return(xtx_groups_codes(g))
+        }
+        stop("`groups` must be a list of groupings (design_absorb_rows(), design_groups()).", call. = FALSE)
+    })
 }
 
+#' Absorbed fixed effects
+#'
+#' The estimator of linear models with fixed effects (FE) of [design_lm()],
+#' which [design_glm()] also uses for the weighted least squares steps of its
+#' iterations, from sums over rows (Frisch-Waugh-Lovell on aggregates: the
+#' dummies of the FE are never formed and the rows never demeaned), with one
+#' code path for designs in memory and remote designs.
+#'
+#' * `design_absorb()` builds the absorption operator of the FE for a
+#'   response `z` and weights `w` (one fused pass over the rows for every
+#'   grouped sum and crosstab), with the FE system reduced and set up for
+#'   solves: an object of class `xtx_absorb`, a list of functions (see
+#'   *The absorption operator*).
+#' * `design_absorb_wls()` fits `z` on the columns of `x` (but the
+#'   intercept, absorbed) and the FE by weighted least squares: the moments
+#'   of `[X z]` with the FE absorbed, columns judged collinear by fixest's
+#'   rule (residual variance below `tol` times the variance before
+#'   absorption), the solution refined from residuals computed row by row,
+#'   and the FE values.
+#' * `design_absorb_fitted()` is `X beta` plus the FE values of the rows'
+#'   levels, as a column.
+#'
+#' Names may change before the first release.
+#'
+#' @section The absorption operator:
+#' A list of class `xtx_absorb` with `G` (the levels per FE) and the
+#' functions
+#' \describe{
+#'   \item{`solve(B, warm)`}{`K^- B` (split by FE) and `Q = B'K^-B`, `K = F'WF`,
+#'     for `B` a list of `G_k x q` matrices (`warm`: a starting value of the
+#'     reduced solve, the `Z` of an earlier call, or `NULL`).}
+#'   \item{`project(M, warm)`}{The moments `M - Q` of `[X z]` with the FE
+#'     absorbed, `M = [X z]'W[X z]` on the columns of `x` but the intercept
+#'     and `z`: `list(M, info, Z)`; keeps `Gamma = K^- F'W[X z]` for the
+#'     functions below.}
+#'   \item{`effects(b, j)`}{The FE values of column `j` of `[X z]` (default:
+#'     `z`) less those of `X b`, one vector per FE.}
+#'   \item{`update(fe, Ae, kp, delta)`}{FE values after a refinement step.}
+#'   \item{`cross(g, Ae)`}{`X'M v` from `X'W v` and `Ae = K^- F'W v`.}
+#'   \item{`variance(dxx)`}{The variances of the columns of `X` before
+#'     absorption, from their sums of squares.}
+#'   \item{`scores(we, cl)`}{The cluster scores `sum_{i in c} we_i (MX)_i`
+#'     (the raw scores, with no small sample correction), corrected for FE
+#'     not nested in the clusters (`cl` a grouping): `list(U, nested)`.}
+#' }
+#'
+#' @param x A design (`design_matrix` or remote design), unscaled. Its
+#'   intercept column, if any, is absorbed by the FE.
+#' @param z The response: a numeric vector with one value per row of `x` in
+#'   memory, a [design_column()] of `x` remotely (as [design_absorb_rows()]
+#'   returns it).
+#' @param w Weights (positive), in the same form as `z`, or `NULL`.
+#' @param groups The FE: a list of groupings, from [design_absorb_rows()]
+#'   (`cols$codes`) or [design_groups()]. For `design_absorb_fitted()`,
+#'   groupings of new rows made with `design_groups(x, key, levels =)` give
+#'   `NA` for levels the fit does not have.
+#' @param tol The tolerance for collinear columns (fixest's `collin.tol`).
+#' @param control Options of the solver, [absorb_control()].
+#' @param warm `NULL`, or an environment that keeps the solution of the
+#'   reduced system from one call to the next (`warm$Z`, a warm start for
+#'   sequences of nearby problems, such as the steps of a GLM) and the
+#'   numbers of iterations of conjugate gradients (`warm$iter`).
+#' @param resid Compute the residuals after the last refinement step (the
+#'   residual sum of squares `rss` and the weighted residuals `we`, for
+#'   clustered standard errors). `FALSE` skips that pass when the refinement
+#'   step did not compute them.
+#' @param beta The coefficients of the columns of `x` (a vector, or a matrix
+#'   with one column per vector).
+#' @param fe The FE values: a list with one vector per FE (in code order),
+#'   or one matrix per FE with as many columns as `beta`.
+#' @return `design_absorb()`: a `xtx_absorb` (see *The absorption
+#'   operator*). `design_absorb_wls()`: a list of class `xtx_absorb_fit`:
+#'   `b` (the coefficients of the columns of `x` but the intercept, `NA` for
+#'   collinear ones), `kp` (the columns kept), `xcols` (the columns of `x`
+#'   fitted), `bread` (the inverse of `X'MX` on the kept columns, `NA`
+#'   elsewhere), `rss`, `fe` (the FE values, one vector per FE), `rank`, `G`,
+#'   `fe_dof` (the FE parameters, `sum(G) - (number of FE - 1)`),
+#'   `fe_dof_exact` (the exact rank of the FE, or `NA`), `df.residual`,
+#'   `nobs`, `tss` (total sum of squares of `z` around its weighted mean),
+#'   `tss_within` (after the FE), `info` (solver details), `we` (the weighted
+#'   residuals) and `absorb` (the operator, for `absorb$scores()`).
+#'   `design_absorb_fitted()`: a column (a numeric vector or matrix in
+#'   memory, a [design_column()] remotely).
+#' @examples
+#' set.seed(1)
+#' d <- data.frame(y = rnorm(200), x = rnorm(200), id = sample(1:20, 200, TRUE))
+#' D <- design_matrix(y ~ x, d)
+#' g <- design_groups(D, d["id"])
+#' fit <- design_absorb_wls(D, d$y, NULL, list(g))
+#' all.equal(fit$b, unname(coef(lm(y ~ x + factor(id), d))["x"]))
+#' @export
+design_absorb <- function(x, z, w = NULL, groups, control = absorb_control()) {
+    checkmate::assert_multi_class(x, c("xtx_matrix", "xtx_remote"))
+    codes <- xtx_absorb_codes(groups)
+    xcols <- setdiff(seq_len(ncol(x)), which(colnames(x) == "(Intercept)"))
+    xtx_absorb(x, z, w, codes, xcols, control)
+}
+
+#' @rdname design_absorb
+#' @export
+design_absorb_wls <- function(x, z, w = NULL, groups, tol = 1e-10, control = absorb_control(), warm = NULL,
+                              resid = TRUE) {
+    checkmate::assert_multi_class(x, c("xtx_matrix", "xtx_remote"))
+    if (!is.null(warm) && !is.environment(warm)) stop("`warm` must be NULL or an environment.", call. = FALSE)
+    xtx_fe_core(x, list(z = z, w = w, codes = xtx_absorb_codes(groups)), tol, control, warm = warm,
+                resid_final = isTRUE(resid))
+}
+
+#' @rdname design_absorb
+#' @export
+design_absorb_fitted <- function(x, beta, fe, groups) {
+    xtx_fe_fitted(x, beta, fe, xtx_absorb_codes(groups))
+}
+
+#' @rdname design_absorb
+#' @param ... Not used.
+#' @export
+print.xtx_absorb <- function(x, ...) {
+    cat(sprintf("<design_absorb: %d fixed effect%s (%s levels)>\n", length(x$G), if (length(x$G) == 1L) "" else "s",
+                paste(x$G, collapse = ", ")))
+    invisible(x)
+}
+
+#' Centered designs
+#'
+#' `design_center()` shifts the numeric variables of a design by their mean
+#' (in a sample of rows) when that is an exact linear transform of the
+#' design, `X~ = X T` with `T` unit upper triangular: a fit on the centered
+#' design keeps the accuracy of sums of squares and cross products when a
+#' variable is far from zero. In memory the design is rebuilt from its model
+#' frame; remotely the variables' SQL changes. `design_uncenter()` maps a fit
+#' of [design_absorb_wls()] on the centered design back to the design: `b = T
+#' b~` (the intercept column, absorbed, moves to the first fixed effect),
+#' `bread` (and `vcov_cluster`, when the fit has one) `T V T'`.
+#'
+#' Names may change before the first release.
+#'
+#' @param x A design: a `design_matrix` made from a formula and a data frame
+#'   (one that keeps its model frame), or a remote design.
+#' @param cols Columns of `x` to carry over to the centered design (a list,
+#'   possibly nested, of columns and groupings, as [design_absorb_rows()]
+#'   returns them): remotely re-made over the new design, in memory unchanged.
+#' @param fit A fit of [design_absorb_wls()] on `center$x`.
+#' @param center The result of `design_center()`.
+#' @return `design_center()`: `NULL` when no exact centering applies, else a
+#'   list with `x` (the centered design), `T` (the transform) and `cols`.
+#'   `design_uncenter()`: the fit mapped back, or `NULL` when the collinear
+#'   columns do not allow it (a kept column of the centered design uses a
+#'   collinear column of the design): then fit the design itself.
+#' @examples
+#' d <- data.frame(y = rnorm(100), x = rnorm(100) + 1e6, id = rep(1:10, 10))
+#' D <- design_matrix(y ~ x, d)
+#' ctr <- design_center(D)
+#' colMeans(as.matrix(ctr$x))
+#' @export
+design_center <- function(x, cols = list()) {
+    checkmate::assert_multi_class(x, c("xtx_matrix", "xtx_remote"))
+    ctr <- xtx_p_center(x)
+    if (is.null(ctr)) return(NULL)
+    xc <- ctr$x
+    list(x = xc, T = ctr$T, cols = xtx_cols_map(cols, function(col) xtx_c_on(col, xc)))
+}
+
+#' @rdname design_center
+#' @export
+design_uncenter <- function(fit, center) {
+    xtx_fe_uncenter(fit, center$T, which(colnames(center$x) == "(Intercept)"))
+}

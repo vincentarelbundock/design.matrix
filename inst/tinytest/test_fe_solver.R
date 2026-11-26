@@ -135,7 +135,7 @@ codes <- lapply(d[c("indiv_id", "year", "firm_id")], function(v) match(v, sort(u
 G <- vapply(codes, max, 1L)
 gsum <- function(v) lapply(codes, function(cd) matrix(rowsum(v, cd, reorder = TRUE)[, 1L], ncol = 1L))
 for (fm in c(0, Inf)) {
-    opts <- ns$xtx_fe_opts()
+    opts <- absorb_control()
     opts$solver <- "pcg"
     opts$form_max <- fm
     for (w in list(rep(1, nrow(d)), runif(nrow(d), 0.5, 2))) {

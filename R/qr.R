@@ -614,7 +614,7 @@ xtx_qr_coef <- function(qr, Y, steps = 3L) {
             return(cc$T %*% bt)
         }
         b <- cc$T %*% bt
-        ## the moments of the solution, for sums of squares (xtx_fit_ls())
+        ## the moments of the solution, for sums of squares (design_wls())
         attr(b, "moments") <- list(b = bt, h = ht, G = crossprod(cc$Rt))
         return(b)
     }

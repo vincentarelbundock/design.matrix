@@ -41,15 +41,40 @@ xtx_c_ls_sums <- function(z, f, w, intercept) {
     c(rss, mss)
 }
 
-## The working weights and responses of IRLS, from the prior weights W, the
-## linear predictor eta, the means mu, the response y, the offset off, and
-## the family's variance v and d mu / d eta me at mu: with good = W > 0 &
-## me != 0, w2 = W me^2 / v and z = (eta - off) + (y - mu) / me where good,
-## 0 elsewhere. `table`: remotely, the two columns as a temporary table
-## (xtx_c_freeze()). list(w2, z, counts): the rows where W > 0 and v is
-## missing, W > 0 and v == 0, W > 0 and me is missing, good, and w2 or z is
-## not finite.
-xtx_c_irls_working <- function(W, eta, mu, y, off, v, me, table = FALSE) {
+#' The working weights and responses of IRLS
+#'
+#' `col_irls_working()` computes, from columns, the working weights and
+#' responses of an iteration of iteratively reweighted least squares, with
+#' the checks of [stats::glm.fit()], in one call: in memory one pass in C
+#' over plain double vectors (the arithmetic of `glm.fit()`, to the last
+#' bit), remotely SQL expressions and one query for the checks. With
+#' `good = W > 0 & me != 0`, the working weights are `W me^2 / v` and the
+#' working responses `(eta - off) + (y - mu) / me` where `good`, 0
+#' elsewhere.
+#'
+#' Names may change before the first release.
+#'
+#' @param W The prior weights.
+#' @param eta The linear predictor (with the offset).
+#' @param mu The fitted means.
+#' @param y The response.
+#' @param off The offset (a column, or a number such as 0).
+#' @param v The variance at `mu`.
+#' @param me `d mu / d eta` at `eta`.
+#' @param table Remotely, store the two columns in a temporary table (for
+#'   columns that many queries read, such as those of a fit with fixed
+#'   effects); otherwise they are computed once in a projection (see
+#'   [col_compute()]).
+#' @return A list: the working weights, the working responses (columns),
+#'   and the counts of rows where `W > 0` and `v` is missing, `W > 0` and
+#'   `v == 0`, `W > 0` and `me` is missing, `good`, and where a working weight
+#'   or response is not finite.
+#' @examples
+#' cf <- column_family(poisson())
+#' y <- c(0, 2, 5); eta <- log(c(1, 2, 4)); mu <- cf$linkinv(eta)
+#' col_irls_working(1, eta, mu, y, 0, cf$variance(mu), cf$mu_eta(eta, mu))
+#' @export
+col_irls_working <- function(W, eta, mu, y, off, v, me, table = FALSE) {
     if (xtx_plain(W) && xtx_plain(eta) && xtx_plain(mu) && xtx_plain(y) && xtx_plain(off) &&
         xtx_plain(v) && xtx_plain(me)) {
         ## (the kernel checks the lengths: 1 or length(eta))

@@ -1,7 +1,7 @@
 # The pieces of the FE estimator (R/fe.R, design.matrix#6sq4): the
 # pivoted Cholesky kernel shared with qr() (xtx_pivchol(): per-column
 # thresholds, tie mode, suspect band), the absorption operator
-# (xtx_absorb(): project, effects, scores, solve) against dense dummies, the
+# (design_absorb(): project, effects, scores, solve) against dense dummies, the
 # refinement driver (xtx_refine()), and the un-centering helpers.
 source("helpers.R")
 library(xtx)
@@ -101,14 +101,14 @@ d <- data.frame(a = sample(30, n, TRUE), b = sample(8, n, TRUE), cl = sample(12,
 d$y <- d$x1 - d$x2 + d$a / 10 + rnorm(n)
 D <- design_matrix(~ x1 + x2, d)
 xcols <- 2:3
-codes <- lapply(d[c("a", "b")], function(v) ns$xtx_c_codes(match(v, sort(unique(v))), length(unique(v))))
-cl <- ns$xtx_c_codes(d$cl, 12L)
+codes <- list(design_groups(D, d["a"]), design_groups(D, d["b"]))
+cl <- design_groups(D, d["cl"])
 Fd <- cbind(model.matrix(~ factor(a) - 1, d), model.matrix(~ factor(b) - 1, d))
 X <- as.matrix(D)[, xcols]
 for (w in list(NULL, d$w)) {
     info <- if (is.null(w)) "unweighted" else "weighted"
     ww <- if (is.null(w)) rep(1, n) else w
-    A <- ns$xtx_absorb(D, d$y, w, codes, xcols, ns$xtx_fe_opts())
+    A <- design_absorb(D, d$y, w, codes, absorb_control())
     expect_identical(unname(A$G), c(30L, 8L), info = info)
     Z <- cbind(X, d$y)
     M <- crossprod(Z, ww * Z)

@@ -643,7 +643,8 @@ Ops.xtx_column <- function(e1, e2) {
         a <- xtx_column_operand(e1)
         sql <- switch(op, "-" = sprintf("(-%s)", a), "+" = a, "!" = sprintf("(NOT %s)", a),
                       stop(sprintf("`%s` is not supported for remote columns.", op), call. = FALSE))
-        return(xtx_column(unclass(e1)$frame, sql))
+        ## (NOT of a column that is never NULL is never NULL)
+        return(xtx_column(unclass(e1)$frame, sql, notnull = op == "!" & xtx_operand_notnull(e1)))
     }
     frame <- xtx_column_frame(e1, e2)
     a <- xtx_column_operand(e1)
@@ -672,7 +673,17 @@ Ops.xtx_column <- function(e1, e2) {
         "<" = , ">" = , "<=" = , ">=" = sprintf("(%s %s %s)", a, op, b),
         "&" = sprintf("(%s AND %s)", a, b), "|" = sprintf("(%s OR %s)", a, b),
         stop(sprintf("`%s` is not supported for remote columns.", op), call. = FALSE))
-    xtx_column(frame, sql)
+    ## (AND, OR of columns that are never NULL are never NULL; the sums of a
+    ## column known never NULL need no count of NULL values)
+    nn <- op %in% c("&", "|") & rep_len(xtx_operand_notnull(e1), k) & rep_len(xtx_operand_notnull(e2), k)
+    xtx_column(frame, sql, notnull = nn)
+}
+
+## Is an operand never NULL (per column)? A remote column: its flags; a
+## number: when it is not NA.
+xtx_operand_notnull <- function(x) {
+    if (xtx_is_column(x)) return(unclass(x)$notnull %||% rep(FALSE, length(unclass(x)$sql)))
+    !is.na(x)
 }
 
 ## is.na() and friends, with R's semantics (NA is NULL remotely): is.na
@@ -867,9 +878,10 @@ xtx_c_ifelse <- function(test, yes, no) {
         return(out)
     }
     ## (NULL where test is NULL, as NA in memory; the simple CASE names the
-    ## test once)
+    ## test once; never NULL when no operand is)
+    nn <- all(xtx_operand_notnull(test)) && all(xtx_operand_notnull(yes)) && all(xtx_operand_notnull(no))
     xtx_column(f, sprintf("(CASE %s WHEN TRUE THEN %s WHEN FALSE THEN %s END)", xtx_column_operand(test),
-                        xtx_column_operand(yes), xtx_column_operand(no)))
+                        xtx_column_operand(yes), xtx_column_operand(no)), notnull = nn)
 }
 
 ## Columns side by side (cbind).
@@ -1210,6 +1222,46 @@ xtx_p_output <- function(x, cols, memory = identity, na = NULL, design = FALSE, 
                                           holder = fr$src$holder))
     for (a in names(attrs)) attr(out, a) <- attrs[[a]]
     out
+}
+
+#' Row-wise results of a design
+#'
+#' `design_output()` returns results with one value per row of a design (such
+#' as fitted values and residuals), on both backends: in memory
+#' `memory(d)`, with `d` the data frame of the columns; for a remote design, a
+#' table in the database (the name of a temporary view, of class
+#' `xtx_remote_table`, with every column of the remote data and the columns
+#' `cols`), padded by [napredict()] with `na` (for instance a
+#' [design_exclude()]), with the attributes `attrs`; with `design = TRUE`, the
+#' remote design with the columns added to its data (so that they can scale
+#' its rows: `crossprod(R, DBI::SQL('".resid"^2') * R)`).
+#'
+#' Names may change before the first release.
+#'
+#' @param x A design (`design_matrix` or remote design).
+#' @param cols A named list of columns of `x` (vectors in memory,
+#'   [design_column()]s remotely) or numbers.
+#' @param memory In memory, a function of the data frame of `cols` that
+#'   returns the result (default: the data frame).
+#' @param na Remotely, the `na.action` whose [napredict()] method pads the
+#'   table (`NULL`: none).
+#' @param design Remotely, return the design with the columns added instead
+#'   of a table.
+#' @param attrs Remotely, attributes of the table returned.
+#' @return In memory, `memory(d)`; remotely a `xtx_remote_table` (or, with
+#'   `design = TRUE`, a remote design).
+#' @examples
+#' d <- data.frame(y = rnorm(10), x = rnorm(10))
+#' D <- design_matrix(y ~ x, d)
+#' f <- drop(D %*% c(0, 1))
+#' head(design_output(D, list(.fitted = f, .resid = d$y - f)))
+#' @export
+design_output <- function(x, cols, memory = identity, na = NULL, design = FALSE, attrs = list()) {
+    checkmate::assert_multi_class(x, c("xtx_matrix", "xtx_remote"))
+    checkmate::assert_list(cols, names = "unique")
+    checkmate::assert_function(memory)
+    checkmate::assert_flag(design)
+    xtx_p_output(x, cols, memory = memory, na = na, design = design, attrs = attrs)
 }
 
 ## DuckDB macros for the distribution functions of remote columns, as R
@@ -1560,7 +1612,8 @@ xtx_c_round <- function(x) {
 ## is.finite, NaN-safe (in DuckDB, NaN = NaN and NaN > 0 are true)
 xtx_c_is_finite <- function(x) {
     if (!xtx_is_column(x)) return(is.finite(x))
-    xtx_column(unclass(x)$frame, sprintf("COALESCE(isfinite(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql))
+    xtx_column(unclass(x)$frame, sprintf("COALESCE(isfinite(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
+             notnull = TRUE)
 }
 
 ## TRUE where x is not missing, FALSE where it is NA or NaN (NULL remotely);

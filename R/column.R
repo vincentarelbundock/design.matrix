@@ -89,6 +89,13 @@
 #'   over the table. To match the values with other data outside the
 #'   package, join on a key column of the data (such as `id`). In memory
 #'   `col_compute()` returns `x` (there is no table).
+#'   `col_compute(x, table = FALSE)`: the column computed once in a
+#'   projection instead of a table: its expressions become columns of a view
+#'   one level deeper, so that later expressions refer to them instead of
+#'   repeating them (an iterative fit keeps its SQL small this way), with no
+#'   statement run. Columns computed separately this way stand on sibling
+#'   views, which do not combine: compute them together (`cbind()` them,
+#'   then `[, j]`). (Names may change before the first release.)
 #' * `x[, j]`: the columns `j` of a column with several columns (as for the
 #'   matrix in memory), for instance of `D %*% cbind(b1, b2)`. Rows cannot
 #'   be selected: remote rows have no order.
@@ -139,6 +146,9 @@
 #'   string, quoted as an identifier).
 #' @param overwrite For `col_compute()` with a `name`: replace a table of
 #'   that name if it exists (otherwise that is an error).
+#' @param table For `col_compute()`: `TRUE` (default) to store the values in
+#'   a table, `FALSE` for a projection (see *Getting values*; not with a
+#'   `name`).
 #' @param mode As in [as.vector()].
 #' @param ... Not used.
 #' @return `design_column()`: a double vector in memory, a `design_column`
@@ -238,12 +248,20 @@ as.matrix.xtx_column <- function(x, ...) {
 
 #' @rdname design_column
 #' @export
-col_compute <- function(x, name = NULL, overwrite = FALSE, nm = NULL) {
+col_compute <- function(x, name = NULL, overwrite = FALSE, nm = NULL, table = TRUE) {
     ## (in memory a column is the vector itself: nothing to store)
     if (!xtx_is_column(x)) return(x)
     checkmate::assert_flag(overwrite, .var.name = "overwrite")
-    con <- xtx_column_valid(x)
+    checkmate::assert_flag(table, .var.name = "table")
+    if (!table && !is.null(name)) stop("`name` applies only with `table = TRUE`.", call. = FALSE)
     lab <- unclass(x)$label
+    ## (a projection runs no statement: the connection is checked by the
+    ## query that reads it)
+    if (!table) {
+        out <- xtx_c_freeze(x)
+        return(if (is.null(lab)) out else xtx_column_label(out, lab))
+    }
+    con <- xtx_column_valid(x)
     if (is.null(name)) {
         out <- xtx_c_freeze(x, table = TRUE)
         return(if (is.null(lab)) out else xtx_column_label(out, lab))

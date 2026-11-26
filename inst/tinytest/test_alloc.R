@@ -54,7 +54,7 @@ for (wt in list(NULL, ww)) {
     expect_identical(m[4L], if (is.null(wt)) sum((zz - sum(wz) / sw)^2) else sum(wt * (zz - sum(wz) / sw)^2))
 }
 
-## residual sums of xtx_fit_ls()
+## residual sums of design_wls()
 for (wt in list(NULL, w)) for (icpt in c(TRUE, FALSE)) {
     s <- .Call(cl("xtx_ls_sums"), zz, xb, wt, icpt)
     r <- zz - xb
@@ -115,13 +115,13 @@ for (wt in list(NULL, w)) for (icpt in c(TRUE, FALSE)) {
     expect_identical(s, ns$xtx_c_ls_sums(nmd(zz), xb, wt, icpt))
 }
 expect_error(ns$xtx_c_ls_sums(zz, xb[-1L], NULL, TRUE), "one value per row")
-k <- ns$xtx_c_irls_working(W, eta, mu, y, 0, v2, me2)
+k <- col_irls_working(W, eta, mu, y, 0, v2, me2)
 expect_identical(k, .Call(cl("xtx_glm_working"), W, eta, mu, y, 0, v2, me2))
-kg <- ns$xtx_c_irls_working(nmd(W), eta, mu, y, 0, v2, me2)
+kg <- col_irls_working(nmd(W), eta, mu, y, 0, v2, me2)
 expect_identical(unname(kg[[1L]]), k[[1L]])
 expect_identical(unname(kg[[2L]]), k[[2L]])
 expect_identical(kg[[3L]], k[[3L]])
-expect_error(ns$xtx_c_irls_working(W, eta, mu[-1L], y, 0, v, me), "lengths")
+expect_error(col_irls_working(W, eta, mu[-1L], y, 0, v, me), "lengths")
 expect_identical(ns$xtx_c_poisson_dev(y, mu, W), .Call(cl("xtx_poisson_dev"), y, mu, W))
 expect_identical(unname(ns$xtx_c_poisson_dev(nmd(y), mu, W)), ns$xtx_c_poisson_dev(y, mu, W))
 expect_identical(ns$xtx_c_binomial_ll(tr, yb, W, p), .Call(cl("xtx_binomial_ll"), tr, yb, W, p))
@@ -190,9 +190,9 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
         expect_equal(ns$xtx_c_ls_sums(rc("zz"), rc("xb"), if (!is.null(wt)) rc(wt), icpt),
                      ns$xtx_c_ls_sums(zz, xb, if (!is.null(wt)) wp, icpt), tolerance = 1e-10)
     }
-    km <- ns$xtx_c_irls_working(Wp, eta, mu, y, 0, v, me)
+    km <- col_irls_working(Wp, eta, mu, y, 0, v, me)
     for (tb in c(FALSE, TRUE)) {
-        kr <- ns$xtx_c_irls_working(rc("pw"), rc("eta"), rc("mu"), rc("y"), 0, rc("v"), rc("me"), table = tb)
+        kr <- col_irls_working(rc("pw"), rc("eta"), rc("mu"), rc("y"), 0, rc("v"), rc("me"), table = tb)
         expect_equal(ns$xtx_p_collect(kr[[1L]]), km[[1L]], tolerance = 1e-12)
         expect_equal(ns$xtx_p_collect(kr[[2L]]), km[[2L]], tolerance = 1e-12)
         expect_identical(kr[[3L]], km[[3L]])

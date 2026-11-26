@@ -127,6 +127,14 @@
 #' @param values The value of each group: a numeric vector of length `G`, or
 #'   a matrix (or data frame) with `G` rows for several columns, in code
 #'   order. Missing values give missing values.
+#' @param levels `NULL`, or the levels of a grouping made before (its
+#'   `levels`, a data frame with one column per key variable): the rows of
+#'   `x` are then coded against those levels, as new data against the levels
+#'   of a fit, instead of the levels that occur in `x`. Rows whose key is
+#'   missing or not among `levels` get the code `NA` (no error): such a
+#'   grouping works with `group_lookup()` (`NA` for those rows) and
+#'   [design_absorb_fitted()], not with `group_sums()`, `group_crosstab()` or
+#'   `group_nested()`. Names may change before the first release.
 #' @param ... Not used.
 #' @return `design_groups()`: a grouping (see *The grouping object*).
 #'   `group_sums()`: a `G x k` numeric matrix, `k` the number of columns of
@@ -173,7 +181,7 @@
 #' }
 #' @name design_groups
 #' @export
-design_groups <- function(x, key) {
+design_groups <- function(x, key, levels = NULL) {
     remote <- inherits(x, "xtx_remote")
     if (!remote && !inherits(x, "xtx_matrix"))
         stop("`x` must be a design: a `design_matrix` or a remote design.", call. = FALSE)
@@ -181,6 +189,7 @@ design_groups <- function(x, key) {
     parts <- xtx_groups_parts(key)
     if (!length(parts)) stop("`key` must name at least one variable.", call. = FALSE)
     nms <- xtx_groups_names(parts)
+    if (!is.null(levels)) return(xtx_groups_matched(x, parts, nms, levels, remote))
     if (remote) {
         kc <- xtx_groups_key_remote(x, parts)
         cd <- xtx_c_dense_codes(kc)
@@ -248,7 +257,7 @@ group_crosstab <- function(g1, g2, w = NULL) {
 #' @rdname design_groups
 #' @export
 group_lookup <- function(values, g) {
-    xtx_groups_check(g, "g")
+    xtx_groups_check(g, "g", na_ok = TRUE)
     if (is.data.frame(values)) values <- as.matrix(values)
     if (!(is.numeric(values) || is.logical(values)) || !(is.null(dim(values)) || length(dim(values)) == 2L))
         stop("`values` must be a numeric vector or matrix.", call. = FALSE)
@@ -420,7 +429,7 @@ xtx_groups_key_memory <- function(x, parts, nms) {
 
 ## Stop unless g is a grouping whose codes can be used (in memory: integer
 ## codes within 1..G, one per row: the kernels index by them).
-xtx_groups_check <- function(g, what) {
+xtx_groups_check <- function(g, what, na_ok = FALSE) {
     if (!inherits(g, "xtx_groups"))
         stop(sprintf("`%s` must be a grouping made by design_groups().", what), call. = FALSE)
     G <- g$G
@@ -436,7 +445,13 @@ xtx_groups_check <- function(g, what) {
     if (!is.integer(cd) || !is.null(dim(cd)) || length(cd) != g$n)
         stop(sprintf("`%s$codes` must be integer codes, one per row of the design.", what), call. = FALSE)
     if (length(cd)) {
-        r <- range(cd)
+        if (isTRUE(g$matched) && anyNA(cd)) {
+            if (!na_ok)
+                stop(sprintf("`%s` has rows with no level (codes NA, from `levels`): use it with group_lookup().",
+                             what), call. = FALSE)
+            cd <- cd[!is.na(cd)]
+        }
+        r <- if (length(cd)) range(cd) else c(1L, 1L)
         if (anyNA(r) || r[1L] < 1L || r[2L] > G)
             stop(sprintf("`%s$codes` must be within 1..G (%d), without missing values.", what, G), call. = FALSE)
     }
@@ -525,4 +540,48 @@ xtx_groups_col <- function(col, g, what) {
         col <- as.double(col)
     }
     col
+}
+
+## design_groups(x, key, levels): the rows of x coded against `levels` (a
+## data frame of the levels of an earlier grouping, one column per key
+## part), NA for keys that are missing or not among them; as
+## xtx_c_lookup() matches keys to levels (in memory: the values as text,
+## doubles to 17 digits; remotely a join on the key columns, text levels
+## compared as text).
+xtx_groups_matched <- function(x, parts, nms, levels, remote) {
+    if (!is.data.frame(levels) || ncol(levels) != length(parts))
+        stop("`levels` must be a data frame with one column per key variable.", call. = FALSE)
+    lv <- levels
+    rownames(lv) <- NULL
+    G <- nrow(lv)
+    if (remote) {
+        kc <- xtx_groups_key_remote(x, parts)
+        codes <- xtx_c_lookup(seq_len(G), kc, lv)
+        fr <- unclass(codes)$frame
+        r <- fr$pend[[length(fr$pend)]]
+        base <- fr
+        base$pend <- NULL
+        return(structure(list(codes = codes, G = as.integer(G), levels = lv, n = xtx_nrows(x), design = x,
+                              lookup = list(frame = base, recipe = r), matched = TRUE),
+                         class = "xtx_groups"))
+    }
+    ## (the values as given, or the variables of the design's model frame)
+    vars <- (if (xtx_is_comb(x)) x$design else x)$vars
+    kd <- lapply(seq_along(parts), function(j) {
+        p <- parts[[j]]
+        if (xtx_is_column(p$v) || inherits(p$v, "SQL"))
+            stop("`key`: in memory, give the values of the key (or names of variables of the design).", call. = FALSE)
+        v <- if (p$is_name) {
+            if (is.null(vars) || !p$v %in% names(vars)) stop(sprintf("No variable `%s` in the data.", p$v), call. = FALSE)
+            vars[[p$v]]
+        } else p$v
+        if (length(v) != nrow(x))
+            stop(sprintf("`key`: variable `%s` has %d values, not one per row of the design (%d).", nms[j],
+                         length(v), nrow(x)), call. = FALSE)
+        if (is.factor(v)) as.character(v) else v
+    })
+    kd <- as.data.frame(stats::setNames(kd, nms), stringsAsFactors = FALSE)
+    codes <- match(xtx_lookup_keys(kd), xtx_lookup_keys(lv))
+    structure(list(codes = as.integer(codes), G = as.integer(G), levels = lv, n = nrow(x), design = x, matched = TRUE),
+              class = "xtx_groups")
 }

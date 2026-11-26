@@ -18,19 +18,19 @@ xtx_glm_kind <- function(family) {
                      paste(ok_fam, collapse = ", "), paste(xtx_glm_link_names, collapse = ", "),
                      format(fam), format(link)), call. = FALSE)
     k <- switch(fam,
-                gaussian = list(dev = "gaussian", init = "y", var = "1", validmu = "none"),
-                binomial = , quasibinomial = list(dev = "binomial", init = "binomial", var = "mu(1-mu)",
+                gaussian = list(devk = "gaussian", init = "y", var = "1", validmu = "none"),
+                binomial = , quasibinomial = list(devk = "binomial", init = "binomial", var = "mu(1-mu)",
                                                   validmu = "unit"),
-                poisson = , quasipoisson = list(dev = "poisson", init = "poisson", var = "mu",
+                poisson = , quasipoisson = list(devk = "poisson", init = "poisson", var = "mu",
                                                 validmu = "positive"),
-                Gamma = list(dev = "gamma", init = "y", var = "mu^2", validmu = "positive"),
-                inverse.gaussian = list(dev = "invgauss", init = "y", var = "mu^3", validmu = "none"),
+                Gamma = list(devk = "gamma", init = "y", var = "mu^2", validmu = "positive"),
+                inverse.gaussian = list(devk = "invgauss", init = "y", var = "mu^3", validmu = "none"),
                 quasi = switch(family$varfun,
-                               constant = list(dev = "gaussian", init = "y", var = "1", validmu = "none"),
-                               "mu(1-mu)" = list(dev = "binomial", init = "clamp", var = "mu(1-mu)", validmu = "unit_nf"),
-                               mu = list(dev = "poisson", init = "y01", var = "mu", validmu = "positive_nf"),
-                               "mu^2" = list(dev = "qgamma", init = "y01", var = "mu^2", validmu = "positive_nf"),
-                               "mu^3" = list(dev = "invgauss", init = "y01", var = "mu^3", validmu = "positive_nf"),
+                               constant = list(devk = "gaussian", init = "y", var = "1", validmu = "none"),
+                               "mu(1-mu)" = list(devk = "binomial", init = "clamp", var = "mu(1-mu)", validmu = "unit_nf"),
+                               mu = list(devk = "poisson", init = "y01", var = "mu", validmu = "positive_nf"),
+                               "mu^2" = list(devk = "qgamma", init = "y01", var = "mu^2", validmu = "positive_nf"),
+                               "mu^3" = list(devk = "invgauss", init = "y01", var = "mu^3", validmu = "positive_nf"),
                                stop(sprintf("design_glm() does not support quasi(variance = \"%s\").", family$varfun),
                                     call. = FALSE)))
     k$family <- fam
@@ -92,7 +92,7 @@ xtx_glm_cf <- function(k) {
                       positive = function(m) xtx_c_is_finite(m) & m > 0,
                       positive_nf = function(m) xtx_c_present(m) & m > 0)
     xlogx <- function(a, b) xtx_c_ifelse(a != 0, a * log(a / b), 0)
-    dev <- switch(k$dev,
+    dev <- switch(k$devk,
         gaussian = function(y, m, w) w * ((y - m)^2),
         ## (fast ln where mu > 0 by construction, qpr8: the logit, probit,
         ## cloglog and cauchit links clamp mu into [eps, 1 - eps] (logit:
@@ -107,7 +107,7 @@ xtx_glm_cf <- function(k) {
         invgauss = function(y, m, w) w * ((y - m)^2) / (y * m^2))
     ## dev(y, mu, w) = w (sat(y) + a part linear in y): the part of the
     ## deviance that does not depend on mu (for compression)
-    sat <- switch(k$dev, gaussian = NULL,
+    sat <- switch(k$devk, gaussian = NULL,
                   binomial = function(y) 2 * (xlogx(y, 1) + xlogx(1 - y, 1)),
                   poisson = function(y) 2 * (xlogx(y, 1) - y),
                   gamma = , qgamma = function(y) -2 * log(xtx_c_ifelse(y == 0, 1, y)),
@@ -119,16 +119,26 @@ xtx_glm_cf <- function(k) {
         y01 = function(y, w, n, cb) y + 0.1 * xtx_c_count(y == 0),
         ## (y is finite: xtx_glm_checks(); fast clamps, see the links above)
         clamp = function(y, w, n, cb) xtx_fast_pmax(0.001, xtx_fast_pmin(0.999, y)))
+    ## (never NA: each check starts with is.finite() or !is.na(), FALSE where
+    ## the value is missing; remotely flagged as never NULL, so that its
+    ## sums need no count of NULL values)
     valid <- function(eta, mu) {
         a <- link$valid
         b <- validmu
         if (is.null(a) && is.null(b)) return(NULL)
-        if (is.null(a)) return(b(mu))
-        if (is.null(b)) return(a(eta))
-        a(eta) & b(mu)
+        v <- if (is.null(a)) b(mu) else if (is.null(b)) a(eta) else a(eta) & b(mu)
+        xtx_c_notnull(v)
     }
+    ## fitted values numerically at the boundary, for glm.fit()'s warnings
+    ## (binomial: below 10 eps or above 1 - 10 eps; poisson: below 10 eps),
+    ## as a count (1 or 0, never NA); NULL for the other families
+    beps <- 10 * .Machine$double.eps
+    boundary <- switch(k$family,
+                       binomial = function(mu) xtx_c_count(mu > 1 - beps | mu < beps),
+                       poisson = function(mu) xtx_c_count(mu < beps),
+                       NULL)
     list(linkfun = link$fun, linkinv = link$inv, mu.eta = link$me, variance = variance, valid = valid,
-         dev = dev, sat = sat, mustart = mustart, me_is_mu = k$link == "log")
+         boundary = boundary, dev = dev, sat = sat, mustart = mustart, me_is_mu = k$link == "log")
 }
 
 ## d mu / d eta at eta, mu = linkinv(eta): for the log link mu itself (the
@@ -138,3 +148,95 @@ xtx_glm_mu_eta <- function(cf, eta, mu) {
     cf$mu.eta(eta)
 }
 
+
+#' GLM families as functions of columns
+#'
+#' `column_family()` describes a family object of [stats::family] by
+#' functions of columns: numeric vectors in memory, [design_column()]s of a
+#' remote design (SQL expressions, evaluated in the database). In memory the
+#' values are those of R's family object, to the last bit; remotely the same
+#' arithmetic in SQL. This is how [design_glm()] runs one IRLS code on both
+#' backends.
+#'
+#' The families of [stats::family] are supported: `binomial`, `poisson`,
+#' `gaussian`, `Gamma`, `inverse.gaussian`, `quasibinomial`, `quasipoisson`
+#' and `quasi` (with variance `"constant"`, `"mu(1-mu)"`, `"mu"`, `"mu^2"` or
+#' `"mu^3"`), with the links `identity`, `log`, `logit`, `probit`,
+#' `cloglog`, `cauchit`, `inverse`, `sqrt` and `1/mu^2`; other families are an
+#' error.
+#'
+#' Names may change before the first release.
+#'
+#' @param family A family object, a family function or its name (as in
+#'   [stats::glm()]).
+#' @return An object of class `xtx_column_family`, a list with
+#' \describe{
+#'   \item{`family`, `link`}{The names of the family and the link.}
+#'   \item{`binomial`}{Whether the family is binomial or quasibinomial.}
+#'   \item{`aic`}{The family whose AIC applies (`"none"` for quasi families).}
+#'   \item{`linkfun(mu)`, `linkinv(eta)`, `mu.eta(eta)`, `variance(mu)`}{As in
+#'     the family object, on columns (the inverse links clamp as R does).}
+#'   \item{`mu_eta(eta, mu)`}{`mu.eta(eta)` at `mu = linkinv(eta)` (for the
+#'     log link, `mu` itself).}
+#'   \item{`valid(eta, mu)`}{A logical column, never `NA`: where `eta` and
+#'     `mu` are valid (`validmu()` and `valideta()`), or `NULL` when every
+#'     value is.}
+#'   \item{`boundary(mu)`}{For `binomial` and `poisson`, a column that counts
+#'     (`TRUE`/1) the fitted values numerically at the boundary (`glm.fit()`'s
+#'     "fitted probabilities numerically 0 or 1" and "fitted rates numerically
+#'     0"), never `NA`; `NULL` for the other families.}
+#'   \item{`dev(y, mu, w)`}{The deviance residuals, as `dev.resids()`.}
+#'   \item{`sat(y)`}{The part of the deviance residuals that does not depend
+#'     on `mu`, per unit of weight (`NULL` for the Gaussian): `dev(y, mu, w) =
+#'     w (sat(y) + a part linear in y)`, which makes the deviance of rows that
+#'     share `mu` that of their weighted mean response plus a constant.}
+#'   \item{`mustart(y, w, n, cbind)`}{The starting values of `initialize`
+#'     (`n` the trials of a binomial response, `cbind` whether it had two
+#'     columns).}
+#'   \item{`loglik(y, mu, w, m, disp)`}{The weighted log densities of the AIC
+#'     (binomial: `m` the trials; Gamma: `disp` the dispersion; other
+#'     families: zero).}
+#' }
+#' @examples
+#' cf <- column_family(binomial("probit"))
+#' eta <- c(-1, 0, 2)
+#' all.equal(cf$linkinv(eta), binomial("probit")$linkinv(eta))
+#' all.equal(cf$dev(c(0, 1, 1), cf$linkinv(eta), 1),
+#'           binomial("probit")$dev.resids(c(0, 1, 1), cf$linkinv(eta), 1))
+#' @export
+column_family <- function(family) {
+    if (is.character(family)) family <- get(family, mode = "function", envir = parent.frame())
+    if (is.function(family)) family <- family()
+    if (!is.list(family) || is.null(family$family)) stop("'family' not recognized", call. = FALSE)
+    k <- xtx_glm_kind(family)
+    cf <- xtx_glm_cf(k)
+    cf$mu_eta <- function(eta, mu) xtx_glm_mu_eta(cf, eta, mu)
+    cf$loglik <- function(y, mu, w, m = NULL, disp = NULL) {
+        switch(k$aic,
+            binomial = xtx_c_binomial_ll(m, y, w, mu),
+            poisson = w * xtx_c_ifelse(y == 0, -mu, y * log(mu) - mu - xtx_c_lgamma(y + 1)),
+            Gamma = {
+                a <- 1 / disp
+                w * (-lgamma(a) - a * log(mu * disp) + (a - 1) * log(y) - y / (mu * disp))
+            },
+            0 * y)
+    }
+    structure(c(k, cf), class = "xtx_column_family")
+}
+
+#' @rdname column_family
+#' @param x A `xtx_column_family`.
+#' @param ... Not used.
+#' @export
+print.xtx_column_family <- function(x, ...) {
+    cat(sprintf("<column_family: %s, link %s>\n", x$family, x$link))
+    invisible(x)
+}
+
+## The column flagged as never NULL (remotely; the caller knows it is not).
+xtx_c_notnull <- function(x) {
+    if (!xtx_is_column(x)) return(x)
+    u <- unclass(x)
+    u$notnull <- rep(TRUE, length(u$sql))
+    structure(u, class = "xtx_column")
+}

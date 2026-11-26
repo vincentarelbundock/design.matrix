@@ -44,12 +44,44 @@ xtx_fit_suffstats <- function(z, w, map, G) {
     list(w = as.double(sw), mean = m, within = within)
 }
 
-## Weighted least squares of z on the rows of x (design rows or patterns),
-## with weights w (NULL for 1): coefficients (NA for aliased columns),
-## the pivoted factor, the weighted residual sum of squares and the
-## explained sum of squares (around the weighted mean with an intercept,
-## around zero without), as summary.lm() computes it.
-xtx_fit_ls <- function(x, z, w, tol, intercept, sums = TRUE) {
+#' Weighted least squares on a design
+#'
+#' `design_wls()` fits `z` on the columns of a design by weighted least
+#' squares, with the pivoting and the rule for aliased columns of
+#' [stats::lm.fit()] (same tolerance, same `NA` pattern in the
+#' coefficients), without forming the dense matrix: the factor comes from
+#' [qr()][design_qr] of the scaled design (`sqrt(w) * x`), and the
+#' coefficients are refined from the residuals. The same call works on a
+#' design in memory (columns are numeric vectors) and on a remote design
+#' (columns are [design_column()]s of it). This is the least squares core of
+#' [design_lm()] and of the iterations of [design_glm()].
+#'
+#' Names may change before the first release.
+#'
+#' @param x A design: a `design_matrix`, or a remote design (see
+#'   [design_remote]), unscaled.
+#' @param z The response: a numeric vector with one value per row of `x`
+#'   in memory, a [design_column()] of `x` for a remote design. Finite.
+#' @param w Optional weights, in the same form as `z`: finite and
+#'   non-negative; rows with zero weight do not enter the fit. `NULL` for
+#'   none.
+#' @param tol The tolerance for aliased columns, as in [stats::lm.fit()].
+#' @param intercept Whether the model has an intercept: the explained sum
+#'   of squares `mss` is then around the weighted mean (as in
+#'   [summary.lm()]), otherwise around zero.
+#' @param sums Also compute the residual and explained sums of squares
+#'   (`FALSE`: the solution only, as the steps of a GLM need it).
+#' @return A list: `coefficients` (named by the columns, `NA` for aliased
+#'   columns), `rank`, `pivot`, `R` (the `p x p` upper factor of `X'WX`,
+#'   columns in pivoted order), `tol` and, with `sums = TRUE`, `rss` (the
+#'   weighted residual sum of squares), `mss` and `intercept`.
+#' @examples
+#' d <- data.frame(y = rnorm(50), x = rnorm(50), w = runif(50), f = gl(5, 10))
+#' D <- design_matrix(y ~ x + f, d)
+#' fit <- design_wls(D, d$y, d$w)
+#' all.equal(fit$coefficients, coef(lm(y ~ x + f, d, weights = w)))
+#' @export
+design_wls <- function(x, z, w = NULL, tol = 1e-07, intercept = TRUE, sums = TRUE) {
     p <- ncol(x)
     cn <- colnames(x)
     if (p == 0L) {

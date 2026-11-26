@@ -9,47 +9,77 @@
 ## The arguments of remote data that a fit on a formula takes in `...`.
 xtx_remote_keys <- c("table", "sql", "engine", "chunk_size")
 
-## The input stage of the fits (design_lm(), design_glm() and fixed
-## effects): the call's arguments as a design and the columns of the
-## response, weights and offset, with one path per source of the design:
-##  * a formula and a data frame: a model frame, as lm() and glm() build it
-##    (xtx_problem_memory());
-##  * a formula and remote data: a remote design, xtx_remote_fit()
-##    (xtx_problem_remote());
-##  * a design matrix, with `y`, `weights` and `offset` vectors
-##    (xtx_problem_design());
-##  * a remote design, with `y`, `weights` and `offset` columns or
-##    expressions over its data (xtx_problem_rdesign()).
-## The fits then run the same code on any of them.
-##   call: the matched call of the fit (its arguments are taken from it,
-##     unevaluated), env its parent frame; formula and data their values
-##     (formula: a formula or a design; data NULL when missing); dots the
-##     arguments in `...`.
-##   family: NULL for a linear model; for a GLM, its xtx_glm_kind(): the
-##     response as glm() takes it (a factor, a two-column response), and
-##     its columns (xtx_glm_cols()) as `cols`.
-##   fe, clv: with fixed effects, the parsed formula (xtx_fe_parse()) and
-##     the cluster variable (or NULL): the design is that of the main terms,
-##     rows with a missing FE or cluster value are dropped, and `keys` holds
-##     their values (xtx_fe_keys()).
-##   frame: the fit's own environment (its environment()), from which the
-##     values of `y`, `weights` and `offset` given with a design matrix
-##     (and a GLM's `y` with a remote design) are taken.
-## The response, weights, offset and subset of a formula are evaluated in
-## the data and the formula's environment (as model.frame() does),
-## na.action in env (its kind is checked by the caller: checks.R).
-## Messages are the same in memory and remotely: for the offset length,
-## those of lm() for a linear model without FE, of glm() otherwise.
-## Returns list(x (the design), y (the response), w, off (or NULL), cols
-## (GLM), resp (remotely: the columns of a two-column response), keys,
-## frame (the model frame in memory), na.action, exclude (remotely,
-## na.exclude), rows, nall, terms, formula, contrasts, xlevels, env (the
-## formula's environment), intercept (whether the design has one, for the
-## fit), offset_call (the `offset` argument as given, for new data), design
-## (whether the first argument was a design)); see xtx_na_result() for the
-## na.action of the results.
-design_problem <- function(call, env, formula, data, contrasts, dots, family = NULL, fe = NULL, clv = NULL,
-                           frame = NULL) {
+#' The input stage of a fit
+#'
+#' `design_problem()` turns the arguments of a fit (a formula and a data frame
+#' or remote data, a design matrix, or a remote design, with the response,
+#' weights, offset and subset) into the design of the rows used and the
+#' response, weights and offset as columns over those rows: numeric vectors in
+#' memory, [design_column()]s remotely (expressions with no SQL translation are
+#' evaluated in R, in batches, into a temporary table). One code path serves
+#' [design_lm()], [design_glm()] and fits with fixed effects: a fitting
+#' function calls it with its matched call and runs the same code on what it
+#' returns, whatever the source of the data.
+#'
+#' The sources:
+#' * a formula and a data frame: a model frame, as [lm()] and [glm()] build
+#'   it (`subset`, `weights`, `na.action` and `offset` of the call evaluated
+#'   as [model.frame()] evaluates them);
+#' * a formula and remote data (a DuckDB connection, with `table` or `sql` in
+#'   `dots`, or Parquet paths): a remote design of the rows where no model
+#'   variable, argument or `fe`/`cluster` variable is missing;
+#' * a design matrix, with `y`, `weights` and `offset` vectors (taken from
+#'   `frame`);
+#' * a remote design, with `y`, `weights` and `offset` columns or expressions
+#'   over its data.
+#'
+#' Messages are those of [lm()] (a numeric response, no `fe`) or [glm()]
+#' (otherwise), in memory and remotely alike.
+#'
+#' Names may change before the first release.
+#'
+#' @param call The matched call of the fit ([match.call()]): `weights`,
+#'   `offset`, `subset`, `na.action` and `y` are taken from it, unevaluated.
+#' @param env The environment of the call (the fit's [parent.frame()]).
+#' @param formula A model formula (with fixed effects, the formula of the
+#'   main terms), a design matrix or a remote design.
+#' @param data A data frame, remote data, or `NULL`.
+#' @param contrasts As in [stats::model.matrix()].
+#' @param dots The arguments of remote data given in `...` of the fit
+#'   (`table`, `sql`, `engine`, `chunk_size`), as a named list; other names
+#'   are an error ("Unknown arguments").
+#' @param family `NULL` for a numeric response (a linear model), or a
+#'   [column_family()]: the response is then taken as [glm()] takes it (a
+#'   factor, a two-column matrix of successes and failures), and its columns
+#'   are returned as `cols`.
+#' @param fe `NULL`, or a named list of character vectors: the variables of
+#'   each fixed effect (several for an interaction). Rows with a missing value
+#'   in them are dropped, and their values over the rows are returned as
+#'   `keys` (for [design_absorb_rows()]).
+#' @param cluster `NULL`, or the name of a cluster variable (as `fe`).
+#' @param frame The fit's own environment ([environment()]), from which the
+#'   vectors given with a design matrix are taken.
+#' @return A list of class `xtx_problem`: `x` (the design of the rows used),
+#'   `y`, `w` and `off` (the response, weights and offset, or `NULL`), `cols`
+#'   (with `family`: the response columns as [glm()]'s `initialize` sees
+#'   them: `y`, `w`, `n` (trials), `off`, `cbind`, `a`, `b`, `weighted`,
+#'   `y0`), `keys` (with `fe`), `frame` (the model frame, in memory),
+#'   `na.action`, `exclude` (remotely, `na.exclude`), `rows`, `nall` (the
+#'   number of rows used), `terms`, `formula`, `contrasts`, `xlevels`, `env`
+#'   (the formula's environment), `intercept`, `offset_call` (the `offset`
+#'   argument as given), `design` (whether the first argument was a design),
+#'   `fe` and `cluster`.
+#' @examples
+#' d <- data.frame(y = rnorm(20), x = rnorm(20), w = runif(20))
+#' fit <- function(formula, data, weights, ...) {
+#'     design_problem(match.call(), parent.frame(), formula, data)
+#' }
+#' P <- fit(y ~ x, d, weights = w)
+#' dim(P$x)
+#' all.equal(P$w, d$w)
+#' @export
+design_problem <- function(call, env, formula, data = NULL, contrasts = NULL, dots = list(), family = NULL,
+                           fe = NULL, cluster = NULL, frame = NULL) {
     P <- if (inherits(formula, "xtx_matrix")) {
         xtx_problem_design(xtx_frame_arg(call, frame, "y"), xtx_frame_arg(call, frame, "weights"),
                           xtx_frame_arg(call, frame, "offset"), formula, family)
@@ -57,14 +87,14 @@ design_problem <- function(call, env, formula, data, contrasts, dots, family = N
         xtx_problem_rdesign(formula, if (is.null(family)) call[["y"]] else xtx_frame_arg(call, frame, "y"),
                            call[["weights"]], call[["offset"]], env, family)
     } else if (!is.null(data) && xtx_is_remote_source(data)) {
-        xtx_problem_remote(call, env, formula, data, contrasts, dots, family, fe, clv)
+        xtx_problem_remote(call, env, formula, data, contrasts, dots, family, fe, cluster)
     } else {
         if (length(dots)) stop("Unknown arguments: ", paste(names(dots), collapse = ", "), call. = FALSE)
-        xtx_problem_memory(call, env, contrasts, family, fe, clv)
+        xtx_problem_memory(call, env, formula, contrasts, family, fe, cluster)
     }
     P$design <- inherits(formula, c("xtx_matrix", "xtx_remote"))
     if (!P$design) P$offset_call <- call$offset
-    if (!is.null(fe)) P$keys <- xtx_fe_keys(P$x, fe, clv, P$frame)
+    if (!is.null(fe)) P$keys <- xtx_fe_keys(P$x, fe, cluster, P$frame)
     if (!is.null(family)) {
         P$cols <- if (inherits(P$x, "xtx_remote")) {
             xtx_glm_cols(P$y, P$resp$a, P$resp$b, if (is.null(P$w)) xtx_c_const(P$x, 1) else P$w, P$off, family,
@@ -75,6 +105,9 @@ design_problem <- function(call, env, formula, data, contrasts, dots, family = N
         ## (on a design no rows are dropped: missing values are errors)
         if (P$design) xtx_glm_check_design(P$cols)
     }
+    P$fe <- fe
+    P$cluster <- cluster
+    class(P) <- "xtx_problem"
     P
 }
 
@@ -159,19 +192,19 @@ xtx_problem_rdesign <- function(D, y, weights, offset, env, family) {
 ## the main terms with FE), response (as lm() takes it; a GLM's as in the
 ## frame: a vector, factor or matrix), weights, offset (offset() terms and
 ## the `offset` argument) and the design (with the frame's predvars).
-xtx_problem_memory <- function(call, env, contrasts, family, fe, clv) {
+xtx_problem_memory <- function(call, env, formula, contrasts, family, fe, cluster) {
     lm <- is.null(family) && is.null(fe)
     mf <- call[c(1L, match(c("formula", "data", "subset", "weights", "na.action", "offset"), names(call), 0L))]
     if (!is.null(fe)) {
-        aug <- xtx_fe_augment(fe$main, unique(c(unlist(fe$fe, use.names = FALSE), clv)))
-        environment(aug) <- environment(fe$main)
+        aug <- xtx_fe_augment(formula, unique(c(unlist(fe, use.names = FALSE), cluster)))
+        environment(aug) <- environment(formula)
         mf$formula <- aug
     }
     mf$drop.unused.levels <- TRUE
     mf[[1L]] <- quote(xtx::design_frame)
     mf <- eval(mf, env)
     mt <- attr(mf, "terms")
-    if (!is.null(fe)) mt <- xtx_fe_main_terms(mt, fe$main)
+    if (!is.null(fe)) mt <- xtx_fe_main_terms(mt, formula)
     if (attr(attr(mf, "terms"), "response") == 0L) stop("The formula has no response.", call. = FALSE)
     if (lm) {
         y <- xtx_fit_response(mf)
@@ -238,16 +271,15 @@ xtx_fe_main_terms <- function(mt_aug, main) {
 ## columns before their SQL translation; the lengths (arguments evaluated
 ## in R that give matrices) and the response of a GLM or an FE fit once
 ## the rows are known.
-xtx_problem_remote <- function(call, env, formula, source, contrasts, dots, family, fe, clv) {
+xtx_problem_remote <- function(call, env, formula, source, contrasts, dots, family, fe, cluster) {
     ## (the callers check the kind: checks.R)
-    na <- if (is.null(call$na.action)) "omit" else xtx_na_kind(eval(call$na.action, env))
+    na <- if (is.null(call$na.action)) "omit" else xtx_problem_na_kind(eval(call$na.action, env))
     ## (unknown arguments first, as in memory)
     nms <- names(dots) %||% rep("", length(dots))
     if (any(!nms %in% xtx_remote_keys))
         stop("Unknown arguments: ", paste(nms[!nms %in% xtx_remote_keys], collapse = ", "), call. = FALSE)
     xtx_need_duckdb()
     src <- xtx_remote_source(source, dots$table, dots$sql)
-    if (!is.null(fe)) formula <- fe$main
     lm <- is.null(family) && is.null(fe)
     ## (the response, weights, offset and subset are evaluated in the
     ## formula's environment, as model.frame() does in memory)
@@ -273,7 +305,7 @@ xtx_problem_remote <- function(call, env, formula, source, contrasts, dots, fami
     }
     args <- c(resp$args, list(weights = call$weights, offset = call$offset, subset = if (is.null(family)) call$subset))
     r <- xtx_remote_fit(formula, src, args, fenv, dots, contrasts, logical = "subset",
-                       present = unique(c(unlist(fe$fe, use.names = FALSE), clv, resp$present, resp$extra)),
+                       present = unique(c(unlist(fe, use.names = FALSE), cluster, resp$present, resp$extra)),
                        na = na, mresp = mresp)
     D <- r$x
     ## weights or an offset with several columns: the errors of the
@@ -728,17 +760,42 @@ xtx_fe_augment <- function(main, vars) {
 
 ## The keys of the FE (and of the clusters, when they are not an FE): the
 ## values of their variables over the rows of x (from `data` in memory).
-xtx_fe_keys <- function(x, pf, clv, data = NULL) {
-    list(fe = lapply(pf$fe, function(v) xtx_c_key(x, v, data)),
-         cl = if (!is.null(clv) && is.na(match(clv, names(pf$fe)))) xtx_c_key(x, clv, data))
+xtx_fe_keys <- function(x, fe, cluster, data = NULL) {
+    list(fe = lapply(fe, function(v) xtx_c_key(x, v, data)),
+         cl = if (!is.null(cluster) && is.na(match(cluster, names(fe)))) xtx_c_key(x, cluster, data))
 }
 
 
-## na.exclude for a remote fit: results on the rows used, padded with the
-## rows of the data that the fit dropped for missing values (NULL results),
-## as napredict() pads in memory (see napredict.xtx_remote_exclude()).
+#' na.exclude for remote fits
+#'
+#' `design_exclude()` is the `na.action` of a remote fit with
+#' `na.action = na.exclude`: results on the rows a fit used (remote tables,
+#' [design_output()]) are padded with the rows of the data that it dropped for
+#' missing values, as [napredict()] and [naresid()] pad vectors in memory. Its
+#' [stats::napredict()] and [stats::naresid()] methods return a temporary view
+#' with the rows of the table and the dropped rows (with `NULL` results);
+#' other values are returned unchanged.
+#'
+#' Names may change before the first release.
+#'
+#' @param x For `design_exclude()`, a remote design: the design of the rows
+#'   the fit could use, over the data (before rows were dropped for other
+#'   reasons). For the methods, a result of a fit: a `xtx_remote_table`, or
+#'   any other value.
+#' @param omit A `xtx_remote_exclude` object.
+#' @param ... Not used.
+#' @return `design_exclude()`: an object of class `xtx_remote_exclude`.
+#'   The methods: a `xtx_remote_table` (the name of a temporary view), or `x`.
+#' @export
+design_exclude <- function(x) {
+    if (!inherits(x, "xtx_remote")) stop("`x` must be a remote design.", call. = FALSE)
+    xtx_remote_exclude(x)
+}
+
+## (see design_exclude())
 xtx_remote_exclude <- function(D) structure(list(design = D), class = "xtx_remote_exclude")
 
+#' @rdname design_exclude
 #' @exportS3Method stats::napredict
 napredict.xtx_remote_exclude <- function(omit, x, ...) {
     if (!inherits(x, "xtx_remote_table")) return(x)
@@ -751,6 +808,129 @@ napredict.xtx_remote_exclude <- function(omit, x, ...) {
     structure(name, class = "xtx_remote_table", connection = con, holder = attr(x, "holder"))
 }
 
+#' @rdname design_exclude
 #' @exportS3Method stats::naresid
 naresid.xtx_remote_exclude <- function(omit, x, ...) napredict.xtx_remote_exclude(omit, x, ...)
 
+
+## The response, prior weights, trials and offset as glm()'s initialize sees
+## them (columns: vectors in memory, SQL remotely): y in [0, 1] and weights
+## times trials for a two-column binomial response (a successes, b
+## failures), y = 0 where the weight is 0. `weighted`: whether weights
+## were given (w is then theirs, else 1); a two-column response is
+## weighted by its trials.
+xtx_glm_cols <- function(y, a, b, w, off, k, cb, weighted) {
+    y0 <- y
+    if (cb) {
+        if (!k$binomial)
+            stop("A two-column response (successes and failures) needs a binomial family.", call. = FALSE)
+        nt <- a + b
+        y <- xtx_c_ifelse(nt == 0, 0, a / nt)
+        w <- w * nt
+    } else {
+        nt <- xtx_c_const(y, 1)
+        if (k$binomial) y <- xtx_c_ifelse(w == 0, 0, y)
+    }
+    ## (trials weight the rows of a two-column response; y0 the response as
+    ## given)
+    list(y = y, w = w, n = nt, off = off, cbind = cb, a = a, b = b, weighted = weighted || cb, y0 = y0)
+}
+
+## The response of a model frame in memory (a vector, a factor or character
+## vector, or a two-column matrix) as columns.
+xtx_glm_mem_cols <- function(Y, w, off, k) {
+    if (length(dim(Y)) == 1L) dim(Y) <- NULL
+    if (is.matrix(Y) && ncol(Y) == 1L) Y <- Y[, 1L]
+    n <- NROW(Y)
+    weighted <- !is.null(w)
+    w <- if (is.null(w)) rep.int(1, n) else as.double(w)
+    off <- if (!is.null(off)) as.double(off)
+    if (is.matrix(Y)) {
+        if (ncol(Y) != 2L) stop("A two-column response needs two columns (successes and failures).", call. = FALSE)
+        return(xtx_glm_cols(NULL, as.double(Y[, 1L]), as.double(Y[, 2L]), w, off, k, TRUE, weighted))
+    }
+    ## a character response is a factor, as remotely
+    if (is.character(Y)) Y <- factor(Y)
+    if (is.factor(Y)) {
+        if (!k$binomial) stop("A factor response needs a binomial family.", call. = FALSE)
+        Y <- Y != levels(Y)[1L]
+    }
+    if (!is.numeric(Y) && !is.logical(Y)) stop("The response must be numeric, logical or a factor.", call. = FALSE)
+    y <- as.double(Y)
+    attributes(y) <- NULL
+    xtx_glm_cols(y, NULL, NULL, w, off, k, FALSE, weighted)
+}
+
+## The checks of a fit on a design (no rows dropped): no missing response
+## or weight, a finite offset. A missing weight has the error of a weight
+## that is not finite ("NA/NaN/Inf in 'weights'", xtx_glm_checks()), in
+## memory as remotely: glm() has no error of its own for it, and lm()'s
+## "missing or negative weights not allowed" would contradict the GLM's
+## "negative weights not allowed" for negative weights.
+xtx_glm_check_design <- function(cols) {
+    y <- if (cols$cbind) cols$a + cols$b else cols$y0
+    s <- xtx_c_sums(xtx_c_count(xtx_c_present(y), negate = TRUE),
+                  if (cols$weighted && !cols$cbind) xtx_c_count(xtx_c_present(cols$w), negate = TRUE) else 0,
+                  if (!is.null(cols$off)) xtx_c_count(xtx_c_is_finite(cols$off), negate = TRUE) else 0)
+    bad <- is.na(s) | s > 0
+    if (bad[1L]) stop("NA/NaN/Inf in 'y'", call. = FALSE)
+    if (bad[2L]) stop("NA/NaN/Inf in 'weights'", call. = FALSE)
+    if (bad[3L]) stop("NA/NaN/Inf in 'offset'", call. = FALSE)
+}
+
+
+## na.action of remote data as one of "omit", "exclude", "fail", "pass"
+## (the fits check it first, with their messages).
+xtx_problem_na_kind <- function(na.action) {
+    if (is.null(na.action)) return("omit")
+    for (nm in c("omit", "exclude", "fail", "pass")) {
+        f <- get(paste0("na.", nm), envir = asNamespace("stats"))
+        if (identical(na.action, f) || identical(na.action, paste0("na.", nm))) return(nm)
+    }
+    stop("`na.action` must be na.omit, na.exclude, na.fail, na.pass.", call. = FALSE)
+}
+
+#' Remote data sources and arguments as columns
+#'
+#' `is_remote_source()` tells whether `x` is remote data that
+#' [design_matrix()] and the fits accept: a DuckDB connection (`DBI`
+#' connection) or Parquet paths (a character vector of paths ending in
+#' `.parquet`, or a directory of them). `design_resolve()` turns arguments of
+#' a fit, given unevaluated, into columns over the rows of a design: for a
+#' remote design, column names, `DBI::SQL()` expressions, or R expressions
+#' over the columns (those with a SQL translation run in the database; the
+#' others are evaluated in R, batch by batch, into a temporary table, which
+#' becomes the source of the design returned); in memory, the arguments are
+#' evaluated in `data`.
+#'
+#' Names may change before the first release.
+#'
+#' @param x For `is_remote_source()`, any value. For `design_resolve()`, a
+#'   design (a `design_matrix` or a remote design).
+#' @param exprs A named list of unevaluated arguments (a column name, a
+#'   `DBI::SQL()` expression, an R expression), `NULL` for an absent one.
+#' @param env The environment in which R expressions are evaluated.
+#' @param logical The names of the arguments that are logical (such as a
+#'   subset); the others are numeric.
+#' @param data In memory, the data frame of the rows of `x` in which the
+#'   arguments are evaluated.
+#' @return `is_remote_source()`: `TRUE` or `FALSE`. `design_resolve()`: a
+#'   list with `x` (the design, on a new source when an argument was
+#'   evaluated in R), `cols` (a named list of columns: vectors in memory,
+#'   [design_column()]s remotely; `NULL` for absent arguments) and
+#'   `evaluated` (the arguments evaluated in R, with the reason).
+#' @examples
+#' is_remote_source(data.frame(x = 1))
+#' d <- data.frame(y = rnorm(5), x = 1:5)
+#' D <- design_matrix(y ~ x, d)
+#' design_resolve(D, list(w = quote(x / 2)), environment(), data = d)$cols$w
+#' @export
+is_remote_source <- function(x) xtx_is_remote_source(x)
+
+#' @rdname is_remote_source
+#' @export
+design_resolve <- function(x, exprs, env = parent.frame(), logical = character(), data = NULL) {
+    checkmate::assert_multi_class(x, c("xtx_matrix", "xtx_remote"))
+    checkmate::assert_list(exprs, names = "unique")
+    xtx_p_resolve(x, exprs, env, logical = logical, data = data)
+}

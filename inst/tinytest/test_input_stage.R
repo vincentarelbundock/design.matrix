@@ -670,8 +670,8 @@ expect_inherits(f$na.action, "xtx_remote_exclude")
 
 # The compression of a GLM is weighted only when weights are given (or a
 # two-column response gives trials), in memory as remotely
-kp <- xtx:::xtx_glm_kind(poisson())
-kb <- xtx:::xtx_glm_kind(binomial())
+kp <- column_family(poisson())
+kb <- column_family(binomial())
 expect_false(xtx:::xtx_glm_mem_cols(c(1, 2, 3), NULL, NULL, kp)$weighted)
 expect_true(xtx:::xtx_glm_mem_cols(c(1, 2, 3), c(1, 1, 2), NULL, kp)$weighted)
 expect_true(xtx:::xtx_glm_mem_cols(cbind(c(1, 2), c(0, 1)), NULL, NULL, kb)$weighted)

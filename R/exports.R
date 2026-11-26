@@ -42,6 +42,16 @@
 #'   can therefore decide differently with `"auto"`. With `TRUE`, the
 #'   patterns are returned unless every row is a pattern of its own. With
 #'   `FALSE`, `NULL` is returned.
+#' @param fit `"lm"` (default) or `"glm"`: the fit the patterns are for,
+#'   which sets the rule of `compress = "auto"` for a remote design (a GLM
+#'   iterates on the patterns, so compression pays sooner). In memory both
+#'   give the same result.
+#' @param check Check the inputs (default). `FALSE` is for callers that
+#'   pass columns of `x` they have already checked, as [design_lm()] and
+#'   [design_glm()] do: `z`, `w` and `keys` are then a numeric vector (or
+#'   matrix, for `keys`) with one value per row in memory, [design_column()]s
+#'   of `x` remotely, and they are used as given (remotely, without the query
+#'   that checks them). Names may change before the first release.
 #'
 #' @return `NULL` when compression does not apply: with `compress = FALSE`;
 #'   when every row is its own pattern; with `"auto"`, when compression does
@@ -83,13 +93,19 @@
 #'     DBI::dbDisconnect(con)
 #' }
 #' @export
-design_patterns <- function(x, z, w = NULL, keys = NULL, compress = "auto") {
+design_patterns <- function(x, z, w = NULL, keys = NULL, compress = "auto", fit = c("lm", "glm"),
+                            check = TRUE) {
     if (!(isTRUE(compress) || isFALSE(compress) || identical(compress, "auto")))
         stop("`compress` must be \"auto\", TRUE or FALSE.", call. = FALSE)
-    out <- if (inherits(x, "xtx_remote")) {
-        xtx_patterns_remote(x, z, w, keys, compress)
+    fit <- match.arg(fit)
+    checkmate::assert_flag(check)
+    out <- if (!check) {
+        ## (the fits: columns of x, checked; no query remotely)
+        xtx_p_patterns(x, z, w, compress, keys = keys, fit = fit)
+    } else if (inherits(x, "xtx_remote")) {
+        xtx_patterns_remote(x, z, w, keys, compress, fit)
     } else if (inherits(x, "xtx_matrix")) {
-        xtx_patterns_memory(x, z, w, keys, compress)
+        xtx_patterns_memory(x, z, w, keys, compress, fit)
     } else {
         stop("`x` must be a design: a `design_matrix` or a remote design.", call. = FALSE)
     }
@@ -100,7 +116,7 @@ design_patterns <- function(x, z, w = NULL, keys = NULL, compress = "auto") {
          within = as.double(out$within), rows = as.double(out$rows), keys = out$keys)
 }
 
-xtx_patterns_memory <- function(x, z, w, keys, compress) {
+xtx_patterns_memory <- function(x, z, w, keys, compress, fit = "lm") {
     if (xtx_is_comb(x)) stop("`x` must not be a scaled design.", call. = FALSE)
     n <- nrow(x)
     vec <- function(v, what) {
@@ -128,7 +144,7 @@ xtx_patterns_memory <- function(x, z, w, keys, compress) {
         knames <- colnames(keys) %||% paste0("keys", seq_len(ncol(keys)))
         storage.mode(keys) <- "double"
     }
-    out <- xtx_p_patterns(x, z, w, compress, keys = keys)
+    out <- xtx_p_patterns(x, z, w, compress, keys = keys, fit = fit)
     if (!is.null(out$keys)) colnames(out$keys) <- knames
     out
 }
@@ -137,7 +153,7 @@ xtx_patterns_memory <- function(x, z, w, keys, compress) {
 ## design_column()s, resolved as the other public remote inputs (xtx_remote_cols(),
 ## which moves the design to the frame of a remote column), then the scan of
 ## xtx_sql_patterns() on their SQL.
-xtx_patterns_remote <- function(x, z, w, keys, compress) {
+xtx_patterns_remote <- function(x, z, w, keys, compress, fit = "lm") {
     if (!is.null(x$scale)) stop("`x` must not be a scaled design.", call. = FALSE)
     zc <- xtx_remote_cols(x, z, "z")
     D <- zc$D
@@ -170,7 +186,7 @@ xtx_patterns_remote <- function(x, z, w, keys, compress) {
         stop("`w` must be finite and non-negative.", call. = FALSE)
     if (isFALSE(compress)) return(NULL)
     mode <- if (isTRUE(compress)) TRUE else xtx_compress_mode()
-    pt <- xtx_sql_patterns(D, zc$sql, ws, keys = ks, mode = mode, fit = "lm")
+    pt <- xtx_sql_patterns(D, zc$sql, ws, keys = ks, mode = mode, fit = fit)
     if (is.null(pt)) return(NULL)
     pos <- which(pt$sw > 0)
     K <- NULL

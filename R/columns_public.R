@@ -153,7 +153,17 @@ xtx_summary_aggregates <- function(args, what) {
 #' * `col_sums(...)`: the sums of several columns (each over all its
 #'   values, as `sum()`), in one query remotely: a named double vector, one
 #'   value per argument, named after the argument (`col_sums(n = 1 + 0 *
-#'   r, rss = r^2)`), or after the variable for a bare name.
+#'   r, rss = r^2)`), or after the variable for a bare name. `na.rm` can
+#'   differ by argument: `col_sums(dev, col_ifelse(cond, 1, 0), na.rm =
+#'   c(FALSE, TRUE))` counts the rows where `cond` is `TRUE` (`NA` counting as
+#'   `FALSE`) in the query that sums `dev`.
+#' * `col_const(like, value)`: a constant column with the rows of `like` (a
+#'   column or a design): `rep(value, n)` in memory.
+#' * `cbind(...)`: columns side by side, one column with several columns
+#'   (numbers recycle), as `cbind()` of vectors in memory; `x[, j]` selects
+#'   them again.
+#' * `rowSums(x)`: the sums across the columns of a column with several
+#'   columns, a column.
 #' * `col_compute(x, name = NULL)` (see [design_column]): the column stored
 #'   once in a table, a temporary one or, with a `name`, a permanent table
 #'   of the connection, and a column that reads it, for a column that later
@@ -168,8 +178,14 @@ xtx_summary_aggregates <- function(args, what) {
 #' @param yes,no,a,b Columns (vectors in memory, `design_column`s remotely)
 #'   or numbers.
 #' @param ... For `col_sums()`, columns or numbers, optionally named. For
-#'   the methods, as in base R.
-#' @param na.rm For `col_sums()`, drop `NA` and `NaN` values (as `sum()`).
+#'   `cbind()`, columns or numbers. For the methods, as in base R.
+#' @param like A column, or a design: the rows of the constant column.
+#' @param value One number.
+#' @param deparse.level Not used.
+#' @param na.rm For `col_sums()`, drop `NA` and `NaN` values (as `sum()`):
+#'   `TRUE` or `FALSE`, or one value per argument (names may change before
+#'   the first release). For `rowSums()`, only the default.
+#' @param dims For `rowSums()`, only the default.
 #' @param x A remote column.
 #' @param trim Only `0` is supported for a remote column.
 #' @return `col_ifelse()`, `col_pmin()`, `col_pmax()`: a column (a double
@@ -427,6 +443,9 @@ col_pmax <- function(a, b) {
 col_sums <- function(..., na.rm = FALSE) {
     args <- list(...)
     if (!length(args)) return(numeric())
+    if (!is.logical(na.rm) || anyNA(na.rm) || !length(na.rm) %in% c(1L, length(args)))
+        stop("`na.rm` must be TRUE or FALSE, or one value per argument.", call. = FALSE)
+    na.rm <- rep_len(na.rm, length(args))
     ex <- as.list(substitute(list(...)))[-1L]
     nm <- names(args) %||% rep("", length(args))
     bare <- nm == "" & vapply(ex, is.symbol, NA)
@@ -435,21 +454,75 @@ col_sums <- function(..., na.rm = FALSE) {
     remote <- vapply(args, xtx_is_column, NA)
     out <- numeric(length(args))
     if (any(remote)) {
-        ## (one query: the aggregates of every SQL expression of every
-        ## remote argument; a column with k columns gives k rows)
-        s <- xtx_column_aggregates(args[remote], "sum")
-        idx <- rep(which(remote), vapply(args[remote], xtx_ncols, 1L))
+        ## (one query: the sums of every SQL expression of every remote
+        ## argument; a column with k columns gives k sums)
+        k <- vapply(args[remote], xtx_ncols, 1L)
+        s <- xtx_column_sums(args[remote], rep(na.rm[remote], k))
+        idx <- rep(which(remote), k)
         out[remote] <- vapply(which(remote), function(i) {
-            r <- s[idx == i, , drop = FALSE]
-            if (!na.rm && sum(r$na) > 0) return(NA_real_)
-            if (!na.rm && sum(r$nan) > 0) return(NaN)
-            sum(r$sum)
+            v <- s[idx == i]
+            if (anyNA(v) && !all(is.nan(v[is.na(v)]))) return(NA_real_)
+            sum(v)
         }, 0)
     }
-    out[!remote] <- vapply(args[!remote], function(v) as.double(sum(v, na.rm = na.rm)), 0)
+    out[!remote] <- vapply(which(!remote), function(i) as.double(sum(args[[i]], na.rm = na.rm[i])), 0)
     if (any(nm != "")) names(out) <- nm
     out
 }
+
+## The sums of every SQL expression of the remote columns in `cols` (a list;
+## same design), from one query, `narm` one flag per expression: with narm,
+## the sum of the values that are neither NULL nor NaN (0 for none);
+## otherwise NA when a value is NULL, else the sum (NaN when a value is NaN,
+## as in R). Each expression is named once in the SUM, and once more in the
+## count of NULL values unless the column is known never NULL: the
+## expressions of a fit (deviances over inverse links, which DuckDB expands
+## inline) are long.
+xtx_column_sums <- function(cols, narm) {
+    x <- do.call(xtx_c_cbind, cols)
+    fr <- xtx_frame_bind(unclass(x)$frame)
+    sql <- unclass(x)$sql
+    k <- length(sql)
+    nn <- unclass(x)$notnull %||% rep(FALSE, k)
+    nan <- "CAST('NaN' AS DOUBLE)"
+    items <- ifelse(narm, sprintf("COALESCE(SUM(NULLIF(CAST(%s AS DOUBLE), %s)), 0) AS s%d", sql, nan, seq_len(k)),
+                    sprintf("SUM(CAST(%s AS DOUBLE)) AS s%d", sql, seq_len(k)))
+    cnt <- !narm & !nn
+    items <- c(items, sprintf("SUM(CASE WHEN (%s) IS NULL THEN 1 ELSE 0 END) AS n%d", sql, seq_len(k))[cnt])
+    res <- xtx_query(fr, sprintf("SELECT %s FROM (%s) AS s WHERE %s", paste(items, collapse = ", "),
+                                fr$src$select, fr$filter))
+    vapply(seq_len(k), function(j) {
+        v <- as.double(res[[paste0("s", j)]])
+        if (cnt[j] && as.numeric(res[[paste0("n", j)]]) > 0) return(NA_real_)
+        if (is.na(v) && !is.nan(v)) 0 else v
+    }, 0)
+}
+
+#' @rdname column_arithmetic
+#' @export
+col_const <- function(like, value) {
+    checkmate::assert_number(value, na.ok = TRUE)
+    if (!xtx_is_column(like) && !inherits(like, c("xtx_matrix", "xtx_remote")) && !is.numeric(like) && !is.logical(like))
+        stop("`like` must be a column or a design.", call. = FALSE)
+    xtx_c_const(like, value)
+}
+
+#' @rdname column_arithmetic
+#' @export
+cbind.xtx_column <- function(..., deparse.level = 1) {
+    args <- list(...)
+    for (i in seq_along(args)) xtx_col_check(args[[i]], sprintf("..%d", i))
+    xtx_c_cbind(...)
+}
+
+methods::setOldClass("xtx_column")
+
+#' @rdname column_arithmetic
+#' @export
+setMethod("rowSums", "xtx_column", function(x, na.rm = FALSE, dims = 1, ...) {
+    xtx_defaults_only(na.rm, dims)
+    xtx_c_rowsums(x)
+})
 
 ## An argument of the helpers: a remote column, or a numeric or logical
 ## vector (in memory), or a number (with remote columns).
