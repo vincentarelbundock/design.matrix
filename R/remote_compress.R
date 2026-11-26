@@ -100,7 +100,9 @@ dm_compress_keys <- function(D) {
 ## design.matrix#etg8): NULL, never compress; else list(numeric, ratio):
 ## compress designs with at least `numeric` numeric columns
 ## (dm_compress_numeric(); fewer skip the decision queries entirely) whose
-## estimated patterns are at most `ratio` times the rows.
+## estimated patterns are at most `ratio` times the rows. The option
+## design.matrix.remote_compress_ratio, when set, caps every ratio (the
+## smaller of the two).
 ##  - "colsums" (colSums(), colMeans(), grouped or not): never. Compressed,
 ##    the GROUP BY splits the cells (and the groups) by every value of the
 ##    numeric variables, and there are no products to save: it lost almost
@@ -111,15 +113,28 @@ dm_compress_keys <- function(D) {
 ##    numeric columns up to ratio 1e-2 and lost for 2. The cutoff of 8 is
 ##    PROVISIONAL (between 2 and 15 is unmeasured): retune it on a quiet
 ##    machine with bench/compression/run.R.
-##  - "fit" (design_lm(), design_glm(): dmp_patterns()): the option
-##    design.matrix.remote_compress_ratio (0.1), unchanged until it is
-##    remeasured.
+##  - the fits (dmp_patterns(), dm_sql_patterns()):
+##    - "glm" (design_glm()): IRLS reads the rows once per iteration
+##      uncompressed, once in all compressed: it gained 2-4x up to ratio
+##      1e-2, still 1.1-3x at 0.1, and broke even or lost at 0.5. Ratio 0.2;
+##    - "lm" (unweighted design_lm()): one pass either way; compression
+##      gained a modest 1.2x (2-9x wide) up to 1e-3 and lost at 1e-2 for
+##      discrete designs at 5e6. Ratio 1e-3;
+##    - "wlm" (weighted design_lm()): the weighted sum of squares within the
+##      cells takes a second pass, and it lost except for designs with many
+##      numeric columns (wide: 1.9-7.8x up to 1e-3). Only with at least 8
+##      numeric columns (the cutoff of "products") at ratio 1e-3.
+##    These ratios are PROVISIONAL, from a noisy machine: confirm them on a
+##    quiet one with bench/compression/run.R.
 dm_compress_rule <- function(op) {
-    ratio <- getOption("design.matrix.remote_compress_ratio", 0.1)
+    user <- getOption("design.matrix.remote_compress_ratio")
+    cap <- function(r) if (is.null(user)) r else min(user, r)
     switch(op,
            colsums = NULL,
-           products = list(numeric = 8L, ratio = min(ratio, 1e-2)),
-           fit = list(numeric = 0L, ratio = ratio),
+           products = list(numeric = 8L, ratio = cap(1e-2)),
+           glm = list(numeric = 0L, ratio = cap(0.2)),
+           lm = list(numeric = 0L, ratio = cap(1e-3)),
+           wlm = list(numeric = 8L, ratio = cap(1e-3)),
            stop("unknown operation: ", op))
 }
 
@@ -136,7 +151,7 @@ dm_compress_numeric <- function(D) {
 ## cells (the groups of colSums(), the keys of dmp_patterns()). `op`: the
 ## operation, for the rule of "auto" (dm_compress_rule()).
 dm_compress_cap <- function(D, mode = dm_compress_mode(), group = character(),
-                            op = c("fit", "products", "colsums")) {
+                            op = c("lm", "wlm", "glm", "products", "colsums")) {
     op <- match.arg(op)
     if (isFALSE(mode) || !identical(D$na, "omit")) return(NULL)
     n <- D$cache$n %||% D$n
@@ -180,9 +195,11 @@ dm_sql_cell_design <- function(D, res, cap) {
 ## summing the weights `w` and the weighted response `z`, and the weighted
 ## sum of squares of z around the means of the cells. Returns list(x = the
 ## design of the cells, n, sw, sy, within, keys), or NULL when compression
-## does not pay.
-dm_sql_patterns <- function(D, z, w = NULL, keys = NULL, mode = dm_compress_mode()) {
-    cap <- dm_compress_cap(D, mode, keys, op = "fit")
+## does not pay. `fit`: "lm" or "glm", for the rule of "auto" (a weighted
+## "lm" is "wlm").
+dm_sql_patterns <- function(D, z, w = NULL, keys = NULL, mode = dm_compress_mode(), fit = "lm") {
+    op <- if (identical(fit, "glm")) "glm" else if (is.null(w)) "lm" else "wlm"
+    cap <- dm_compress_cap(D, mode, keys, op = op)
     if (is.null(cap)) return(NULL)
     ck <- dm_sql_cells(D, cap)
     gn <- if (length(keys)) paste0("__dm_g", seq_along(keys)) else character()

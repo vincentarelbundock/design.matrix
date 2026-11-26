@@ -50,7 +50,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"dm_fe_nested", (DL_FUNC) &dm_fe_nested, 3},
     {"dm_fe_lookup", (DL_FUNC) &dm_fe_lookup, 2},
     {"dm_fe_ichol", (DL_FUNC) &dm_fe_ichol, 5},
-    {"dm_fe_pcg", (DL_FUNC) &dm_fe_pcg, 16},
+    {"dm_fe_pcg", (DL_FUNC) &dm_fe_pcg, 17},
     {"dm_fe_schur", (DL_FUNC) &dm_fe_schur, 10},
     {"dm_ifelse", (DL_FUNC) &dm_ifelse, 3},
     {"dm_notnan", (DL_FUNC) &dm_notnan, 1},
