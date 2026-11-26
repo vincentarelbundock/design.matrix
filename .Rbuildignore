@@ -7,4 +7,6 @@
 ^README\.md$
 ^README\.qmd$
 ^README_files$
-^prediction-batch-timing\.png$
+^Makefile$
+^website$
+^_site$

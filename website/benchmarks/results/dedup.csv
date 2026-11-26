@@ -1,0 +1,4 @@
+"expression","min","median","mem_alloc"
+"every row","66.97ms","67.51ms","NA"
+"grouped, first call"," 8.55ms"," 9.08ms","NA"
+"grouped, groups cached"," 2.39ms"," 2.47ms","NA"

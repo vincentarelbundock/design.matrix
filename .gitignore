@@ -72,3 +72,9 @@ vignettes/*.pdf
 *.out
 *.app
 .kata.local.toml
+
+# website
+/_site/
+/website/**/.calepin/
+/website/**/.calepin-entry.*
+/website/reference/
