@@ -26,7 +26,7 @@ queries <- function(expr, ...) {
 
 set.seed(7)
 n <- 2000
-d <- data.frame(xd = sample(0:4, n, TRUE) / 2, f = sample(c("a", "b", "c"), n, TRUE),
+d <- data.frame(xd = sample(0:4, n, TRUE) / 2, xe = sample(0:2, n, TRUE), f = sample(c("a", "b", "c"), n, TRUE),
                 lg = sample(c(TRUE, FALSE), n, TRUE), w = sample(1:3, n, TRUE),
                 g = sample(1:6, n, TRUE), xc = rnorm(n))
 d$y <- d$xd + rnorm(n)
@@ -37,22 +37,69 @@ fo <- ~ xd * f + lg + log1p(xd) + I(xd^2)
 D <- suppressMessages(design_matrix(fo, con, table = "d"))
 M <- as.matrix(design_matrix(fo, d))
 
-## one query per product once the decision is cached; the dense results
-for (mode in list(TRUE, "auto")) {
+## TRUE: one query per product, the numeric variables as keys of the
+## GROUP BY; the dense results
+## (a numeric variable __dm_v<j> among the keys of the outer SELECT)
+grouped_scan <- function(sql) grepl("\\) SELECT (__dm_[a-z0-9]+, )*__dm_v[0-9]+,", sql) && grepl("GROUP BY ALL", sql, fixed = TRUE)
+q <- queries(crossprod(D, "w" * D), design.matrix.remote_compress = TRUE)
+expect_true(same(q$value, crossprod(M, d$w * M)))
+expect_equal(length(q$sql), 1L)
+expect_true(grouped_scan(q$sql))
+q <- queries(colSums("w" * D, group = "g"), design.matrix.remote_compress = TRUE)
+expect_true(same(q$value, rowsum(d$w * M, d$g)))
+expect_true(grouped_scan(q$sql))
+
+## the same values in every mode (compression changes the speed, never the
+## results beyond rounding)
+for (mode in list(TRUE, FALSE, "auto")) {
     info <- paste("mode", mode)
-    q <- queries(crossprod(D, "w" * D), design.matrix.remote_compress = mode)
-    expect_true(same(q$value, crossprod(M, d$w * M)), info = info)
-    q <- queries(crossprod(D, "w" * D), design.matrix.remote_compress = mode)
-    expect_equal(length(q$sql), 1L, info = info)
-    ## (the numeric variables are keys of the GROUP BY)
-    expect_true(grepl("SELECT __dm_v", q$sql, fixed = TRUE) && grepl("GROUP BY ALL", q$sql, fixed = TRUE),
-                info = info)
+    expect_true(same(with_opts(crossprod(D, "w" * D), design.matrix.remote_compress = mode),
+                     crossprod(M, d$w * M)), info = info)
     expect_true(same(with_opts(crossprod(D, "y"), design.matrix.remote_compress = mode), crossprod(M, d$y)),
                 info = info)
     expect_true(same(with_opts(colSums("w" * D, group = "g"), design.matrix.remote_compress = mode),
                      rowsum(d$w * M, d$g)), info = info)
+    expect_true(same(with_opts(colSums(D), design.matrix.remote_compress = mode), colSums(M)), info = info)
     expect_true(same(with_opts(colMeans(D), design.matrix.remote_compress = mode), colMeans(M)), info = info)
 }
+
+## "auto" by operation (dm_compress_rule()): colSums() and colMeans() never
+## compress, nor ask; products of a design with few numeric columns (here 3
+## distinct products of numeric variables) neither
+D <- suppressMessages(design_matrix(fo, con, table = "d"))
+expect_equal(design.matrix:::dm_compress_numeric(D), 3L)
+for (e in list(quote(colSums(D, group = "g")), quote(colMeans(D)), quote(crossprod(D, "w" * D)),
+               quote(crossprod(D, "y")))) {
+    q <- queries(eval(e), design.matrix.remote_compress = "auto")
+    expect_equal(length(q$sql), 1L, info = deparse(e))
+    expect_false(grouped_scan(q$sql), info = deparse(e))
+}
+## a design with many numeric columns (11) and few patterns (15, under 1% of
+## the rows): products compress, after the decision (asked once); colSums()
+## still does not
+fw <- ~ (xd + I(xd^2) + I(xd^3)) * (xe + I(xe^2))
+DW <- suppressMessages(design_matrix(fw, con, table = "d"))
+MW <- as.matrix(design_matrix(fw, d))
+expect_equal(design.matrix:::dm_compress_numeric(DW), 11L)
+q <- queries(crossprod(DW, "w" * DW), design.matrix.remote_compress = "auto")
+expect_true(same(q$value, crossprod(MW, d$w * MW)))
+expect_true(length(q$sql) > 1L && grouped_scan(q$sql[length(q$sql)]))
+q <- queries(crossprod(DW, "y"), design.matrix.remote_compress = "auto")
+expect_true(same(q$value, crossprod(MW, d$y)))
+expect_equal(length(q$sql), 1L)
+expect_true(grouped_scan(q$sql))
+q <- queries(colSums(DW, group = "g"), design.matrix.remote_compress = "auto")
+expect_true(same(q$value, rowsum(MW, d$g)))
+expect_false(grouped_scan(q$sql))
+## more patterns than 1% of the rows (here with f, 45 for 2000 rows): not
+## compressed, though fits (ratio 0.1) would be
+DW2 <- suppressMessages(design_matrix(update(fw, ~ . + f), con, table = "d"))
+MW2 <- as.matrix(design_matrix(update(fw, ~ . + f), d))
+q <- queries(crossprod(DW2), design.matrix.remote_compress = "auto")
+expect_true(same(q$value, crossprod(MW2)))
+expect_false(grouped_scan(q$sql[length(q$sql)]))
+expect_null(design.matrix:::dm_compress_cap(DW2, "auto", op = "products"))
+expect_false(is.null(design.matrix:::dm_compress_cap(DW2, "auto", op = "fit")))
 
 ## a missing response: compressed products put NA where the dense one does
 xm <- with_opts(crossprod(D, "ym"), design.matrix.remote_compress = TRUE)
@@ -76,12 +123,11 @@ g0 <- glm(yp ~ xd + f, poisson, d, offset = g)
 expect_true(a$compressed)
 expect_true(same(coef(a), coef(g0), 1e-7) && same(deviance(a), deviance(g0), 1e-7))
 
-## too many cells: "auto" gives up after the scan, and the products are the
-## scan over the rows
+## too many cells: TRUE gives up after the scan (every row distinct), and
+## the products are the scan over the rows
 D2 <- design_matrix(~ xc + f, con, table = "d")
 M2 <- as.matrix(design_matrix(~ xc + f, d))
-expect_true(same(with_opts(crossprod(D2), design.matrix.remote_compress_ratio = 1,
-                           design.matrix.remote_compress_max = 1e9), crossprod(M2)))
+expect_true(same(with_opts(crossprod(D2), design.matrix.remote_compress = TRUE), crossprod(M2)))
 expect_null(design.matrix:::dm_sql_moments(D2, cap = 10))
 
 DBI::dbDisconnect(con, shutdown = TRUE)

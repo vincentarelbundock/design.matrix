@@ -78,7 +78,11 @@ the data (one product with \code{x} per block of columns). \code{Q} is
 equations and are then refined from the residuals \verb{y - X b}, each step
 costing one \code{x \%*\% b} and one \code{crossprod(x, r)}. Refinement recovers
 much of the accuracy that the normal equations lose on badly conditioned
-designs.
+designs. When \verb{X'X} is badly conditioned and numeric variables are far
+from zero (\code{x + 1e7}), the values of \code{R} come from the \verb{X'X} of the
+design with those variables centered, when that is an exact linear
+transform \verb{X T} of the design (\code{R} is then \code{R~ T^-1}); the columns kept
+and their order still come from \verb{X'X}.
 
 \strong{Agreement with \code{qr()}.} Results agree with those of
 \code{qr(as.matrix(x))} up to floating point rounding, not bit for bit. On

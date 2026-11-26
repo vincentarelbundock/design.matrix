@@ -17,11 +17,11 @@
 ## Only designs with na.omit are compressed (with na.pass, rows with
 ## missing values put NA where the dense computation does).
 ##
-## Option design.matrix.remote_compress: "auto" (default) compresses when
-## dm_compress_worth() says so, and gives up when the scan returns more
-## than min(n / 2, getOption("design.matrix.remote_compress_max", 1e6))
-## cells; TRUE always compresses (unless every row is distinct); FALSE
-## never.
+## Option design.matrix.remote_compress: "auto" (default) compresses by the
+## rule of the operation (dm_compress_rule()) and dm_compress_worth(), and
+## gives up when the scan returns more than
+## min(n / 2, getOption("design.matrix.remote_compress_max", 1e6)) cells;
+## TRUE always compresses (unless every row is distinct); FALSE never.
 
 dm_compress_mode <- function(mode = getOption("design.matrix.remote_compress", "auto")) {
     if (!(isTRUE(mode) || isFALSE(mode) || identical(mode, "auto")))
@@ -38,21 +38,32 @@ dm_compress_mode <- function(mode = getOption("design.matrix.remote_compress", "
 ##     types (integers, text, ENUM, logical, dates) go to step 2;
 ##  2. an estimate of the number of patterns over all the rows used, by
 ##     approx_count_distinct() of a hash of the key columns (missing
-##     values count as values): compress when it is at most
-##     getOption("design.matrix.remote_compress_ratio", 0.1) times the
-##     number of rows and at most getOption("design.matrix.remote_compress_max",
-##     1e6).
+##     values count as values): compress when it is at most `ratio` times
+##     the number of rows and at most
+##     getOption("design.matrix.remote_compress_max", 1e6).
 ## The real GROUP BY gives up as well when it returns more patterns than
-## that (dm_sql_cell_design()).
-dm_compress_worth <- function(D, keys, n, group = character()) {
-    ## (asked once for the rows of a design and a set of keys)
+## that (dm_sql_cell_design()). The estimate is asked once for the rows of
+## a design and a set of keys; the operations differ only in `ratio`.
+dm_compress_worth <- function(D, keys, n, group = character(),
+                              ratio = getOption("design.matrix.remote_compress_ratio", 0.1)) {
     ck <- paste(c(D$filter, keys, group), collapse = "\r")
-    if (!is.null(D$cache$worth[[ck]])) return(D$cache$worth[[ck]])
-    D$cache$worth[[ck]] <- out <- dm_compress_worth_ask(D, keys, n, group)
-    out
+    if (is.null(D$cache$worth[[ck]])) D$cache$worth[[ck]] <- dm_compress_estimate(D, keys, n, group)
+    dm_compress_ok(D$cache$worth[[ck]], ratio)
 }
 
-dm_compress_worth_ask <- function(D, keys, n, group = character()) {
+dm_compress_ok <- function(e, ratio) {
+    e[["est"]] <= ratio * e[["rows"]] && e[["est"]] <= getOption("design.matrix.remote_compress_max", 1e6)
+}
+
+## (uncached; bench/compression/run.R times it)
+dm_compress_worth_ask <- function(D, keys, n, group = character(),
+                                  ratio = getOption("design.matrix.remote_compress_ratio", 0.1)) {
+    dm_compress_ok(dm_compress_estimate(D, keys, n, group), ratio)
+}
+
+## c(est, rows): the estimated number of patterns (Inf for continuous keys,
+## step 1) and the number of rows.
+dm_compress_estimate <- function(D, keys, n, group = character()) {
     qk <- c(if (length(keys)) paste0("s.", dm_qi(D, keys)), sprintf("(%s)", group))
     dbl <- keys[D$src$types[keys] == "double"]
     if (length(dbl)) {
@@ -65,15 +76,13 @@ dm_compress_worth_ask <- function(D, keys, n, group = character()) {
                                    from, smp, D$filter))
         m <- as.numeric(res$n)
         dd <- vapply(seq_along(dbl), function(j) as.numeric(res[[paste0("d", j)]]), 0)
-        if (m > 0 && any(dd > 0.5 * m)) return(FALSE)
+        if (m > 0 && any(dd > 0.5 * m)) return(c(est = Inf, rows = n))
     }
     res <- dm_query(D, sprintf("SELECT COUNT(*) AS n, approx_count_distinct(hash(%s)) AS est FROM (%s) AS s WHERE %s",
                                paste(qk, collapse = ", "), D$src$select, D$filter))
     est <- as.numeric(res$est)
-    rows <- as.numeric(res$n)
     D$cache$compress_estimate <- est
-    est <= getOption("design.matrix.remote_compress_ratio", 0.1) * rows &&
-        est <= getOption("design.matrix.remote_compress_max", 1e6)
+    c(est = est, rows = as.numeric(res$n))
 }
 
 ## Input columns of the design (not those of the response alone).
@@ -87,16 +96,57 @@ dm_compress_keys <- function(D) {
     unique(unlist(lapply(D$vars[pv], function(v) v$inputs)))
 }
 
+## The rule of "auto" for each operation (bench/compression/ANALYSIS.md,
+## design.matrix#etg8): NULL, never compress; else list(numeric, ratio):
+## compress designs with at least `numeric` numeric columns
+## (dm_compress_numeric(); fewer skip the decision queries entirely) whose
+## estimated patterns are at most `ratio` times the rows.
+##  - "colsums" (colSums(), colMeans(), grouped or not): never. Compressed,
+##    the GROUP BY splits the cells (and the groups) by every value of the
+##    numeric variables, and there are no products to save: it lost almost
+##    everywhere at n >= 1e6 (up to 50x).
+##  - "products" (crossprod(), X'y): the uncompressed scan already groups by
+##    the factor cells; compression only saves the per-row products of the
+##    numeric columns, about m (m + 1) / 2 of them. It won 2.7-10x for 15
+##    numeric columns up to ratio 1e-2 and lost for 2. The cutoff of 8 is
+##    PROVISIONAL (between 2 and 15 is unmeasured): retune it on a quiet
+##    machine with bench/compression/run.R.
+##  - "fit" (design_lm(), design_glm(): dmp_patterns()): the option
+##    design.matrix.remote_compress_ratio (0.1), unchanged until it is
+##    remeasured.
+dm_compress_rule <- function(op) {
+    ratio <- getOption("design.matrix.remote_compress_ratio", 0.1)
+    switch(op,
+           colsums = NULL,
+           products = list(numeric = 8L, ratio = min(ratio, 1e-2)),
+           fit = list(numeric = 0L, ratio = ratio),
+           stop("unknown operation: ", op))
+}
+
+## The number of distinct numeric columns of the products: the distinct
+## products of numeric variables in the SQL terms (x, x:f and x:g count
+## once; f alone not at all).
+dm_compress_numeric <- function(D) {
+    st <- Filter(function(t) length(t$cols) > 0L && length(t$M) > 0L, D$sql_terms)
+    length(unique(vapply(st, function(t) paste(sort(t$M), collapse = "*"), "")))
+}
+
 ## The cap on the number of cells of compressed products of D, or NULL when
 ## they are not compressed. `group`: SQL expressions that also split the
-## cells (the groups of colSums(), the keys of dmp_patterns()).
-dm_compress_cap <- function(D, mode = dm_compress_mode(), group = character()) {
+## cells (the groups of colSums(), the keys of dmp_patterns()). `op`: the
+## operation, for the rule of "auto" (dm_compress_rule()).
+dm_compress_cap <- function(D, mode = dm_compress_mode(), group = character(),
+                            op = c("fit", "products", "colsums")) {
+    op <- match.arg(op)
     if (isFALSE(mode) || !identical(D$na, "omit")) return(NULL)
     n <- D$cache$n %||% D$n
     if (n < 2) return(NULL)
+    if (isTRUE(mode)) return(n)
+    rule <- dm_compress_rule(op)
+    if (is.null(rule) || dm_compress_numeric(D) < rule$numeric) return(NULL)
     cols <- dm_compress_keys(D)
-    if (identical(mode, "auto") && length(c(cols, group)) && !dm_compress_worth(D, cols, n, group)) return(NULL)
-    if (isTRUE(mode)) n else min(n / 2, getOption("design.matrix.remote_compress_max", 1e6))
+    if (length(c(cols, group)) && !dm_compress_worth(D, cols, n, group, rule$ratio)) return(NULL)
+    min(n / 2, getOption("design.matrix.remote_compress_max", 1e6))
 }
 
 ## The keys of the cells of the scan: S, the factors of the design (every
@@ -132,7 +182,7 @@ dm_sql_cell_design <- function(D, res, cap) {
 ## design of the cells, n, sw, sy, within, keys), or NULL when compression
 ## does not pay.
 dm_sql_patterns <- function(D, z, w = NULL, keys = NULL, mode = dm_compress_mode()) {
-    cap <- dm_compress_cap(D, mode, keys)
+    cap <- dm_compress_cap(D, mode, keys, op = "fit")
     if (is.null(cap)) return(NULL)
     ck <- dm_sql_cells(D, cap)
     gn <- if (length(keys)) paste0("__dm_g", seq_along(keys)) else character()

@@ -86,7 +86,7 @@ Rows with the same factor codes and the same numeric values give the same design
 - $R$ is the Cholesky factor of $X'X$, from `crossprod()`;
 - columns are pivoted with the rule of `lm()` (LINPACK's limited pivoting). From $X'X$ a residual norm is accurate to about the square root of machine precision, so the columns near the tolerance are judged from the data, with one product per block of columns;
 - coefficients solve the normal equations and are refined from the residuals $y - X b$, each step costing one $X b$ and one $X' r$;
-- numeric variables far from zero are centered first when that is an exact linear transform of the design, which keeps $X'X$ accurate.
+- numeric variables far from zero are centered when that is an exact linear transform $X T$ of the design, which keeps $X'X$ accurate: the columns kept come from $X'X$, the values of $R = tilde(R) T^(-1)$ from the centered design. Remote designs are always centered; in memory, only when $X'X$ is badly conditioned ($kappa^2 > 10^6$, columns scaled to unit norm), so that other fits take no extra pass.
 
 The cost is a few passes over the rows and memory of order $p^2$. The price is that of the normal equations: on badly conditioned designs the coefficients agree with a Householder QR to fewer digits, and when $X'X$ cannot represent the scale of the columns `qr()` falls back to the dense decomposition.
 

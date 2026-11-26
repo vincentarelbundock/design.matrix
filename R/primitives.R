@@ -35,6 +35,8 @@
 ## Operations on columns (same R code for both backends):
 ##   +  -  *  /  ^         (numbers recycle; columns must have the same k or 1)
 ##   ==  !=  <  >  <=  >=  &  |  !
+##                         (NA where either side is NA or NaN, as in R)
+##   is.na is.nan is.finite is.infinite (R's semantics; never NA)
 ##   exp log sqrt abs log1p expm1 log2 log10 cos sin tan floor ceiling sign
 ##                         (Math group; log has one argument)
 ##   dmc_pmin dmc_pmax dmc_ifelse dmc_rowsums dmc_cbind dmc_col(x, j) dmc_ncol
@@ -275,7 +277,8 @@ dm_rcols_frame <- function(...) {
 ## SQL of an operand (a remote column, or a number)
 dm_rcols_operand <- function(x) {
     if (dm_is_rcols(x)) return(unclass(x)$sql)
-    if (length(x) == 1L && is.na(x)) return("CAST(NULL AS DOUBLE)")
+    ## (NA is NULL; NaN stays NaN, as in R arithmetic)
+    if (length(x) == 1L && is.na(x) && !is.nan(x)) return("CAST(NULL AS DOUBLE)")
     if (is.logical(x) && length(x) == 1L) return(if (x) "TRUE" else "FALSE")
     if (is.numeric(x) && length(x) == 1L) return(dm_sql_double(x))
     stop("Remote columns combine only with numbers and other remote columns.", call. = FALSE)
@@ -298,6 +301,18 @@ Ops.dm_rcols <- function(e1, e2) {
         stop("Remote columns with different numbers of columns.", call. = FALSE)
     a <- rep_len(a, k)
     b <- rep_len(b, k)
+    ## Comparisons with NaN are NA in R, but true or false in DuckDB (which
+    ## orders NaN above every number and has NaN = NaN): compare with NaN
+    ## made NULL (NULLIF(v, NaN), as NaN = NaN only for NaN, keeps v once in
+    ## the expression), so that NaN or NULL on either side gives NULL.
+    if (op %in% c("==", "!=", "<", ">", "<=", ">=")) {
+        nn <- function(v, e) {
+            if (dm_is_rcols(e)) return(sprintf("NULLIF(%s, CAST('NaN' AS DOUBLE))", v))
+            if (is.nan(e)) "CAST(NULL AS DOUBLE)" else v
+        }
+        a <- nn(a, e1)
+        b <- nn(b, e2)
+    }
     sql <- switch(op,
         "+" = , "-" = , "*" = , "/" = sprintf("(%s %s %s)", a, op, b),
         "^" = sprintf("pow(%s, %s)", a, b),
@@ -307,6 +322,25 @@ Ops.dm_rcols <- function(e1, e2) {
         stop(sprintf("`%s` is not supported for remote columns.", op), call. = FALSE))
     dm_rcols(frame, sql)
 }
+
+## is.na() and friends, with R's semantics (NA is NULL remotely): is.na
+## TRUE for NA or NaN, is.nan for NaN only, is.finite FALSE for NA, NaN and
+## +-Inf, is.infinite TRUE for +-Inf only. Never NA.
+#' @export
+is.na.dm_rcols <- function(x) !dmc_notnan(x)
+
+#' @export
+is.nan.dm_rcols <- function(x)
+    dm_rcols(unclass(x)$frame, sprintf("COALESCE(isnan(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
+             notnull = TRUE)
+
+#' @export
+is.finite.dm_rcols <- function(x) dmc_is_finite(x)
+
+#' @export
+is.infinite.dm_rcols <- function(x)
+    dm_rcols(unclass(x)$frame, sprintf("COALESCE(isinf(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
+             notnull = TRUE)
 
 #' @export
 Math.dm_rcols <- function(x, ...) {
@@ -352,7 +386,9 @@ dmc_ifelse <- function(test, yes, no) {
         if (anyNA(test)) out[is.na(test)] <- NA
         return(out)
     }
-    dm_rcols(f, sprintf("(CASE WHEN %s THEN %s ELSE %s END)", dm_rcols_operand(test),
+    ## (NULL where test is NULL, as NA in memory; the simple CASE names the
+    ## test once)
+    dm_rcols(f, sprintf("(CASE %s WHEN TRUE THEN %s WHEN FALSE THEN %s END)", dm_rcols_operand(test),
                         dm_rcols_operand(yes), dm_rcols_operand(no)))
 }
 
