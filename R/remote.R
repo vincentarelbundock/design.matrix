@@ -3,24 +3,22 @@
 ##
 ## A remote design holds the source (connection and SQL), a design_plan
 ## (terms with fixed transformations, levels, contrasts), a description of
-## each model variable (how to compute it, or its missingness, in SQL) and
-## the engine that computes products:
-##
-##  * "sql": each term t has X_t[i, ] = N_t(i) C_t[F_t(i), ], with F_t(i)
-##    the combined level of its factors and N_t(i) the product of its
-##    numeric variables (see structured.R). Sums over rows of products of
-##    such columns are GROUP BY aggregates over factor codes; the small
-##    dense products with the C_t are done in R (remote_sql.R).
-##  * "chunked": batches of rows are read through DBI and handed to
-##    design_matrix(plan, batch); the in-memory results are accumulated
-##    (remote_chunked.R).
+## each model variable (how to compute it, or its missingness, in SQL).
+## Products run in the database: each term t has X_t[i, ] = N_t(i)
+## C_t[F_t(i), ], with F_t(i) the combined level of its factors and N_t(i)
+## the product of its numeric variables (see structured.R). Sums over rows
+## of products of such columns are GROUP BY aggregates over factor codes;
+## the small dense products with the C_t are done in R (remote_sql.R).
+## A variable that SQL cannot compute is evaluated in R once, batch by
+## batch, into columns of a temporary table (dm_remote_evaluate()), and is
+## then a column like any other.
 
 #' Out-of-core designs on DuckDB
 #'
 #' With a DBI connection to DuckDB, or the path of Parquet files, as `data`,
 #' [design_matrix()] returns a *remote design*: the rows stay in the
-#' database, and products with the design run there (or in batches), so that
-#' data larger than memory can be used.
+#' database, and products with the design run there, so that data larger
+#' than memory can be used.
 #'
 #' ```
 #' design_matrix(formula, con, table = "flights")
@@ -67,25 +65,25 @@
 #' predictions are `NULL`, and products involving their columns are `NA`.
 #' With `na.action = na.omit`, they are dropped.
 #'
-#' @section Engines:
-#' `engine = "sql"` computes everything in DuckDB. It covers factors,
-#' character and logical columns, numeric columns, interactions, and
-#' numeric expressions built from `+`, `-`, `*`, `/`, `^`, [I()], [log()]
+#' @section Engine:
+#' Products with a remote design are computed in DuckDB. SQL computes
+#' factors, character and logical columns, numeric columns, interactions,
+#' and numeric expressions built from `+`, `-`, `*`, `/`, `^`, [I()], [log()]
 #' (with base 2, 10 or a number), [log2()], [log10()], [exp()], [sqrt()] and
-#' [abs()]. `engine = "chunked"` handles any formula: rows are read in
-#' batches of `chunk_size` rows (from the table itself when it is a DuckDB
-#' base table, otherwise from a temporary table holding the needed columns of
-#' the rows used) and each batch goes through `design_matrix(spec, batch)`.
-#' `engine = "auto"` (default) uses SQL when every variable can be
-#' translated, and otherwise the chunked engine, with a message naming the
-#' first term that cannot be translated. `summary(D)` shows the decision
-#' for each term, and `summary(D, sql = TRUE)` the generated SQL.
+#' [abs()]. Any other variable, such as [stats::poly()], [splines::ns()],
+#' `factor(cyl)` or a function of yours, is evaluated in R once, in batches
+#' of `chunk_size` rows, and written with the columns of the remote data to
+#' a temporary table (one pass over the data, and a copy of it in the
+#' database), whose columns the design then reads like any others; a
+#' message names the first such term. The expression is evaluated on the
+#' rows where its input columns are present, and a row where it gives `NA`
+#' is a row with a missing value. With `engine = "sql"`, such a formula is
+#' refused instead. `summary(D)` shows, for each term, whether SQL computes
+#' it, and `summary(D, sql = TRUE)` the generated SQL.
 #'
-#' In the chunked engine, a variable evaluated in R is taken as missing,
-#' when selecting rows in SQL, if one of its input columns is missing; rows
-#' where the R expression itself gives `NA` are then dropped in R. The
-#' number of rows printed is that of the SQL selection until a pass over the
-#' data has counted the rows kept.
+#' A term whose factors have more than about eight million combined
+#' level-column cells is refused; for a factor with many levels, use fixed
+#' effects (`y ~ x | f` in [design_lm()] and [design_glm()]).
 #'
 #' @section Operations:
 #' The operations of a design in memory (see [design_algebra] and
@@ -102,8 +100,8 @@
 #'   `DBI::SQL()` expression), the sums or means within groups (sorted as
 #'   [base::rowsum()] sorts them).
 #' * `D %*% beta`: the linear predictor, with all the columns of the remote
-#'   data (to join it back), written to a temporary view (SQL engine) or
-#'   table (chunked engine) whose name is returned, as a string of class
+#'   data (to join it back), as a temporary view whose name is returned, a
+#'   string of class
 #'   `dm_remote_table`; [as.data.frame()] reads it, and its `"connection"`
 #'   attribute is the connection where it lives (for a Parquet source, a
 #'   private one). To keep it, create a table from it:
@@ -122,8 +120,8 @@
 #' run one `GROUP BY` over those columns, which returns
 #' each pattern with its number of rows and the sums of the weights and
 #' responses, and compute the result from the design of the patterns, in
-#' memory. This works with both engines (a variable evaluated in R is
-#' evaluated on the patterns). The option `design.matrix.remote_compress`
+#' memory (a variable evaluated in R is evaluated on the patterns). The
+#' option `design.matrix.remote_compress`
 #' controls it. With `"auto"` (default), a design with a continuous
 #' numeric column (a `DOUBLE` column with many distinct values in a sample
 #' of the rows) is not compressed, at almost no cost; otherwise the number
@@ -146,9 +144,9 @@
 #' With remote data, [design_matrix()], [design_lm()], [design_glm()] and
 #' `predict()` take, through `...`: `table` or `sql` (the remote rows: a
 #' table name, or a `SELECT` query; not with Parquet paths), `engine`
-#' (`"auto"`, `"sql"` or `"chunked"`) and `chunk_size` (rows per batch for
-#' the chunked engine, default `getOption("design.matrix.chunk_size",
-#' 250000)`).
+#' (`"auto"`, or `"sql"` to refuse variables that must be evaluated in R)
+#' and `chunk_size` (rows per batch when variables are evaluated in R,
+#' default `getOption("design.matrix.chunk_size", 250000)`).
 #' @aliases coerce,dm_remote,CsparseMatrix-method coerce,dm_remote,dgCMatrix-method
 #' @examples
 #' if (requireNamespace("duckdb", quietly = TRUE)) {
@@ -198,7 +196,7 @@ dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = sta
     ra <- dots[nms %in% keys]
     rest <- dots[!nms %in% keys]
     engine <- ra$engine %||% "auto"
-    checkmate::assert_choice(engine, c("auto", "sql", "chunked"), .var.name = "engine")
+    checkmate::assert_choice(engine, c("auto", "sql"), .var.name = "engine")
     chunk_size <- ra$chunk_size %||% getOption("design.matrix.chunk_size", 250000)
     checkmate::assert_number(chunk_size, lower = 1, finite = TRUE, .var.name = "chunk_size")
     src <- if (inherits(source, "dm_src")) source else dm_remote_source(source, ra$table, ra$sql)
@@ -492,7 +490,7 @@ dm_remote_spec <- function(plan, src, na = "pass") {
 ## Columns of another type than in training (a numeric variable stored as
 ## text, say): the error of predict.lm(), before anything is built. Only
 ## plain columns are checked here; variables computed by R expressions are
-## checked on each batch (dm_chunk_design()).
+## checked when the prototype rows are built (dm_chunk_design()).
 dm_remote_check_classes <- function(plan, src, tv, xl) {
     cl <- plan$data_classes
     if (is.null(cl)) return(invisible())
@@ -510,8 +508,73 @@ dm_remote_check_classes <- function(plan, src, tv, xl) {
     invisible()
 }
 
-## Levels, columns, engine.
+## Model variables that SQL cannot compute (kind "other": in a term, or the
+## response) are evaluated in R, batch by batch, into columns of a temporary
+## table, which becomes the source of the design (dm_materialize()): a
+## numeric variable is then a column (several for a matrix, as poly(x, 2)
+## gives), a factor, character or logical one a column of that type. With
+## engine = "sql" this is refused; otherwise a message names the first such
+## term. (offset() terms in no term stay as they are: a fit or a prediction
+## evaluates them.)
+dm_remote_evaluate <- function(D, engine) {
+    tt <- D$plan$terms
+    tv <- dm_terms_vars(tt)$names
+    fac <- attr(tt, "factors")
+    labels <- attr(tt, "term.labels")
+    other <- names(D$vars)[vapply(D$vars, function(v) v$kind == "other", NA)]
+    in_term <- function(t) intersect(tv[fac[, t] > 0], other)
+    used <- unique(unlist(lapply(seq_along(labels), in_term)))
+    todo <- intersect(other, c(used, D$response, setdiff(other, tv[attr(tt, "offset")])))
+    if (!length(todo)) return(D)
+    first <- todo[1L]
+    what <- "variable"
+    if (length(used)) {
+        t <- which(vapply(seq_along(labels), function(t) length(in_term(t)) > 0L, NA))[1L]
+        first <- in_term(t)[1L]
+        what <- "term"
+        label <- labels[t]
+    } else if (isTRUE(D$response %in% todo)) {
+        first <- label <- D$response
+        what <- "response"
+    } else {
+        label <- first
+    }
+    why <- sprintf("%s `%s` cannot be translated to SQL (%s)", what, label, D$vars[[first]]$reason)
+    if (engine == "sql") stop("The SQL engine cannot compute this design: ", why, ".", call. = FALSE)
+    message("Evaluated in R: ", why, ".")
+    idx <- match(todo, names(D$vars))
+    cols <- paste0("__dm_var", idx)
+    xl <- names(D$plan$xlevels)
+    src <- dm_materialize(D$src, stats::setNames(lapply(D$vars[idx], function(v) v$expr), cols),
+                          environment(D$terms_full) %||% globalenv(), chunk_size = D$chunk_size,
+                          model = stats::setNames(lapply(D$vars[idx], function(v) {
+                              list(inputs = v$inputs, factor = v$name %in% xl, label = v$name,
+                                   class = D$plan$data_classes[v$name][!is.na(names(D$plan$data_classes[v$name]))])
+                          }), cols))
+    D$src <- src
+    info <- attr(src, "model")
+    for (i in seq_along(idx)) {
+        v <- D$vars[[idx[i]]]
+        f <- info[[cols[i]]]
+        v$evaluated <- v$reason
+        v$reason <- NULL
+        v$kind <- f$kind
+        if (f$kind == "numeric") {
+            v$sql <- sprintf("CAST(s.%s AS DOUBLE)", dm_qi(D, f$cols))
+            v[["k"]] <- length(f$cols)
+        } else {
+            v$col <- f$cols
+        }
+        D$vars[[idx[i]]] <- v
+    }
+    D$filter <- dm_remote_filter(D)
+    D$evaluated <- sprintf("%s `%s` is evaluated in R", what, label)
+    D
+}
+
+## Levels, columns, term structures.
 dm_remote_finish <- function(D, engine) {
+    D <- dm_remote_evaluate(D, engine)
     plan <- D$plan
     xl <- plan$xlevels
     ## levels of the factors, and new levels (as model.frame() reports them)
@@ -539,44 +602,9 @@ dm_remote_finish <- function(D, engine) {
     D$cache <- new.env(parent = emptyenv())
     ## identifies the design through copies with scaled rows
     D$id <- dm_tmp_name("dm")
-
-    ## which terms SQL can compute
     D$terms <- dm_remote_terms(D)
-    bad <- Filter(function(t) !t$sql_ok, D$terms)
-    resp_bad <- !is.null(D$response) && D$vars[[D$response]]$kind == "other"
-    ## variables in no term (an offset, say) decide which rows are used
-    used <- unique(unlist(lapply(D$terms, function(t) t$vars)))
-    ## (offset() terms are not in the design: a fit or a prediction
-    ## evaluates them, in R if need be)
-    offs <- dm_terms_vars(D$plan$terms)$names[attr(D$plan$terms, "offset")]
-    loose <- setdiff(names(D$vars)[vapply(D$vars, function(v) v$kind == "other", NA)],
-                     c(names(D$vars)[used], D$response, offs))
-    short <- if (length(bad)) {
-        sprintf("term `%s` is evaluated in R", bad[[1L]]$label)
-    } else if (resp_bad) {
-        sprintf("response `%s` is evaluated in R", D$response)
-    } else if (length(loose)) {
-        sprintf("variable `%s` is evaluated in R", loose[1L])
-    }
-    why <- if (length(bad)) {
-        sprintf("term `%s` cannot be translated to SQL (%s)", bad[[1L]]$label, bad[[1L]]$reason)
-    } else if (resp_bad) {
-        sprintf("response `%s` cannot be translated to SQL (%s)", D$response, D$vars[[D$response]]$reason)
-    } else if (length(loose)) {
-        sprintf("variable `%s` cannot be translated to SQL (%s)", loose[1L], D$vars[[loose[1L]]]$reason)
-    } else {
-        NULL
-    }
-    if (engine == "sql" && !is.null(why))
-        stop("The SQL engine cannot compute this design: ", why, ".", call. = FALSE)
-    if (engine == "auto") {
-        engine <- if (is.null(why)) "sql" else "chunked"
-        if (!is.null(why)) message("Using the chunked engine: ", why, ".")
-    }
-    D$engine <- engine
-    D$why <- why
-    D$why_short <- if (engine == "chunked") short %||% "engine = \"chunked\"" else NULL
-    if (engine == "sql") D <- dm_sql_prepare(D)
+    D$engine <- "sql"
+    D <- dm_sql_prepare(D)
     class(D) <- "dm_remote"
     D
 }
@@ -598,7 +626,8 @@ dm_remote_sample <- function(D, n = 2000L) {
     dm_query(D, sprintf("SELECT %s FROM (%s) AS s WHERE %s LIMIT %d", sel, D$src$select, D$filter, n))
 }
 
-## Terms of the design: their variables, and whether SQL computes them.
+## Terms of the design: their variables, and whether SQL computes them
+## (`sql_ok`; otherwise `reason` says why a variable was evaluated in R).
 dm_remote_terms <- function(D) {
     tt <- D$plan$terms
     fac <- attr(tt, "factors")
@@ -610,18 +639,13 @@ dm_remote_terms <- function(D) {
         out[[1L]] <- list(index = 0L, label = "(Intercept)", vars = integer(), sql_ok = TRUE, reason = NULL)
     for (t in seq_along(labels)) {
         vnames <- pv[fac[, t] > 0]
-        kinds <- vapply(D$vars[vnames], function(v) v$kind, "")
-        reason <- NULL
-        if (any(kinds == "other")) {
-            k <- which(kinds == "other")[1L]
-            reason <- D$vars[[vnames[k]]]$reason
-        } else {
-            L <- prod(vapply(D$vars[vnames], function(v) max(1L, length(v$levels)), 1L))
-            if (L * sum(D$assign == t) > dm_sql_max_cells)
-                reason <- sprintf("%s combined levels: too many for the SQL engine", format(L, big.mark = ","))
-        }
+        L <- prod(vapply(D$vars[vnames], function(v) max(1L, length(v$levels)), 1L))
+        if (L * sum(D$assign == t) > dm_sql_max_cells)
+            stop(sprintf("Term `%s` has %s combined levels: too many for a remote design (for a factor with many levels, use fixed effects: y ~ x | f).",
+                         labels[t], format(L, big.mark = ",")), call. = FALSE)
+        reason <- unlist(lapply(D$vars[vnames], function(v) v$evaluated))[1L]
         out[[length(out) + 1L]] <- list(index = t, label = labels[t], vars = match(vnames, names(D$vars)),
-                                        sql_ok = is.null(reason), reason = reason)
+                                        sql_ok = is.null(reason), reason = if (!is.null(reason)) unname(reason))
     }
     out
 }
@@ -631,10 +655,10 @@ print.dm_remote <- function(x, ...) {
     cat(sprintf("<remote design_matrix: %s rows x %d columns>\n", dm_fmt_count(x$cache$n %||% x$n), x$p))
     cat("source: ", x$src$label, "\n", sep = "")
     if (!is.null(x$scale)) cat("rows scaled by: ", x$scale, "\n", sep = "")
-    if (x$engine == "sql") {
+    if (is.null(x$evaluated)) {
         cat("engine: sql (all terms pushed down)\n")
     } else {
-        cat(sprintf("engine: chunked, %s rows per batch (%s)\n", dm_fmt_count(x$chunk_size), x$why_short))
+        cat(sprintf("engine: sql, on columns computed in R (%s)\n", x$evaluated))
     }
     dm_print_columns(x$colnames)
     invisible(x)
@@ -671,8 +695,8 @@ dm_remote_column <- function(D, x, what, several = FALSE) {
 
 ## A `weights` or `group` argument: a column name, or a SQL expression
 ## (`DBI::SQL()`) over the columns of the remote data. An expression is
-## computed as an extra column of the source, so that both engines (and
-## the handling of missing values) treat it as any other column.
+## computed as an extra column of the source, so that the engine (and the
+## handling of missing values) treats it as any other column.
 ## Returns list(D = the design to use, col = the column name, or NULL).
 dm_remote_arg <- function(D, x, what) {
     if (is.null(x)) return(list(D = D, col = NULL))
@@ -707,7 +731,7 @@ dm_remote_y <- function(D, y) {
 }
 
 ## X'WX, X'Wy, y'Wy, n and the sum of the weights of a remote design, in
-## one pass where possible (compressed, SQL or chunked). `weights`: a column
+## one pass (compressed, or one scan). `weights`: a column
 ## name, a DBI::SQL() expression or NULL; `y`: columns, or NULL for the
 ## response of the formula.
 dm_remote_moments <- function(x, y = NULL, weights = NULL) {
@@ -716,17 +740,16 @@ dm_remote_moments <- function(x, y = NULL, weights = NULL) {
     x <- wa$D
     weights <- wa$col
     out <- dm_compressed_moments(x, yy, weights)
-    if (is.null(out))
-        out <- if (x$engine == "sql") dm_sql_moments(x, yy, weights) else dm_chunked_moments(x, yy, weights)
+    if (is.null(out)) out <- dm_sql_moments(x, yy, weights)
     x$cache$n <- out$n
     out
 }
 
 ## X'X of a remote design (rows possibly scaled) and, with the remote
-## columns Y, X'Y, from one scan with the SQL engine: list(xtx, xty).
-## (Without Y, or with the chunked engine, crossprod(x), and xty NULL.)
+## columns Y, X'Y, from one scan: list(xtx, xty). (Without Y,
+## crossprod(x), and xty NULL.)
 dm_remote_gram_xty <- function(x, Y = NULL) {
-    if (is.null(Y) || x$engine != "sql" || !length(Y)) return(list(xtx = crossprod(x), xty = NULL))
+    if (is.null(Y) || !length(Y)) return(list(xtx = crossprod(x), xty = NULL))
     nm <- paste0("__dm_y", seq_along(Y))
     D <- dm_with_columns(x, Y, nm)
     sc <- D$scale
@@ -742,8 +765,8 @@ dm_remote_gram_xty <- function(x, Y = NULL) {
     mo[c("xtx", "xty")]
 }
 
-## X %*% beta written to a temporary view (SQL engine) or table (chunked
-## engine), or to the table `name`, with the columns `keep` (default: all)
+## X %*% beta written to a temporary view, or to the table `name`, with
+## the columns `keep` (default: all)
 ## of the remote data. Returns the name, of class dm_remote_table.
 dm_remote_predict <- function(x, beta, name = NULL, column = ".fitted", keep = NULL, overwrite = FALSE) {
     checkmate::assert_class(x, "dm_remote")
@@ -761,8 +784,7 @@ dm_remote_predict <- function(x, beta, name = NULL, column = ".fitted", keep = N
     if (!is.null(sc)) {
         ## rows scaled: the predictions times the scale
         x <- dm_remote_extend(x, c(`__dm_scale` = sc), "scale")
-        tmp <- if (x$engine == "sql") dm_sql_predict(x, B, NULL, outcols, c(keep, "__dm_scale"), FALSE)
-               else dm_chunked_predict(x, B, NULL, outcols, c(keep, "__dm_scale"), FALSE)
+        tmp <- dm_sql_predict(x, B, NULL, outcols, c(keep, "__dm_scale"), FALSE)
         sel <- sprintf("SELECT %s FROM %s", paste(c(dm_qi(x, keep),
                        sprintf("%s * \"__dm_scale\" AS %s", dm_qi(x, outcols), dm_qi(x, outcols))), collapse = ", "),
                        dm_qi(x, tmp))
@@ -774,8 +796,7 @@ dm_remote_predict <- function(x, beta, name = NULL, column = ".fitted", keep = N
         }
         out <- name
     } else {
-        out <- if (x$engine == "sql") dm_sql_predict(x, B, name, outcols, keep, overwrite)
-               else dm_chunked_predict(x, B, name, outcols, keep, overwrite)
+        out <- dm_sql_predict(x, B, name, outcols, keep, overwrite)
     }
     structure(out, class = "dm_remote_table", connection = dm_con(x), holder = x$src$holder)
 }
@@ -887,7 +908,7 @@ crossprod.dm_remote <- function(x, y = NULL, ...) {
             D <- dw$D
             out <- dm_compressed_moments(D, NULL, NULL)
             if (!is.null(out)) return(out$xtx)
-            return(if (D$engine == "sql") dm_sql_gram(D) else dm_chunked_moments(D, NULL, NULL)$xtx)
+            return(dm_sql_gram(D))
         }
         return(dm_remote_moments(dw$D, NULL, dw$w)$xtx)
     }
@@ -910,15 +931,14 @@ crossprod.dm_remote <- function(x, y = NULL, ...) {
         D <- wa$D
         yy <- list(cols = y, response = FALSE)
         out <- dm_compressed_moments(D, yy, wa$col, gram = FALSE)
-        if (is.null(out))
-            out <- if (D$engine == "sql") list(xty = dm_sql_xty(D, yy, wa$col)) else dm_chunked_moments(D, yy, wa$col, gram = FALSE)
+        if (is.null(out)) out <- list(xty = dm_sql_xty(D, yy, wa$col))
         return(out$xty)
     }
     D <- dw$D
     yy <- list(cols = y, response = FALSE)
     out <- dm_compressed_moments(D, yy, NULL, gram = FALSE)
     if (!is.null(out)) return(out$xty)
-    if (D$engine == "sql") dm_sql_xty(D, yy) else dm_chunked_moments(D, yy, NULL, gram = FALSE)$xty
+    dm_sql_xty(D, yy)
 }
 
 dm_remote_colsums <- function(x, group, reorder, mean) {
@@ -932,8 +952,7 @@ dm_remote_colsums <- function(x, group, reorder, mean) {
     group <- ga$col
     out <- dm_compressed_colsums(x, group, weights, mean)
     if (!is.null(out)) return(out)
-    if (x$engine == "sql") dm_sql_colsums(x, group, weights, mean)
-    else dm_chunked_colsums(x, group, weights, mean)
+    dm_sql_colsums(x, group, weights, mean)
 }
 
 setOldClass("dm_remote")
@@ -1011,8 +1030,7 @@ dm_remote_collect <- function(x, force = FALSE) {
 
 #' @rdname design_remote
 #' @param sql For `summary()`: also print the generated SQL (the query that
-#'   computes the model variables and, for the SQL engine, the aggregates of
-#'   `crossprod()`; for the chunked engine, the query that reads a batch).
+#'   computes the model variables, and the aggregates of `crossprod()`).
 #' @export
 summary.dm_remote <- function(object, sql = FALSE, ...) {
     x <- object
@@ -1022,15 +1040,11 @@ summary.dm_remote <- function(object, sql = FALSE, ...) {
         sql = vapply(x$terms, function(t) t$sql_ok, NA),
         reason = vapply(x$terms, function(t) t$reason %||% "", ""),
         stringsAsFactors = FALSE)
-    attr(tab, "engine") <- if (x$engine == "sql") "sql" else sprintf("chunked (%s)", x$why_short)
+    attr(tab, "engine") <- if (is.null(x$evaluated)) "sql" else sprintf("sql, on columns computed in R (%s)", x$evaluated)
     attr(tab, "scale") <- x$scale
     if (sql) {
-        attr(tab, "sql") <- if (x$engine == "sql") {
-            c(paste0("-- model variables\n", dm_sql_base(x)),
-              paste0("-- crossprod\n", dm_sql_moments(x, NULL, sql_only = TRUE)))
-        } else {
-            paste0("-- batch\n", dm_chunk_sql(x, dm_remote_inputs(x), range = c(0, x$chunk_size)))
-        }
+        attr(tab, "sql") <- c(paste0("-- model variables\n", dm_sql_base(x)),
+                              paste0("-- crossprod\n", dm_sql_moments(x, NULL, sql_only = TRUE)))
     }
     class(tab) <- c("summary.dm_remote", class(tab))
     tab
@@ -1047,4 +1061,32 @@ print.summary.dm_remote <- function(x, ...) {
     print(tab, row.names = FALSE)
     for (q in sql) cat("\n", q, "\n", sep = "")
     invisible(x)
+}
+
+## ---- the in-memory design of rows read from the database ----
+
+## The query reading columns of the rows used.
+dm_chunk_sql <- function(D, cols) {
+    sel <- if (length(cols)) paste0("s.", dm_qi(D, cols), collapse = ", ") else "1 AS dm_one"
+    sprintf("SELECT %s FROM (%s) AS s WHERE %s", sel, D$src$select, D$filter)
+}
+
+## The in-memory design of rows read from the database (a sample for the
+## prototype of a design, or all of them for as.matrix()): rows with a
+## missing model variable (response included) are dropped, as na.omit()
+## drops them, unless the design keeps them (na.pass).
+## Returns list(design, keep = rows of the chunk kept, y = response).
+dm_chunk_design <- function(D, chunk) {
+    plan <- D$plan
+    na <- if (identical(D$na, "pass")) stats::na.pass else stats::na.omit
+    mf <- design_frame(D$terms_full, chunk, xlev = plan$xlevels, na.action = na)
+    ## variables of another type than in training: the error of predict.lm()
+    if (!is.null(plan$data_classes)) stats::.checkMFClasses(plan$data_classes, mf)
+    design <- design_matrix(plan$terms, mf, contrasts.arg = plan$contrasts)
+    if (isTRUE(plan$drop_intercept)) design <- dm_drop_intercept(design)
+    omit <- attr(mf, "na.action")
+    keep <- seq_len(nrow(chunk))
+    if (length(omit)) keep <- keep[-omit]
+    y <- if (is.null(D$response)) NULL else unname(stats::model.response(mf))
+    list(design = design, keep = keep, y = y)
 }

@@ -84,41 +84,70 @@ dm_sql_num <- function(expr, types, con) {
     tryCatch(list(sql = tr(expr)), dm_untranslatable = function(e) list(reason = conditionMessage(e)))
 }
 
-## Term structures (S, M, L, strides, cols, C) for the SQL engine.
+## Term structures (S, M, L, strides, cols, C) of a remote design. A term
+## with a matrix variable (a variable computed in R with several columns,
+## such as poly(x, 2)) is the sum of one part per column of the matrix (per
+## combination of columns, with several such variables): each part has the
+## columns of the term, its own C and one scalar numeric per variable, so
+## the parts of a design may share columns, and their products add up.
+## `term`: the index of the part's term in D$terms; `M`: the names of its
+## numeric columns in the base query (dm_sql_base()).
 dm_sql_prepare <- function(D) {
     plan <- D$plan
     vi <- match(dm_terms_vars(plan$terms)$names, names(D$vars))
     kinds <- vapply(D$vars, function(v) v$kind, "")
-    out <- vector("list", length(D$terms))
+    nk <- vapply(D$vars, function(v) as.integer(v[["k"]] %||% 1L), 1L)
+    out <- list()
     for (k in seq_along(D$terms)) {
         t <- D$terms[[k]]
         S <- t$vars[kinds[t$vars] %in% c("factor", "logical")]
-        M <- t$vars[kinds[t$vars] == "numeric"]
+        Mv <- t$vars[kinds[t$vars] == "numeric"]
         L <- vapply(S, function(j) length(D$vars[[j]]$levels), 1L)
         Lt <- as.integer(prod(L))
-        if (t$index == 0L) {
-            C <- matrix(1, 1L, 1L)
-        } else {
-            grid <- expand.grid(lapply(L, seq_len), KEEP.OUT.ATTRS = FALSE)
-            vals <- lapply(vi, function(j) {
-                v <- D$vars[[j]]
-                s <- match(j, S)
-                codes <- if (is.na(s)) rep(1L, Lt) else grid[[s]]
-                switch(v$kind,
-                       factor = factor(v$levels[codes], levels = v$levels),
-                       logical = c(FALSE, TRUE)[codes],
-                       rep(1, Lt))
-            })
-            nd <- structure(list(), row.names = c(NA_integer_, -Lt), class = "data.frame")
-            X <- as.matrix(dm_apply_general(plan, nd, stats::na.pass, vals = vals))
-            C <- unname(X[, attr(X, "assign") == t$index, drop = FALSE])
+        parts <- if (length(Mv)) as.matrix(expand.grid(lapply(nk[Mv], seq_len), KEEP.OUT.ATTRS = FALSE))
+                 else matrix(0L, 1L, 0L)
+        for (r in seq_len(nrow(parts))) {
+            u <- parts[r, ]
+            if (t$index == 0L) {
+                C <- matrix(1, 1L, 1L)
+            } else {
+                grid <- expand.grid(lapply(L, seq_len), KEEP.OUT.ATTRS = FALSE)
+                vals <- lapply(vi, function(j) {
+                    v <- D$vars[[j]]
+                    s <- match(j, S)
+                    codes <- if (is.na(s)) rep(1L, Lt) else grid[[s]]
+                    if (v$kind == "factor") return(factor(v$levels[codes], levels = v$levels))
+                    if (v$kind == "logical") return(c(FALSE, TRUE)[codes])
+                    if (nk[j] == 1L) return(rep(1, Lt))
+                    ## a matrix variable: the column of this part
+                    m <- matrix(1, Lt, nk[j])
+                    if (j %in% Mv) {
+                        m[] <- 0
+                        m[, u[match(j, Mv)]] <- 1
+                    }
+                    m
+                })
+                nd <- structure(list(), row.names = c(NA_integer_, -Lt), class = "data.frame")
+                X <- as.matrix(dm_apply_general(plan, nd, stats::na.pass, vals = vals))
+                C <- unname(X[, attr(X, "assign") == t$index, drop = FALSE])
+            }
+            out[[length(out) + 1L]] <- list(term = k, S = S, L = L, Lt = Lt,
+                                            M = if (length(Mv)) dm_sql_vnames(Mv, nk[Mv], u) else character(),
+                                            strides = cumprod(c(1, L))[seq_along(L)],
+                                            cols = which(D$assign == t$index), C = C)
         }
-        out[[k]] <- list(S = S, M = M, L = L, Lt = Lt,
-                         strides = cumprod(c(1, L))[seq_along(L)],
-                         cols = which(D$assign == t$index), C = C)
     }
     D$sql_terms <- out
     D
+}
+
+## Names, in the base query, of the numeric columns of variables j (with
+## k columns each): column u of a matrix variable is __dm_v<j>_<u>.
+dm_sql_vnames <- function(j, k, u) {
+    n <- max(length(j), length(u))
+    j <- rep_len(j, n)
+    k <- rep_len(k, n)
+    ifelse(k == 1L, paste0("__dm_v", j), paste0("__dm_v", j, "_", rep_len(u, n)))
 }
 
 ## The query computing, for each row used, the factor codes (__dm_c<j>) and
@@ -140,7 +169,7 @@ dm_sql_base <- function(D, extra = character()) {
             items <- c(items, sprintf("CASE WHEN s.%s IS NULL THEN NULL WHEN s.%s THEN 2 ELSE 1 END AS __dm_c%d",
                                       q, q, j))
         } else if (v$kind == "numeric") {
-            items <- c(items, sprintf("%s AS __dm_v%d", v$sql, j))
+            items <- c(items, sprintf("%s AS %s", v$sql, dm_sql_vnames(j, length(v$sql), seq_along(v$sql))))
         }
     }
     if (!length(items)) items <- "1 AS __dm_one"
@@ -148,9 +177,9 @@ dm_sql_base <- function(D, extra = character()) {
             D$src$select, paste(joins, collapse = " "), D$filter)
 }
 
-## Product of numeric variables (and weights), as SQL over the base query.
+## Product of numeric columns (and weights), as SQL over the base query.
 dm_sql_prod <- function(M, w = FALSE, y = NULL) {
-    f <- c(if (length(M)) paste0("__dm_v", sort(M)), y, if (w) "__dm_w")
+    f <- c(sort(M), y, if (w) "__dm_w")
     if (!length(f)) "CAST(1 AS DOUBLE)" else paste(f, collapse = " * ")
 }
 
@@ -271,9 +300,11 @@ dm_sql_na_terms <- function(D) {
     out
 }
 
+## The same for each part of D$sql_terms.
+dm_sql_na_parts <- function(D) dm_sql_na_terms(D)[vapply(D$sql_terms, function(t) t$term, 1L)]
+
 dm_sql_na_cols <- function(D) {
-    bad <- dm_sql_na_terms(D)
-    unlist(lapply(D$sql_terms[bad], function(t) t$cols))
+    unique(unlist(lapply(D$sql_terms[dm_sql_na_parts(D)], function(t) t$cols)))
 }
 
 dm_sql_gram <- function(D, w = NULL) dm_sql_moments(D, NULL, w)$xtx
@@ -305,7 +336,7 @@ dm_sql_moments <- function(D, yy, w = NULL, gram = TRUE, sql_only = FALSE, wy = 
     K <- length(yc$exprs)
     hasw <- !is.null(w)
     wf <- if (hasw) " * __dm_w" else ""
-    bad <- dm_sql_na_terms(D)
+    bad <- dm_sql_na_parts(D)
     live <- which(!bad & vapply(st, function(t) length(t$cols) > 0L, NA))
     extra_wy <- if (!is.null(wy)) sprintf("CAST(s.%s AS DOUBLE) AS __dm_wy", dm_qi(D, wy))
     sc <- dm_sql_scan(D, dm_sql_base(D, c(yc$extra, dm_sql_extra_w(D, w), extra_wy)),
@@ -334,14 +365,15 @@ dm_sql_moments <- function(D, yy, w = NULL, gram = TRUE, sql_only = FALSE, wy = 
             Tt <- st[[pr[2L]]]
             g <- sc$get(pr[3L])
             a <- dm_sql_level(g$res, Ts$S, Ts$strides)
+            ## (added: the parts of a term share its columns)
             if (pr[1L] == pr[2L]) {
-                xtx[Ts$cols, Ts$cols] <- crossprod(Ts$C, dm_sql_fold(a, g$m, Ts$Lt) * Ts$C)
+                xtx[Ts$cols, Ts$cols] <- xtx[Ts$cols, Ts$cols] + crossprod(Ts$C, dm_sql_fold(a, g$m, Ts$Lt) * Ts$C)
             } else {
                 b <- dm_sql_level(g$res, Tt$S, Tt$strides)
                 Mst <- Matrix::sparseMatrix(i = a + 1, j = b + 1, x = g$m, dims = c(Ts$Lt, Tt$Lt))
                 blk <- as.matrix(crossprod(Ts$C, as.matrix(Mst %*% Tt$C)))
-                xtx[Ts$cols, Tt$cols] <- blk
-                xtx[Tt$cols, Ts$cols] <- t(blk)
+                xtx[Ts$cols, Tt$cols] <- xtx[Ts$cols, Tt$cols] + blk
+                xtx[Tt$cols, Ts$cols] <- xtx[Tt$cols, Ts$cols] + t(blk)
             }
         }
     }
@@ -353,7 +385,8 @@ dm_sql_moments <- function(D, yy, w = NULL, gram = TRUE, sql_only = FALSE, wy = 
         for (t in live) for (k in seq_len(K)) {
             Tt <- st[[t]]
             g <- sc$get(hid[t, k])
-            xty[Tt$cols, k] <- crossprod(Tt$C, dm_sql_fold(dm_sql_level(g$res, Tt$S, Tt$strides), g$m, Tt$Lt))
+            xty[Tt$cols, k] <- xty[Tt$cols, k] +
+                crossprod(Tt$C, dm_sql_fold(dm_sql_level(g$res, Tt$S, Tt$strides), g$m, Tt$Lt))
         }
         xty[na, ] <- NA_real_
         if (is.null(wy)) yty <- matrix(vapply(yid, sc$total, 0), K, K, dimnames = list(yy$cols, yy$cols))
@@ -380,6 +413,7 @@ dm_sql_colsums <- function(D, group, w, mean) {
     hasw <- !is.null(w)
     grouped <- !is.null(group)
     bad <- dm_sql_na_terms(D)
+    pbad <- dm_sql_na_parts(D)
     extra <- c(if (grouped) sprintf("s.%s AS __dm_g", dm_qi(D, group)), dm_sql_extra_w(D, w),
                if (grouped && any(bad)) sprintf("CASE WHEN COALESCE(%s, FALSE) THEN 0 ELSE 1 END AS __dm_bad%d",
                                                 vapply(which(bad), function(k) dm_sql_term_ok(D, k), ""), which(bad)))
@@ -389,7 +423,7 @@ dm_sql_colsums <- function(D, group, w, mean) {
     idw <- if (hasw) sc$add(integer(), dm_sql_missing("__dm_w"))
     idb <- if (grouped) vapply(which(bad), function(k) sc$add(integer(), sprintf("__dm_bad%d", k)), 1L)
     ## (within groups, a term with missing values is summed where it has none)
-    use <- which(vapply(st, function(t) length(t$cols) > 0L, NA) & (grouped | !bad))
+    use <- which(vapply(st, function(t) length(t$cols) > 0L, NA) & (grouped | !pbad))
     idt <- integer(length(st))
     for (t in use) idt[t] <- sc$add(st[[t]]$S, dm_sql_prod(st[[t]]$M, hasw))
     sc$run()
@@ -399,7 +433,7 @@ dm_sql_colsums <- function(D, group, w, mean) {
         for (t in use) {
             Tt <- st[[t]]
             g <- sc$get(idt[t])
-            out[Tt$cols] <- crossprod(Tt$C, dm_sql_fold(dm_sql_level(g$res, Tt$S, Tt$strides), g$m, Tt$Lt))
+            out[Tt$cols] <- out[Tt$cols] + crossprod(Tt$C, dm_sql_fold(dm_sql_level(g$res, Tt$S, Tt$strides), g$m, Tt$Lt))
         }
         out[dm_sql_na_cols(D)] <- NA_real_
         if (naw) out[] <- NA_real_
@@ -422,9 +456,9 @@ dm_sql_colsums <- function(D, group, w, mean) {
         ## (rows with a missing factor: their groups are set to NA below)
         ok <- !is.na(a)
         A <- Matrix::sparseMatrix(i = match(g$res$`__dm_g`, ug)[ok], j = a[ok] + 1, x = g$m[ok], dims = c(G, Tt$Lt))
-        out[, Tt$cols] <- as.matrix(A %*% Tt$C)
+        out[, Tt$cols] <- out[, Tt$cols] + as.matrix(A %*% Tt$C)
     }
-    for (j in seq_along(idb)) out[by_group(idb[j]) > 0, st[[which(bad)[j]]]$cols] <- NA_real_
+    for (j in seq_along(idb)) out[by_group(idb[j]) > 0, which(D$assign == D$terms[[which(bad)[j]]]$index)] <- NA_real_
     if (naw) out[] <- NA_real_
     if (mean) out <- out / by_group(idn)
     out
@@ -441,7 +475,7 @@ dm_sql_predict <- function(D, B, name, outcols, keep, overwrite) {
         Tt <- st[[k]]
         if (!length(Tt$cols)) next
         V <- Tt$C %*% B[Tt$cols, , drop = FALSE]
-        N <- if (length(Tt$M)) paste0(paste0("b.__dm_v", sort(Tt$M), collapse = " * "), " * ") else ""
+        N <- if (length(Tt$M)) paste0(paste0("b.", sort(Tt$M), collapse = " * "), " * ") else ""
         if (Tt$Lt == 1L) {
             for (j in seq_len(K)) pieces[[j]] <- c(pieces[[j]], paste0(N, dm_sql_double(V[1L, j])))
         } else {

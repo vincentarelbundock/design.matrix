@@ -58,7 +58,7 @@
 ## Comparisons with NULL are NULL (R: NA).
 ##
 ## Columns from successive products live on successive frames: each product
-## builds a new frame (a view, or a table with the chunked engine) on top of
+## builds a new frame (a view) on top of
 ## the frame of the columns passed as `along`, and keeps all their columns.
 ## Combining columns takes the later frame (they must come from the same
 ## design). In memory `along` is ignored.
@@ -108,7 +108,7 @@
 ##   dmc_mean(col)            the mean of a column
 ##   dmp_colnorms(col)        Euclidean norms of the columns
 ##   dm_nrows(x)              number of rows of a design or column
-##   dm_engine(x)             "sql" or "chunked" for a remote design, ""
+##   dm_engine(x)             "sql" for a remote design, ""
 ##                            in memory (for the description of a fit)
 ##   dmp_patterns(x, z, w, compress, keys = NULL)
 ##                            compressed least squares: when rows with the
@@ -154,7 +154,7 @@
 ##                            the container differs.
 ##
 ## Remote methods: crossprod, colSums, products and patterns run in the
-## database (or in batches with the chunked engine); dmp_groupsum and
+## database; dmp_groupsum and
 ## dmp_crosstab are single GROUP BY queries.
 ##
 ## ---------------------------------------------------------------------------
@@ -192,7 +192,7 @@
 ##   finite_rows(D) (internal)    a logical column                  done
 ##
 ## Tests: test_primitives.R (the layer), test_parity_ops.R (every operation
-## above on the same data, in memory and remote: SQL, chunked, Parquet).
+## above on the same data, in memory and remote: a table, Parquet).
 
 ## ---- remote columns ----
 
@@ -398,8 +398,8 @@ dmc_sums <- function(...) {
 ## The mean of a column (in memory as mean() computes it).
 dmc_mean <- function(x) if (dm_is_rcols(x)) dm_colsum(x) / dm_nrows(x) else mean(x)
 
-## The engine of a remote design ("sql" or "chunked"), "" in memory.
-dm_engine <- function(x) if (inherits(x, "dm_remote")) x$engine else ""
+## "sql" for a remote design, "" in memory.
+dm_engine <- function(x) if (inherits(x, "dm_remote")) "sql" else ""
 
 dm_nrows <- function(x) {
     if (inherits(x, "dm_remote")) return(x$cache$n %||% x$n)

@@ -70,7 +70,7 @@
 #' or R expressions over the columns.
 #' The fit is the same code as in memory: its columns (response, weights,
 #' linear predictor, working weights) are SQL expressions, and its products
-#' with the design run in the database or in batches. See the section
+#' with the design run in the database. See the section
 #' *GLMs* of [design_remote].
 #'
 #' **Fixed effects.** A formula `y ~ x | fe1 + fe2` absorbs fixed effects
@@ -593,8 +593,7 @@ dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg
                 nobs = nobs, rows = ck$n, pearson = fin$pearson, zero_weights = fin$zero, family = family,
                 intercept = intercept, compressed = !is.null(pt), patterns = if (is.null(pt)) ck$n else length(units$W),
                 control = control, spec = dmfit_spec(x),
-                method = if (!is.null(pt)) "patterns" else switch(dm_engine(x), sql = "SQL iterations",
-                                                                 chunked = "iterations in batches", NULL),
+                method = if (!is.null(pt)) "patterns" else switch(dm_engine(x), sql = "SQL iterations", NULL),
                 data = list(design = x, y = y, weights = w, offset = cols$off))
     ## (the last weighted least squares step of another solver)
     if (!is.null(solver)) out$solver_fit <- res$fit

@@ -188,15 +188,10 @@ dmqr_centered <- function(ch, G, Tm, xs, mc, Y = NULL) {
     ch
 }
 
-## The remote design with numeric variables shifted (their SQL, or the
-## batches of the chunked engine).
+## The remote design with numeric variables shifted (their SQL).
 dm_shifted <- function(x, shift) {
-    if (x$engine == "sql") {
-        for (nm in names(shift))
-            x$vars[[nm]]$sql <- sprintf("(%s - %s)", x$vars[[nm]]$sql, dm_sql_double(shift[[nm]]))
-    } else {
-        x$shift <- shift
-    }
+    for (nm in names(shift))
+        x$vars[[nm]]$sql <- sprintf("(%s - %s)", x$vars[[nm]]$sql, dm_sql_double(shift[[nm]]))
     x
 }
 

@@ -884,7 +884,7 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     ## (remotely, na.exclude pads the results with every row not used)
     fit$na.action <- if (isTRUE(base$exclude)) dm_remote_exclude(prob$x_rows)
                      else dm_fe_na_action(base$na_act, prob$rows, base$nall)
-    fit$method <- switch(dm_engine(prob$x), sql = "SQL aggregates", chunked = "aggregates computed in batches", NULL)
+    fit$method <- switch(dm_engine(prob$x), sql = "SQL aggregates", NULL)
     ## (the data of a remote fit stay in the database: always kept)
     if (!is.null(fit$method)) {
         ## nothing to drop

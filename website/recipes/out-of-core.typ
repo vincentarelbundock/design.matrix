@@ -89,7 +89,7 @@ DBI::dbExecute(con, sprintf("COPY d TO '%s' (FORMAT PARQUET)", pq))
 design_matrix(y ~ x * f + log(z), pq)
 ```
 
-The SQL engine handles factors, character and logical columns, numeric columns, interactions, and arithmetic with `log()`, `exp()`, `sqrt()` and `abs()`. Any other formula, such as one with `poly()` or `splines::ns()`, uses the chunked engine: batches of rows go through `design_matrix(spec, batch)`, and the results are accumulated. `summary()` shows which terms the SQL engine computes, and `summary(D, sql = TRUE)` the queries.
+The SQL engine handles factors, character and logical columns, numeric columns, interactions, and arithmetic with `log()`, `exp()`, `sqrt()` and `abs()`. Any other term, such as `poly()` or `splines::ns()`, is evaluated in R once, batch by batch, into columns of a temporary table, and the design then reads those columns in SQL like any others. `summary()` shows which terms SQL computes, and `summary(D, sql = TRUE)` the queries.
 
 ```r
 D2 <- design_matrix(y ~ splines::ns(x, 3) + f, con, table = "d")
@@ -148,7 +148,7 @@ Expressions with no SQL translation, such as `weights = myfun(x)` or a response 
 
 = Generalized linear models
 
-`design_glm()` takes remote data as `design_lm()` does, with `weights` and `offset` naming columns. With few design patterns, one `GROUP BY` returns the sums of each pattern (including the working weights of the first iteration and the parts of the deviance and AIC that do not depend on the coefficients), and the iterations run in memory. Otherwise, each iteration computes the linear predictor, the working weights and responses, `X'WX` and `X'Wz` in the database (the family and link are translated to SQL), or in batches with the chunked engine. Either way, the results are those of `glm()` on the same rows.
+`design_glm()` takes remote data as `design_lm()` does, with `weights` and `offset` naming columns. With few design patterns, one `GROUP BY` returns the sums of each pattern (including the working weights of the first iteration and the parts of the deviance and AIC that do not depend on the coefficients), and the iterations run in memory. Otherwise, each iteration computes the linear predictor, the working weights and responses, `X'WX` and `X'Wz` in the database (the family and link are translated to SQL). Either way, the results are those of `glm()` on the same rows.
 
 ```r
 d2 <- transform(d, k = rpois(n, exp(0.2 * z)), yb = as.integer(y > 5))

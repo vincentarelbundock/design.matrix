@@ -1,6 +1,6 @@
 ## design_glm(), one implementation in memory and on remote data: each case
 ## of glm_cases.R fitted in memory (compressed or not) and on a DuckDB table
-## (SQL and chunked engines, compressed or not) and on Parquet, compared
+## (compressed or not) and on Parquet, compared
 ## with glm() on the same rows: coefficients (with the NA pattern of
 ## aliased columns), vcov, deviances, AIC, degrees of freedom, dispersion
 ## and the number of iterations. The other checks (warnings, methods,
@@ -27,7 +27,6 @@ if (has_duckdb) {
     probe <- try(suppressWarnings(design_glm(yb ~ x + g, binomial, con, table = "d", compress = FALSE)), silent = TRUE)
     if (!inherits(probe, "try-error")) {
         modes$sql <- list(name = "sql", data = list(con, table = "d", engine = "sql"))
-        modes$chunked <- list(name = "chunked", data = list(con, table = "d", engine = "chunked"))
     } else {
         message("Remote GLM modes skipped: ", conditionMessage(attr(probe, "condition")))
     }
@@ -65,14 +64,11 @@ case_args <- function(cs) {
 for (cs in glm_cases) {
     b <- suppressWarnings(glm_ref(cs, dd))
     for (mode in modes) for (cp in list("auto", FALSE)) {
-        ## (the compressed path of the chunked engine is that of the SQL
-        ## engine: one GROUP BY)
-        if (mode$name == "chunked" && !isFALSE(cp)) next
         a <- suppressWarnings(do.call(fit_in, c(list(mode, cs[[2]], cs[[3]]), case_args(cs), compress = cp)))
         glm_same(a, b, paste(cs[[1]], mode$name, "compress", cp))
     }
     if (length(modes) > 1L && cs[[1]] %in% c("logit x*f", "binomial cbind", "poisson offset()", "Gamma inverse")) {
-        for (eng in c("sql", "chunked")) {
+        for (eng in "sql") {
             a <- suppressWarnings(do.call(fit_in, c(list(modes$sql, cs[[2]], cs[[3]]), case_args(cs),
                                                    data = list(list(pq, engine = eng)))))
             glm_same(a, b, paste(cs[[1]], "parquet", eng))

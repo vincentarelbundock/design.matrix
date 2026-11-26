@@ -62,7 +62,7 @@ for (spec in formulas) {
     fo <- spec$fo
     for (wt in c(FALSE, TRUE)) {
         l <- if (wt) lm(fo, dd, weights = w) else lm(fo, dd)
-        for (engine in c("auto", "chunked")) {
+        for (engine in "auto") {
             info <- paste(deparse(fo), engine, if (wt) "weighted" else "")
             f <- suppressMessages(if (wt) {
                 design_lm(fo, con, table = "d", engine = engine, weights = w)
@@ -174,7 +174,7 @@ p2 <- as.data.frame(predict(fm, newdata = con, table = "d"))
 expect_true(same(p2$.fitted[order(p2$id)], ref))
 
 ## compressed products agree with the uncompressed ones
-for (engine in c("auto", "chunked")) {
+for (engine in "auto") {
     D <- suppressMessages(design_matrix(y ~ poly(xd, 2) * f2 + f1, con, table = "d", engine = engine))
     m1 <- design.matrix:::dm_remote_moments(D, weights = "w")
     m0 <- no_compress(design.matrix:::dm_remote_moments(D, weights = "w"))
@@ -204,7 +204,7 @@ dk <- dd[stats::complete.cases(dd[c("y", "xc", "f1", "cl")]), ]
 l <- lm(y ~ xc + f1, dk)
 X <- model.matrix(l)
 e <- unname(residuals(l))
-for (engine in c("auto", "chunked")) {
+for (engine in "auto") {
     f <- suppressMessages(design_lm(y ~ xc + f1, con, table = "d", engine = engine))
     R <- residuals(f)
     expect_inherits(R, "dm_remote")

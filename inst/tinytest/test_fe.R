@@ -2,7 +2,7 @@
 # coefficients, iid and clustered covariance matrices, residuals, number of
 # observations and predictions, with feols()'s default small sample
 # corrections and singleton removal. Every case runs in memory and on
-# remote data (DuckDB table with the SQL and the chunked engines, and
+# remote data (a DuckDB table, and
 # Parquet). feols() demeans iteratively; a tight fixef.tol makes its results
 # exact enough for a 1e-8 comparison.
 
@@ -51,7 +51,6 @@ fe_fits <- function(fml, d, src, vcov = "iid", weights = NULL, ...) {
         rfit <- function(source, ...) suppressMessages(do.call(design_lm, list(fml, source, vcov = vcov,
                                                                                weights = weights, ...)))
         fits$sql <- rfit(con, table = src$table, ...)
-        fits$chunked <- rfit(con, table = src$table, engine = "chunked", chunk_size = 1500, ...)
         fits$parquet <- rfit(src$parquet, ...)
     }
     fits
@@ -312,7 +311,7 @@ if (remote) {
     rr <- DBI::dbGetQuery(con, sprintf("SELECT SUM(\".resid\" * \".resid\") AS rss FROM (%s) AS s", R$src$select))
     expect_equal(rr$rss, b$ssr, tolerance = 1e-8)
     # fitted() of a remote fit: a table with .fitted and .resid
-    ft <- as.data.frame(fitted(fits$chunked))
+    ft <- as.data.frame(fitted(fits$sql))
     expect_equal(sum(ft$.resid^2), b$ssr, tolerance = 1e-8)
     expect_equal(sort(ft$.fitted), sort(unname(fitted(b))), tolerance = TOL)
 }
@@ -363,8 +362,8 @@ bo <- fixest::feols(y ~ x1 | a + b, d, offset = ~ log(w) + 0.5 * x2, fixef.tol =
 fo <- list(memory = design_lm(y ~ x1 + offset(0.5 * x2) | a + b, d, offset = log(w), vcov = ~c))
 if (remote) {
     fo$sql <- design_lm(y ~ x1 + offset(0.5 * x2) | a + b, con, table = "d", offset = log(w), vcov = ~c)
-    fo$chunked <- design_lm(y ~ x1 + offset(0.5 * x2) | a + b, con, table = "d", offset = DBI::SQL("ln(w)"),
-                            vcov = ~c, engine = "chunked", chunk_size = 1500)
+    fo$sqlexpr <- design_lm(y ~ x1 + offset(0.5 * x2) | a + b, con, table = "d", offset = DBI::SQL("ln(w)"),
+                            vcov = ~c)
     fo$parquet <- design_lm(y ~ x1 + offset(0.5 * x2) | a + b, src$parquet, offset = log(w), vcov = ~c)
 }
 for (nm in names(fo)) {
