@@ -970,17 +970,18 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
             cols <- dmc_cbind(one, if (rm0) dmc_count(z != 0) else one, if (rm1) dmc_count(z != 1) else one)
             cnt <- lapply(cds, function(cd) dmp_groupsum(cols, cd$codes))
         }
-        flag <- function(m) (rm_single & m[, 1L] == 1) | (rm0 & m[, 2L] == 0) | (rm1 & m[, 3L] == 0)
-        ## no level to drop
-        if (!any(vapply(cnt, function(m) any(flag(m)), NA))) break
+        ## per level, once: perfectly fit (counted as such when it is also
+        ## a singleton), or a singleton
+        masks <- lapply(cnt, function(m) {
+            pf_k <- (rm0 & m[, 2L] == 0) | (rm1 & m[, 3L] == 0)
+            cbind(pf_k, rm_single & m[, 1L] == 1 & !pf_k)
+        })
+        ## no level to drop (no lookup of the rows' levels)
+        if (!any(vapply(masks, any, NA))) break
         single <- perfect <- NULL
         for (k in seq_along(keys)) {
-            m <- cnt[[k]]
-            ## a level is perfectly fit (counted as such) or a singleton
-            pf_k <- (rm0 & m[, 2L] == 0) | (rm1 & m[, 3L] == 0)
-            sg_k <- rm_single & m[, 1L] == 1 & !pf_k
             ## (the flags of the rows' levels)
-            lk <- dmc_lookup_flags(cbind(pf_k, sg_k), cds[[k]]$codes, along = last)
+            lk <- dmc_lookup_flags(masks[[k]], cds[[k]]$codes, along = last)
             p1 <- lk[[1L]]
             s1 <- lk[[2L]]
             perfect <- if (is.null(perfect)) p1 else perfect | p1
