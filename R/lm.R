@@ -72,6 +72,11 @@
 #' supported. With `na.action = na.omit`, offsets of `newdata` are taken
 #' for the rows kept (`predict.lm()` would recycle them).
 #'
+#' **Remote data.** `design_lm()` also fits remote data (a DuckDB table or
+#' query, or Parquet files) and remote designs, with the same arguments and
+#' methods; see the *Linear models* section of [design_remote] for how, and
+#' for the differences from in-memory fits.
+#'
 #' @param formula A model formula, as in [stats::lm()], or a
 #'   [design_matrix()] (then give the response as `y`).
 #' @param data,subset,weights,na.action,offset,contrasts As in [stats::lm()].
@@ -127,7 +132,6 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
             stop("With a design matrix, give the response as `y`; `data`, `subset`, ",
                  "`na.action` and `contrasts` do not apply.", call. = FALSE)
         if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
-        w <- if (missing(weights)) NULL else weights
         if (inherits(formula, "dm_remote")) {
             ## a remote design (see remote_lm.R): `y`, `weights` and `offset`
             ## are columns, DBI::SQL() or R expressions over the columns
@@ -138,7 +142,8 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
                                        if (missing(offset)) NULL else substitute(offset), compress, tol,
                                        parent.frame())
         } else {
-            fit <- dmfit_design(formula, y, w, if (missing(offset)) NULL else offset, compress, tol)
+            fit <- dmfit_design(formula, y, if (missing(weights)) NULL else weights,
+                                if (missing(offset)) NULL else offset, compress, tol)
         }
         fit$call <- match.call()
         return(fit)

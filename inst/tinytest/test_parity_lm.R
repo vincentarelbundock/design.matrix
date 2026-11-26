@@ -33,6 +33,10 @@ rownames(d) <- NULL
 pq <- tempfile(fileext = ".parquet")
 DBI::dbExecute(con, sprintf("COPY d TO '%s' (FORMAT PARQUET)", pq))
 
+## functions with no SQL translation: evaluated in R, batch by batch
+myfun <- function(v) v^2 + 1
+my_transform <- function(v) 2 * v - 1
+
 ## each case: a formula and the other arguments, as unevaluated R code
 cases <- list(
     plain = list(fo = y ~ x + f),
@@ -44,7 +48,14 @@ cases <- list(
     offset_arg = list(fo = y ~ xd + f, args = alist(offset = log(z))),
     aliased = list(fo = y ~ x + f + f2),
     exclude = list(fo = y ~ x + f, args = alist(na.action = na.exclude)),
-    everything = list(fo = y ~ log(z) + I(x^2) + f, args = alist(weights = w, offset = z, subset = g == "u")))
+    everything = list(fo = y ~ log(z) + I(x^2) + f, args = alist(weights = w, offset = z, subset = g == "u")),
+    r_weights = list(fo = y ~ x + f, args = alist(weights = myfun(x))),
+    r_subset = list(fo = y ~ x + f, args = alist(subset = myfun(z) > 2.5)),
+    r_offset = list(fo = y ~ xd + f, args = alist(offset = log(myfun(z)))),
+    r_offset_term = list(fo = y ~ x + offset(log(myfun(z))) + f),
+    r_response = list(fo = my_transform(y) ~ xd + f + g),
+    r_everything = list(fo = my_transform(y) ~ xd * g + offset(myfun(z)),
+                        args = alist(weights = myfun(xd), subset = myfun(x) < 3, na.action = na.exclude)))
 
 fit_call <- function(fun, case, data, extra = list()) {
     as.call(c(list(fun, case$fo, data = data), case$args, extra))
@@ -93,9 +104,13 @@ for (nm in names(cases)) {
         ft <- fitted(r)
         fl <- fitted(l)
         rl <- residuals(l)
-        if (nm == "exclude") {
-            expect_true(same(by_id(ft, ".fitted"), fl), info = paste(info, "fitted"))
-            expect_true(same(by_id(ft, ".resid"), rl), info = paste(info, "residuals"))
+        if (!is.null(case$args$na.action)) {
+            ## padded with NA over the rows of the subset
+            ids <- d$id[as.integer(names(fl))]
+            p <- as.data.frame(ft)
+            expect_identical(sort(p$id), sort(ids), info = paste(info, "fitted rows"))
+            expect_true(same(p$.fitted[match(ids, p$id)], fl), info = paste(info, "fitted"))
+            expect_true(same(p$.resid[match(ids, p$id)], rl), info = paste(info, "residuals"))
         } else {
             ids <- as.integer(names(fl))
             p <- as.data.frame(ft)
@@ -188,6 +203,20 @@ check_methods(fm, l, "design in memory", formula = FALSE)
 expect_null(formula(fr))
 expect_null(formula(fm))
 expect_error(design_lm(D, y = "y"), "NA/NaN/Inf in 'y'")
+## ... with R expressions
+l <- lm(my_transform(y) ~ x + f, d[ok, ], weights = myfun(w), offset = log(myfun(z)))
+check_methods(suppressMessages(design_lm(Dk, y = my_transform(y), weights = myfun(w), offset = log(myfun(z)))),
+              l, "remote design, R expressions", formula = FALSE)
+
+## the engine with R expressions: a message with "auto", an error with "sql"
+expect_message(design_lm(y ~ x + f, con, table = "d", weights = myfun(x)),
+               "chunked engine: weights `myfun(x)` cannot be translated", fixed = TRUE)
+expect_error(design_lm(y ~ x + f, con, table = "d", subset = myfun(z) > 2, engine = "sql"),
+             "SQL engine cannot compute this fit: subset `myfun(z) > 2`", fixed = TRUE)
+## compression stays exact with R-evaluated weights and offsets
+r <- suppressMessages(design_lm(y ~ xd + f, con, table = "d", weights = myfun(xd), offset = log(myfun(z))))
+expect_true(r$compressed)
+check_methods(r, lm(y ~ xd + f, d, weights = myfun(xd), offset = log(myfun(z))), "compressed, R expressions")
 
 DBI::dbDisconnect(con)
 unlink(pq)

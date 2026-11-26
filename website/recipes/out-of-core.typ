@@ -103,6 +103,8 @@ p <- predict(fit_s, newdata = con, table = "d", interval = "confidence")
 head(as.data.frame(p))
 ```
 
+Expressions with no SQL translation, such as `weights = myfun(x)` or a response `my_transform(y)`, are evaluated in R, batch by batch, into a temporary table on which the fit runs; with `engine = "auto"`, a message names the expression.
+
 = Robust standard errors
 
 `residuals()` of a remote fit returns the remote design with two more columns, `.fitted` and `.resid`, which can scale its rows. The heteroskedasticity-consistent (HC1) and clustered (CR1, as in `sandwich::vcovCL()`) covariance matrices follow:
@@ -134,6 +136,14 @@ all.equal(V_hc1, n / (n - k) * B %*% crossprod(X, e^2 * X) %*% B, check.attribut
 S <- rowsum(e * X, d$cl)
 all.equal(V_cl, G / (G - 1) * (n - 1) / (n - k) * B %*% crossprod(S) %*% B, check.attributes = FALSE)
 ```
+
+= Differences from in-memory fits
+
+- `model.frame()` is not available for a remote fit, and `model` is ignored: the data stay in the database (`fit$remote_design` is the remote design of the fit).
+- Results with one value per row are tables in the database, not vectors: `fitted()` (`.fitted`, `.resid`), `predict()` (`.fitted`; `se.fit` as a column `.se.fit` with attributes `df` and `residual.scale`; `.nonestim` instead of the attribute `"non-estim"`), and `residuals()`, a remote design.
+- These tables have no row order: rows are matched to the data through its columns, which every table keeps.
+- `compress = "auto"` decides from other evidence than in memory; the results are the same either way.
+- Without compression, aliased columns are detected from the centered `X'WX`, with `lm()`'s rule but without a refinement from the data: the same columns as `lm()` unless a column's residual is within rounding of `tol`.
 
 = Limits
 

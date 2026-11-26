@@ -181,9 +181,12 @@ dm_need_duckdb <- function() {
 ## and `drop_unused` are for design_lm(): the rows are those of `subset`;
 ## rows with a missing weight or offset are dropped; factor levels absent
 ## from the rows used are dropped, as lm() builds its model frame.
+## `source` can also be an opened source (dm_remote_source()); `override`
+## gives SQL for model variables whose values were computed in R
+## (dm_materialize()).
 dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = stats::na.pass,
                       weights = NULL, drop_unused = FALSE, subset = NULL, offset = NULL,
-                      env = parent.frame()) {
+                      env = parent.frame(), override = list()) {
     dm_need_duckdb()
     keys <- c("table", "sql", "engine", "chunk_size")
     nms <- names(dots)
@@ -194,7 +197,7 @@ dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = sta
     checkmate::assert_choice(engine, c("auto", "sql", "chunked"), .var.name = "engine")
     chunk_size <- ra$chunk_size %||% getOption("design.matrix.chunk_size", 250000)
     checkmate::assert_number(chunk_size, lower = 1, finite = TRUE, .var.name = "chunk_size")
-    src <- dm_remote_source(source, ra$table, ra$sql)
+    src <- if (inherits(source, "dm_src")) source else dm_remote_source(source, ra$table, ra$sql)
     con <- src$holder$con
     if (!is.null(subset)) {
         sub <- dm_resolve_arg(subset, env, src$types, con, "subset", bool = TRUE)
@@ -215,7 +218,7 @@ dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = sta
     }
     if (inherits(object, "formula")) {
         if (length(rest)) stop("Unknown arguments: ", paste(names(rest), collapse = ", "), call. = FALSE)
-        D <- dm_remote_formula(object, src, contrasts.arg, xlev, extra, drop_unused)
+        D <- dm_remote_formula(object, src, contrasts.arg, xlev, extra, drop_unused, override)
     } else {
         if (!is.null(contrasts.arg) || !is.null(xlev))
             stop("`contrasts.arg` and `xlev` apply only to a formula.", call. = FALSE)
@@ -284,8 +287,8 @@ dm_remote_source <- function(source, table, sql) {
     }
     proto <- DBI::dbGetQuery(con, sprintf("SELECT * FROM (%s) AS s LIMIT 0", select))
     types <- vapply(proto, dm_col_type, "")
-    list(holder = holder, select = select, base_table = base_table, label = label,
-         proto = proto, types = types)
+    structure(list(holder = holder, select = select, base_table = base_table, label = label,
+         proto = proto, types = types), class = "dm_src")
 }
 
 dm_con <- function(D) D$src$holder$con
@@ -399,13 +402,21 @@ dm_terms_vars <- function(tt) {
 
 ## A remote design from a formula: learn levels and transformations from the
 ## remote data.
-dm_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(), drop_unused = FALSE) {
+dm_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(), drop_unused = FALSE,
+                              override = list()) {
     D <- list(src = src, na = "omit")
     tt <- stats::terms(formula, data = src$proto)
     tv <- dm_terms_vars(tt)
     types <- src$types
     D$vars <- Map(function(nm, e) dm_remote_var(nm, e, types, D, NULL, TRUE), tv$names, tv$exprs)
     names(D$vars) <- tv$names
+    ## variables computed in R into columns of the source
+    for (nm in names(override)) {
+        D$vars[[nm]]$kind <- "numeric"
+        D$vars[[nm]]$sql <- override[[nm]]$sql
+        D$vars[[nm]]$reason <- NULL
+        D$vars[[nm]]$inputs <- unique(c(D$vars[[nm]]$inputs, override[[nm]]$inputs))
+    }
     ## weights and offset argument: variables in no term, which select rows
     ## (and feed the fit)
     for (nm in names(extra)) {
@@ -529,8 +540,11 @@ dm_remote_finish <- function(D, engine) {
     resp_bad <- !is.null(D$response) && D$vars[[D$response]]$kind == "other"
     ## variables in no term (an offset, say) decide which rows are used
     used <- unique(unlist(lapply(D$terms, function(t) t$vars)))
+    ## (offset() terms are not in the design: a fit or a prediction
+    ## evaluates them, in R if need be)
+    offs <- dm_terms_vars(D$plan$terms)$names[attr(D$plan$terms, "offset")]
     loose <- setdiff(names(D$vars)[vapply(D$vars, function(v) v$kind == "other", NA)],
-                     c(names(D$vars)[used], D$response))
+                     c(names(D$vars)[used], D$response, offs))
     short <- if (length(bad)) {
         sprintf("term `%s` is evaluated in R", bad[[1L]]$label)
     } else if (resp_bad) {

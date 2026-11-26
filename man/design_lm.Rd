@@ -143,6 +143,11 @@ weighted fit and \code{sigma^2} for new observations, with the warnings of
 \code{predict.lm()}; its \code{weights}, \code{pred.var} and \code{scale} arguments are not
 supported. With \code{na.action = na.omit}, offsets of \code{newdata} are taken
 for the rows kept (\code{predict.lm()} would recycle them).
+
+\strong{Remote data.} \code{design_lm()} also fits remote data (a DuckDB table or
+query, or Parquet files) and remote designs, with the same arguments and
+methods; see the \emph{Linear models} section of \link{design_remote} for how, and
+for the differences from in-memory fits.
 }
 \examples{
 set.seed(1)
