@@ -36,7 +36,10 @@
 # settings) and computes the reference (fixest with tight fixef.tol for FE
 # models; lm/glm without FE; model.matrix() for products).
 #
-# Columns: base_s / new_s median seconds; ratio = new/base; fixest_s and
+# Timed runs use bench::mark(). Columns: base_s / new_s median seconds;
+# base_mb / new_mb MB allocated by R per run (needs capabilities("profmem");
+# R side only, so remote cases leave out DuckDB's memory); base_gc / new_gc
+# garbage collections per run; ratio = new/base; fixest_s and
 # vs_fixest = new/fixest; base_q / new_q DBI queries in one remote fit;
 # d_base = max |coef new - coef base|; d_ref = max |coef new - reference|.
 #
@@ -89,6 +92,13 @@ if (!opt$preset %in% names(presets)) stop("unknown preset: ", opt$preset)
 n <- as.numeric(opt$n %||% presets[[opt$preset]][["n"]])
 reps <- as.integer(opt$reps %||% presets[[opt$preset]][["reps"]])
 threads <- as.integer(opt$threads)
+if (opt$core != "none") {
+    ncore <- sum(vapply(strsplit(strsplit(opt$core, ",")[[1]], "-"), function(r) {
+        r <- as.integer(r); if (length(r) == 2) r[2] - r[1] + 1L else 1L }, 1L))
+    if (threads > ncore)
+        stop(sprintf("--threads %d but --core %s pins to %d CPU(s): give a range such as --core 2-%d, or --core none",
+                     threads, opt$core, ncore, 1 + threads))
+}
 
 ## Cases
 sel <- strsplit(opt$cases, ",")[[1]]
@@ -169,6 +179,8 @@ for (case in run) {
         case = case, group = case_group[[case]], n = n,
         base_s = num(b, "seconds"), new_s = num(w, "seconds"),
         ratio = num(w, "seconds") / num(b, "seconds"),
+        base_mb = num(b, "mem") / 2^20, new_mb = num(w, "mem") / 2^20,
+        base_gc = num(b, "gc"), new_gc = num(w, "gc"),
         fixest_s = num(b, "fixest_seconds"),
         vs_fixest = (if (is.null(new)) num(b, "seconds") else num(w, "seconds")) / num(b, "fixest_seconds"),
         base_q = num(b, "queries"), new_q = num(w, "queries"),
@@ -185,12 +197,14 @@ rownames(res) <- NULL
 show <- res
 for (v in c("base_s", "new_s", "fixest_s")) show[[v]] <- sprintf("%.3f", show[[v]])
 for (v in c("ratio", "vs_fixest")) show[[v]] <- sprintf("%.2f", show[[v]])
+for (v in c("base_mb", "new_mb")) show[[v]] <- sprintf("%.1f", show[[v]])
+for (v in c("base_gc", "new_gc")) show[[v]] <- sprintf("%.1f", show[[v]])
 for (v in c("d_base", "d_ref")) show[[v]] <- sprintf("%.1e", show[[v]])
 show$n <- format(show$n, scientific = TRUE)
 show[show == "NA"] <- ""
 show$base_q[is.na(show$base_q)] <- ""
 show$new_q[is.na(show$new_q)] <- ""
-if (is.null(new)) show$new_s <- show$ratio <- show$new_q <- show$d_base <- NULL
+if (is.null(new)) show$new_s <- show$ratio <- show$new_q <- show$d_base <- show$new_mb <- show$new_gc <- NULL
 cat("\n")
 options(width = 250)
 print(show, right = TRUE, row.names = FALSE)

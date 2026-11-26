@@ -54,15 +54,22 @@ count_off <- function() {
         suppressMessages(untrace(g, where = asNamespace("DBI")))
 }
 
-# warmup (with query counting when `count`), then reps timed runs
+# warmup (with query counting when `count`), then reps timed runs with
+# bench::mark(): median seconds, R memory allocated per run (needs
+# capabilities("profmem"); remote fits: R side only, not DuckDB's memory)
+# and garbage collections per run
 timed <- function(f, count = FALSE, limit = get("limit", globalenv())) {
     invisible(gc())
     if (count) count_on()
     t0 <- system.time(v <- f())[["elapsed"]]
     if (count) count_off()
-    if (t0 > limit || reps < 1) return(list(value = v, seconds = t0, reps = 0L))
-    times <- replicate(reps, system.time(f())[["elapsed"]])
-    list(value = v, seconds = median(times), reps = reps)
+    if (t0 > limit || reps < 1)
+        return(list(value = v, seconds = t0, reps = 0L, mem = NA_real_, gc = NA_real_))
+    bm <- bench::mark(f(), iterations = reps, check = FALSE, filter_gc = FALSE,
+                      memory = capabilities("profmem"))
+    list(value = v, seconds = as.numeric(bm$median), reps = reps,
+         mem = if (capabilities("profmem")) as.numeric(bm$mem_alloc) else NA_real_,
+         gc = bm$n_gc / reps)
 }
 
 res <- timed(cs$fit, count = isTRUE(cs$remote))
@@ -70,7 +77,7 @@ res <- timed(cs$fit, count = isTRUE(cs$remote))
 row <- list(
     case = case, group = case_group[[case]], n = n,
     version = as.character(packageVersion("design.matrix", lib.loc = lib)),
-    seconds = res$seconds, reps = res$reps,
+    seconds = res$seconds, reps = res$reps, mem = res$mem, gc = res$gc,
     queries = if (isTRUE(cs$remote)) queries$n else NA_integer_,
     coef = res$value, ref_name = cs$ref_name %||% NA_character_)
 
