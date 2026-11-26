@@ -74,8 +74,7 @@ xtx_fe_rm_arg <- function(fixef.rm, glm = FALSE) {
 }
 
 ## ---------------------------------------------------------------------------
-## Labels of fixed effects (their codes: xtx_c_dense_codes(), with
-## xtx_fe_code_term() in memory, in primitives_lookup.R)
+## Labels of fixed effects (their codes: design_absorb_rows())
 
 ## Labels of FE levels, as fixest names them (a_b for interactions).
 xtx_fe_labels <- function(lv) {
@@ -194,20 +193,20 @@ xtx_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing,
     data <- if (is.null(call$data)) NULL else eval(call$data, env)
     ## the design of the rows with complete model variables, with the
     ## response and weights as columns (remote_fit.R)
-    base <- design_problem(call, env, pf$main, data, contrasts, dots, fe = pf, clv = clv)
+    base <- design_problem(call, env, pf$main, data, contrasts, dots, fe = pf$fe, cluster = clv)
     if (is.matrix(base$y)) stop("Multivariate responses are not supported.", call. = FALSE)
-    if (!is.numeric(base$y) && !xtx_is_column(base$y)) stop("The response must be numeric.", call. = FALSE)
+    if (!is.numeric(base$y) && !inherits(base$y, "xtx_column")) stop("The response must be numeric.", call. = FALSE)
     ## an offset: the fit is that of y - offset
     if (!is.null(base$off)) {
         base$y <- base$y - base$off
         base$more <- list(off = base$off)
     }
-    prob <- xtx_fe_prepare(base, pf, clv, fixef.rm)
+    prob <- xtx_fe_rows(base, fixef.rm)
     est <- xtx_fe_estimate(prob$x, prob$cols, tol, !is.null(clv))
     fit <- xtx_fe_finish(est, colnames(prob$x), pf, prob$levels, clv, prob$nsingle, base$nall)
     w <- prob$cols$w
     fit$weighted <- !is.null(w)
-    fit$sumlogw <- if (is.null(w)) 0 else xtx_colsum(log(w))
+    fit$sumlogw <- if (is.null(w)) 0 else sum(log(w))
     fit$x <- prob$x
     fit$cols <- prob$cols
     fit$cols$off <- prob$more$off
@@ -220,7 +219,7 @@ xtx_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing,
     ## (remotely, na.exclude pads the results with every row not used:
     ## na_action.R)
     fit$na.action <- xtx_na_result(base, prob$rows, prob$x_rows)
-    fit$method <- switch(xtx_engine(prob$x), sql = "SQL aggregates", NULL)
+    fit$method <- if (inherits(prob$x, "xtx_remote")) "SQL aggregates"
     ## (the data of a remote fit stay in the database: always kept)
     if (!is.null(fit$method)) {
         ## nothing to drop
@@ -234,7 +233,7 @@ xtx_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing,
 }
 
 ## The fields of a fit with FE shared by design_lm() and design_glm(), from
-## a fit of xtx_fe_core() (`est`), the column names of the design (cn), the
+## a fit of design_absorb_wls() (`est`), the column names of the design (cn), the
 ## parsed formula (pf) and the FE levels (lv): the coefficients named by
 ## the columns but the intercept, their unscaled covariance, the FE values
 ## named by level, the FE sizes and degrees of freedom (`fields`); the
@@ -298,7 +297,7 @@ logLik.xtx_lm_fe <- function(object, ...) {
 print.xtx_lm_fe <- function(x, digits = max(3L, getOption("digits") - 3L), ...) {
     if (!is.null(x$call)) cat("\nCall:\n", paste(deparse(x$call), sep = "\n", collapse = "\n"), "\n", sep = "")
     cat("\nFixed effects: ", paste(sprintf("%s (%s)", names(x$fe_sizes),
-                                            xtx_fmt_count(x$fe_sizes)), collapse = ", "), "\n", sep = "")
+                                            xtx_fit_fmt_count(x$fe_sizes)), collapse = ", "), "\n", sep = "")
     xtx_fit_print_rows(x, prefix = "")
     xtx_fit_print_coef(x, digits)
     cat("\n")
@@ -335,12 +334,12 @@ summary.xtx_lm_fe <- function(object, ...) {
 print.summary.xtx_lm_fe <- function(x, digits = max(3L, getOption("digits") - 3L),
                                        signif.stars = getOption("show.signif.stars"), ...) {
     if (!is.null(x$call)) cat("\nCall:\n", paste(deparse(x$call), sep = "\n", collapse = "\n"), "\n", sep = "")
-    cat("\nObservations: ", xtx_fmt_count(x$nobs),
-        if (x$nsingletons) sprintf(" (%s singletons removed)", xtx_fmt_count(x$nsingletons)), "\n", sep = "")
-    cat("Fixed effects: ", paste(sprintf("%s (%s)", names(x$fe_sizes), xtx_fmt_count(x$fe_sizes)),
+    cat("\nObservations: ", xtx_fit_fmt_count(x$nobs),
+        if (x$nsingletons) sprintf(" (%s singletons removed)", xtx_fit_fmt_count(x$nsingletons)), "\n", sep = "")
+    cat("Fixed effects: ", paste(sprintf("%s (%s)", names(x$fe_sizes), xtx_fit_fmt_count(x$fe_sizes)),
                                  collapse = ", "), "\n", sep = "")
     cat("Standard errors: ", if (identical(x$vcov_type, "cluster"))
-        sprintf("clustered by %s (%s clusters)", x$cluster, xtx_fmt_count(x$G_cluster)) else "iid",
+        sprintf("clustered by %s (%s clusters)", x$cluster, xtx_fit_fmt_count(x$G_cluster)) else "iid",
         "\n", sep = "")
     xtx_fit_print_coefmat(x, digits, signif.stars, ...)
     cat("\nResidual standard error:", format(signif(x$sigma, digits)),
@@ -357,7 +356,7 @@ xtx_fe_columns <- function(object) {
         stop("This needs the fit's data: refit with `model = TRUE`, or use `predict(fit, newdata)`.",
              call. = FALSE)
     cols <- object$cols
-    f <- xtx_fe_fitted(x, xtx_fe_beta(object, x), object$fixef, cols$codes)
+    f <- design_absorb_fitted(x, xtx_fe_beta(object, x), object$fixef, cols$codes)
     ## (z is the response minus the offset)
     list(fitted = if (is.null(cols$off)) f else f + cols$off, resid = cols$z - f)
 }
@@ -376,7 +375,7 @@ xtx_fe_beta <- function(object, x) {
 residuals.xtx_lm_fe <- function(object, ...) {
     ## remote: the remote design with the columns .fitted and .resid
     r <- xtx_fe_columns(object)
-    xtx_p_output(object$x, list(.fitted = r$fitted, .resid = r$resid), design = TRUE,
+    design_output(object$x, list(.fitted = r$fitted, .resid = r$resid), design = TRUE,
                memory = function(d) stats::naresid(object$na.action, d$.resid))
 }
 
@@ -384,7 +383,7 @@ residuals.xtx_lm_fe <- function(object, ...) {
 fitted.xtx_lm_fe <- function(object, ...) {
     ## remote: a table with .fitted and .resid
     r <- xtx_fe_columns(object)
-    xtx_p_output(object$x, list(.fitted = r$fitted, .resid = r$resid),
+    design_output(object$x, list(.fitted = r$fitted, .resid = r$resid),
                memory = function(d) stats::napredict(object$na.action, d$.fitted))
 }
 
@@ -402,17 +401,21 @@ predict.xtx_lm_fe <- function(object, newdata, se.fit = FALSE,
     nd <- xtx_fit_newdata(object, newdata, stats::na.pass, list(...))
     Dn <- nd$D
     keys <- xtx_fe_new_keys(object, Dn, newdata)
-    f <- xtx_fe_fitted(Dn, xtx_fe_beta(object, Dn), object$fixef, keys, object$fe_levels)
+    f <- design_absorb_fitted(Dn, xtx_fe_beta(object, Dn), object$fixef, keys)
     if (!is.null(nd$off)) f <- f + nd$off
     ## a table remotely, a named vector in memory
-    xtx_p_output(Dn, list(.fitted = f), memory = function(d) stats::setNames(d$.fitted, dimnames(Dn)[[1L]]))
+    design_output(Dn, list(.fitted = f), memory = function(d) stats::setNames(d$.fitted, dimnames(Dn)[[1L]]))
 }
 
-## The keys of the FE of a fit over the rows of a new design Dn.
+## The FE of a fit over the rows of a new design Dn: groupings coded
+## against the levels of the fit (NA for levels not in the fit).
 xtx_fe_new_keys <- function(object, Dn, newdata) {
-    lapply(object$fe_vars, function(vars) {
-        k <- tryCatch(xtx_c_key(Dn, vars, data = if (is.data.frame(newdata)) newdata),
-                      error = function(e) NULL)
+    lapply(seq_along(object$fe_vars), function(j) {
+        vars <- object$fe_vars[[j]]
+        ## (in memory the values of newdata; remotely its columns)
+        key <- if (is.data.frame(newdata)) tryCatch(newdata[vars], error = function(e) NULL) else vars
+        k <- if (!is.null(key)) tryCatch(design_groups(Dn, key, levels = object$fe_levels[[j]]),
+                                         error = function(e) NULL)
         if (is.null(k))
             stop(sprintf("`newdata` has no fixed-effect variable among `%s`.", paste(vars, collapse = "`, `")),
                  call. = FALSE)
@@ -428,4 +431,63 @@ xtx_fe_new_keys <- function(object, Dn, newdata) {
 #' @rawNamespace S3method(fixest::fixef, xtx_lm_fe)
 #' @rawNamespace S3method(nlme::fixef, xtx_lm_fe)
 fixef.xtx_lm_fe <- function(object, ...) object$fixef
+
+
+## Clustered covariance of a fit of design_absorb_wls() (`est`, which keeps
+## its absorption operator), clusters `cl` (a grouping of
+## design_absorb_rows()), weighted residuals `we`: the raw cluster scores
+## of the operator with fixest's small sample correction; adds
+## vcov_cluster and G_cluster to `est`.
+xtx_fe_cluster <- function(est, cl, we) {
+    px <- length(est$xcols)
+    kp <- est$kp
+    rank <- est$rank
+    G <- est$G
+    n <- est$nobs
+    Gc <- cl$G
+    sc <- est$absorb$scores(we, cl)
+    U <- sc$U[, kp, drop = FALSE]
+    nn <- !sc$nested
+    K_cl <- rank + if (any(nn)) sum(G[nn]) - (sum(nn) - 1L) else 1L
+    adj <- Gc / (Gc - 1) * (n - 1) / (n - K_cl)
+    Vc <- matrix(NA_real_, px, px)
+    if (rank) {
+        bk <- est$bread[kp, kp, drop = FALSE]
+        Vc[kp, kp] <- adj * bk %*% crossprod(U) %*% bk
+    }
+    est$vcov_cluster <- Vc
+    est$G_cluster <- Gc
+    est
+}
+
+## The fit: on the design with numeric variables centered when that is
+## exact (design_center()), else on the design.
+xtx_fe_estimate <- function(x, cols, tol, cluster) {
+    opts <- absorb_control()
+    run <- function(x, cols) {
+        est <- design_absorb_wls(x, cols$z, cols$w, cols$codes, tol, opts)
+        if (cluster) est <- xtx_fe_cluster(est, cols$cl, est$we)
+        est
+    }
+    ## (columns carried over to the centered design)
+    ctr <- if (isTRUE(getOption("xtx.fe_center", TRUE))) design_center(x, cols) else NULL
+    if (!is.null(ctr)) {
+        est <- design_uncenter(run(ctr$x, ctr$cols), ctr)
+        if (!is.null(est)) return(est)
+    }
+    run(x, cols)
+}
+
+## The rows of an FE fit (design_absorb_rows()): `base` the input stage,
+## with the response, weights and other columns of the fit; fixef.rm as
+## parsed by xtx_fe_rm_arg(); `bounds` (GLMs): whether levels with an
+## all-0 or all-1 response have an infinite FE (xtx_fe_bounds()).
+xtx_fe_rows <- function(base, fixef.rm, bounds = list(), wmsg = "missing or negative weights not allowed") {
+    w <- base$w
+    ## (is.finite() is never NA: the sum counts the negative weights)
+    if (!is.null(w) && sum(is.finite(w) & w < 0) > 0) stop(wmsg, call. = FALSE)
+    design_absorb_rows(base, singletons = fixef.rm %in% c("singleton", "perfect_fit"),
+                       zero = isTRUE(bounds$zero) && fixef.rm %in% c("infinite_coef", "perfect_fit"),
+                       one = isTRUE(bounds$one) && fixef.rm %in% c("infinite_coef", "perfect_fit"))
+}
 

@@ -2,7 +2,7 @@
 ## accepts (the same in memory and remotely), the na.action a fit keeps
 ## for its results, and how results on the rows used are padded to the rows
 ## of the data (napredict() and naresid(): in memory on vectors, remotely
-## on tables, with the methods of xtx_remote_exclude).
+## on tables, with the methods of design_exclude()).
 
 ## na.action of a fit, as one of `allowed` ("omit", "exclude", "fail",
 ## "pass"): na.omit and the others, as functions or names. Other functions
@@ -26,13 +26,13 @@ xtx_fe_na_kind <- function(na.action) {
 }
 
 ## The na.action a fit keeps for its results, from its input stage P
-## (design_problem()): remotely with na.exclude, xtx_remote_exclude() of x
+## (design_problem()): remotely with na.exclude, design_exclude() of x
 ## (the design of the rows the fit could use, over the data); in memory,
 ## the model frame's na.action, with the rows of the frame that the fit did
 ## not use (`rows`: the rows used, with fixed effects; NULL: all of them).
 ## NULL for a fit on a design (no rows dropped).
 xtx_na_result <- function(P, rows = NULL, x = P$x) {
-    if (isTRUE(P$exclude)) return(xtx_remote_exclude(x))
+    if (isTRUE(P$exclude)) return(design_exclude(x))
     xtx_na_dropped(P$na.action, rows, P$nall)
 }
 

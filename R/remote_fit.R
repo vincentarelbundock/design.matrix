@@ -87,45 +87,36 @@
 #' rows are queries, the working weights and responses a temporary table.
 NULL
 
+## The arguments of remote data that a fit on a formula takes in `...`
+## (those design_problem() accepts in `dots`).
+xtx_fit_remote_keys <- c("table", "sql", "engine", "chunk_size")
+
 ## The arguments in `...` of a fit on a formula, as a named list: those of
-## remote data (xtx_remote_keys) evaluated, the others NULL, unevaluated,
-## for the check of unknown arguments (design_problem(); so that
-## design_glm(subset = x > 0) reports `subset`, not that `x` is not found).
+## remote data (xtx_fit_remote_keys) evaluated, the others NULL,
+## unevaluated, for the check of unknown arguments (design_problem(); so
+## that design_glm(subset = x > 0) reports `subset`, not that `x` is not
+## found).
 xtx_dots <- function(...) {
     n <- ...length()
     nm <- ...names() %||% rep("", n)
     out <- vector("list", n)
     names(out) <- nm
-    for (i in which(nm %in% xtx_remote_keys)) out[i] <- list(...elt(i))
+    for (i in which(nm %in% xtx_fit_remote_keys)) out[i] <- list(...elt(i))
     out
 }
 
-## The offsets of new remote data D for a fit: offset() terms of the plan
-## and the `offset` argument of the fit, resolved against the columns of D
-## (SQL), or NULL. Returns list(D, off): offsets with no SQL translation are
-## evaluated in R into new columns of the data of D (xtx_materialize()).
+## The offsets of new remote data D for a fit: offset() terms of the design
+## and the `offset` argument of the fit, as columns of D (design_resolve():
+## SQL, or evaluated in R into new columns of the data of D), or NULL.
+## Returns list(D, off).
 xtx_remote_new_offset <- function(object, D) {
-    con <- xtx_con(D)
     tt <- D$plan$terms
-    nms <- xtx_terms_vars(tt)$names[attr(tt, "offset")]
-    pieces <- character()
-    exprs <- list()
-    add <- function(e) {
-        col <- paste0("__xtx_offn", length(exprs) + 1L)
-        exprs[[col]] <<- e
-        pieces <<- c(pieces, sprintf("CAST(s.%s AS DOUBLE)", DBI::dbQuoteIdentifier(con, col)))
-    }
-    for (nm in nms) {
-        v <- D$vars[[nm]]
-        if (v$kind == "numeric") pieces <- c(pieces, v$sql) else add(v$expr[[2L]])
-    }
-    arg <- object$offset_call
+    vars <- attr(tt, "variables")
+    exprs <- lapply(attr(tt, "offset"), function(i) vars[[i + 1L]][[2L]])
+    names(exprs) <- if (length(exprs)) paste0("offset_term", seq_along(exprs))
+    if (!is.null(object$offset_call)) exprs$offset <- object$offset_call
+    if (!length(exprs)) return(list(D = D, off = NULL))
     env <- object$env %||% environment(object$terms) %||% globalenv()
-    if (!is.null(arg)) {
-        a <- xtx_resolve_or_eval(arg, env, D$src$types, con, "offset")
-        if (is.null(a$expr)) pieces <- c(pieces, a$sql) else add(a$expr)
-    }
-    if (length(exprs)) D$src <- xtx_materialize(D$src, exprs, env, chunk_size = D$chunk_size)
-    list(D = D, off = if (length(pieces)) xtx_column(D, paste(sprintf("(%s)", pieces), collapse = " + ")))
+    r <- design_resolve(D, exprs, env)
+    list(D = r$x, off = Reduce(`+`, r$cols))
 }
-

@@ -1,9 +1,9 @@
 ## Generalized linear models fitted by IRLS on a design, in memory or remote,
-## with one implementation on the primitives of primitives.R: the response,
-## weights, linear predictor, fitted means and working weights are columns
-## (numeric vectors in memory, SQL expressions remotely), the weighted least
-## squares steps are qr() of the scaled design, and the sums over rows are
-## xtx_colsum().
+## with one implementation on the exports of xtx: the response, weights,
+## linear predictor, fitted means and working weights are columns (numeric
+## vectors in memory, SQL expressions remotely), the family is
+## column_family(), the weighted least squares steps are design_wls() (qr()
+## of the scaled design), and the sums over rows are col_sums().
 ##
 ## The iterations are those of glm.fit(), step for step: same starting
 ## values (family$initialize, or start), same weighted least squares problem
@@ -200,7 +200,8 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
                        contrasts = NULL, compress = "auto", model = TRUE, y = NULL,
                        vcov = "iid", fixef.rm = "perfect_fit", ...) {
     family <- xtx_glm_family(family, parent.frame())
-    xtx_glm_kind(family)
+    ## (the supported families: an error otherwise)
+    cf <- column_family(family)
     control <- do.call(stats::glm.control, as.list(control))
     cl <- match.call()
     ## argument checks (checks.R)
@@ -218,7 +219,7 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
     ## the design and columns of a data frame, remote data, a design matrix
     ## or a remote design (remote_fit.R)
     P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, xtx_dots(...),
-                        family = xtx_glm_kind(family), frame = environment())
+                        family = cf, frame = environment())
     fit <- xtx_glm_fit(P$x, P$cols, family, start, control, P$intercept, compress,
                      wmsg = "negative weights not allowed")
     fit$call <- cl
@@ -245,76 +246,23 @@ xtx_glm_family <- function(family, env) {
     family
 }
 
-## ---- families on columns ----------------------------------------------------
-
-## ---- columns of the response ------------------------------------------------
-
-## The response, prior weights, trials and offset as glm()'s initialize sees
-## them (columns: vectors in memory, SQL remotely): y in [0, 1] and weights
-## times trials for a two-column binomial response (a successes, b
-## failures), y = 0 where the weight is 0. `weighted`: whether weights
-## were given (w is then theirs, else 1); a two-column response is
-## weighted by its trials.
-xtx_glm_cols <- function(y, a, b, w, off, k, cb, weighted) {
-    y0 <- y
-    if (cb) {
-        if (!k$binomial)
-            stop("A two-column response (successes and failures) needs a binomial family.", call. = FALSE)
-        nt <- a + b
-        y <- xtx_c_ifelse(nt == 0, 0, a / nt)
-        w <- w * nt
-    } else {
-        nt <- xtx_c_const(y, 1)
-        if (k$binomial) y <- xtx_c_ifelse(w == 0, 0, y)
-    }
-    ## (trials weight the rows of a two-column response; y0 the response as
-    ## given)
-    list(y = y, w = w, n = nt, off = off, cbind = cb, a = a, b = b, weighted = weighted || cb, y0 = y0)
-}
-
-## The response of a model frame in memory (a vector, a factor or character
-## vector, or a two-column matrix) as columns.
-xtx_glm_mem_cols <- function(Y, w, off, k) {
-    if (length(dim(Y)) == 1L) dim(Y) <- NULL
-    if (is.matrix(Y) && ncol(Y) == 1L) Y <- Y[, 1L]
-    n <- NROW(Y)
-    weighted <- !is.null(w)
-    w <- if (is.null(w)) rep.int(1, n) else as.double(w)
-    off <- if (!is.null(off)) as.double(off)
-    if (is.matrix(Y)) {
-        if (ncol(Y) != 2L) stop("A two-column response needs two columns (successes and failures).", call. = FALSE)
-        return(xtx_glm_cols(NULL, as.double(Y[, 1L]), as.double(Y[, 2L]), w, off, k, TRUE, weighted))
-    }
-    ## a character response is a factor, as remotely
-    if (is.character(Y)) Y <- factor(Y)
-    if (is.factor(Y)) {
-        if (!k$binomial) stop("A factor response needs a binomial family.", call. = FALSE)
-        Y <- Y != levels(Y)[1L]
-    }
-    if (!is.numeric(Y) && !is.logical(Y)) stop("The response must be numeric, logical or a factor.", call. = FALSE)
-    y <- as.double(Y)
-    attributes(y) <- NULL
-    xtx_glm_cols(y, NULL, NULL, w, off, k, FALSE, weighted)
-}
-
-## The checks of a fit on a design (no rows dropped): no missing response
-## or weight, a finite offset. A missing weight has the error of a weight
-## that is not finite ("NA/NaN/Inf in 'weights'", xtx_glm_checks()), in
-## memory as remotely: glm() has no error of its own for it, and lm()'s
-## "missing or negative weights not allowed" would contradict the GLM's
-## "negative weights not allowed" for negative weights.
-xtx_glm_check_design <- function(cols) {
-    y <- if (cols$cbind) cols$a + cols$b else cols$y0
-    s <- xtx_c_sums(xtx_c_count(xtx_c_present(y), negate = TRUE),
-                  if (cols$weighted && !cols$cbind) xtx_c_count(xtx_c_present(cols$w), negate = TRUE) else 0,
-                  if (!is.null(cols$off)) xtx_c_count(xtx_c_is_finite(cols$off), negate = TRUE) else 0)
-    bad <- is.na(s) | s > 0
-    if (bad[1L]) stop("NA/NaN/Inf in 'y'", call. = FALSE)
-    if (bad[2L]) stop("NA/NaN/Inf in 'weights'", call. = FALSE)
-    if (bad[3L]) stop("NA/NaN/Inf in 'offset'", call. = FALSE)
-}
-
 ## ---- checks ------------------------------------------------------------------
+
+## The rows where a logical column is TRUE, as a logical column that is
+## never NA (NA counts as FALSE): its sum counts them.
+xtx_fit_true <- function(cond) cond & !is.na(cond)
+
+## X b: a vector for a vector b (in memory, a matrix for a matrix b), a
+## column remotely.
+xtx_fit_mult <- function(x, b) if (is.matrix(b)) x %*% b else drop(x %*% b)
+
+## Columns computed once, together (col_compute() of their cbind(): one
+## frame remotely, so that they combine with each other): a list of the
+## columns.
+xtx_fit_compute_all <- function(...) {
+    m <- col_compute(do.call(cbind, unname(list(...))), table = FALSE)
+    lapply(seq_len(...length()), function(j) m[, j])
+}
 
 ## The checks of glm() and of the family's initialize, and the sums every
 ## fit needs, in one pass over the rows.
@@ -323,20 +271,21 @@ xtx_glm_checks <- function(cols, k, start, wmsg) {
     w <- cols$w
     one <- 0 * y + 1
     zero <- 0 * y
-    sums <- list(n = one, nz = xtx_c_count(w != 0), sw = w, swy = w * y,
-                 maxn = if (k$binomial) xtx_c_count(cols$n > 1) else zero,
-                 slw = if (k$aic == "gaussian") xtx_c_ifelse(w > 0, log(w), 0) else zero,
-                 nzero = xtx_c_count(w == 0), neg = xtx_c_count(w < 0), infw = xtx_c_count(abs(w) == Inf),
-                 ly = if (k$aic == "inverse.gaussian") xtx_c_ifelse(y > 0, w * log(y), 0) else zero,
-                 nonint = if (k$aic == "poisson") xtx_c_count(y != xtx_c_round(y)) else zero)
+    count <- xtx_fit_true
+    sums <- list(n = one, nz = count(w != 0), sw = w, swy = w * y,
+                 maxn = if (k$binomial) count(cols$n > 1) else zero,
+                 slw = if (k$aic == "gaussian") col_ifelse(w > 0, log(w), 0) else zero,
+                 nzero = count(w == 0), neg = count(w < 0), infw = count(abs(w) == Inf),
+                 ly = if (k$aic == "inverse.gaussian") col_ifelse(y > 0, w * log(y), 0) else zero,
+                 nonint = if (k$aic == "poisson") count(y != round(y)) else zero)
     chk <- list()
     add <- function(cond, msg, type = "error") chk[[length(chk) + 1L]] <<- list(cond = cond, msg = msg, type = type)
     fam <- k$family
     if (k$binomial && !cols$cbind) add(y < 0 | y > 1, "y values must be 0 <= y <= 1")
     if (fam == "binomial" && !cols$cbind)
-        add(abs(w * y - xtx_c_round(w * y)) > 0.001, "non-integer #successes in a binomial glm!", "warning")
+        add(abs(w * y - round(w * y)) > 0.001, "non-integer #successes in a binomial glm!", "warning")
     if (fam == "binomial" && cols$cbind)
-        add(abs(cols$a - xtx_c_round(cols$a)) > 0.001 | abs(cols$b - xtx_c_round(cols$b)) > 0.001,
+        add(abs(cols$a - round(cols$a)) > 0.001 | abs(cols$b - round(cols$b)) > 0.001,
             "non-integer counts in a binomial glm!", "warning")
     if (fam == "poisson") add(y < 0, "negative values not allowed for the 'Poisson' family")
     if (fam == "quasipoisson") add(y < 0, "negative values not allowed for the 'quasiPoisson' family")
@@ -344,8 +293,8 @@ xtx_glm_checks <- function(cols, k, start, wmsg) {
     if (fam == "inverse.gaussian") add(y <= 0, "positive values only are allowed for the 'inverse.gaussian' family")
     if (fam == "gaussian" && is.null(start) && k$link %in% c("inverse", "log"))
         add(if (k$link == "inverse") y == 0 else y <= 0, "cannot find valid starting values: please specify some")
-    all_cols <- c(sums, lapply(chk, function(x) xtx_c_count(x$cond)))
-    s <- do.call(xtx_c_sums, unname(all_cols))
+    all_cols <- c(sums, lapply(chk, function(x) count(x$cond)))
+    s <- unname(do.call(col_sums, unname(all_cols)))
     ck <- stats::setNames(as.list(s[seq_along(sums)]), names(sums))
     if (ck$n == 0) stop("0 (non-NA) cases", call. = FALSE)
     if (ck$neg > 0) stop(wmsg, call. = FALSE)
@@ -363,7 +312,7 @@ xtx_glm_checks <- function(cols, k, start, wmsg) {
 ##
 ## The iterations of glm.fit() (xtx_glm_loop()) run on "units": the rows of the
 ## design (columns: vectors in memory, SQL remotely), or the patterns of
-## rows that share their design inputs (xtx_p_patterns(), vectors), with the
+## rows that share their design inputs (design_patterns(), vectors), with the
 ## response ybar (the weighted mean of y), the prior weights W (their sum)
 ## and the deviance plus C, the part of the deviance of the rows that does
 ## not depend on the coefficients. The first iteration starts from per-row
@@ -376,9 +325,10 @@ xtx_glm_checks <- function(cols, k, start, wmsg) {
 ## vector: several columns), wls(w2, z) the weighted least squares step
 ## (as xtx_glm_wls_design()), np the number of parameters (fixed effects:
 ## xtx_fe_solver()). The fit is then not compressed and has no `start`.
+## (`cf` and `k`: the family on columns, column_family(); one object.)
 xtx_glm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg, solver = NULL) {
-    k <- xtx_glm_kind(family)
-    cf <- xtx_glm_cf(k)
+    cf <- column_family(family)
+    k <- cf
     ck <- xtx_glm_checks(cols, k, start, wmsg)
     tol <- min(1e-07, control$epsilon / 1000)
     p <- ncol(x)
@@ -388,31 +338,32 @@ xtx_glm_fit <- function(x, cols, family, start, control, intercept, compress, wm
     y <- cols$y
     w <- cols$w
     off <- cols$off %||% 0
-    lin <- if (is.null(solver)) function(b) xtx_p_mult(x, b) else solver$lin
+    lin <- if (is.null(solver)) function(b) xtx_fit_mult(x, b) else solver$lin
     ## (with another solver, whose steps read the working columns many
     ## times, they are a table remotely: `materialize`)
     rows <- list(lin = lin, wls = if (is.null(solver)) xtx_glm_wls_design(x, tol) else solver$wls,
                  y = y, W = w, off = off, C = 0, materialize = !is.null(solver))
     np <- if (is.null(solver)) p else solver$np
     ## starting values, on the rows
-    eta0 <- xtx_c_freeze(if (!is.null(start)) xtx_p_mult(x, start) + off
-                         else cf$linkfun(cf$mustart(y, w, cols$n, cols$cbind)))
-    mu0 <- xtx_c_freeze(cf$linkinv(eta0))
+    eta0 <- col_compute(if (!is.null(start)) xtx_fit_mult(x, start) + off
+                        else cf$linkfun(cf$mustart(y, w, cols$n, cols$cbind)), table = FALSE)
+    mu0 <- col_compute(cf$linkinv(eta0), table = FALSE)
+    ## (valid() is never NA)
     v0 <- cf$valid(eta0, mu0)
-    s0 <- xtx_c_sums(cf$dev(y, mu0, w), if (is.null(v0)) 0 * y else xtx_c_count(v0, negate = TRUE))
+    s0 <- unname(col_sums(cf$dev(y, mu0, w), if (is.null(v0)) 0 * y else !v0))
     if (isTRUE(is.na(s0[2L]) || s0[2L] > 0))
         stop("cannot find valid starting values: please specify some", call. = FALSE)
     devold <- s0[1L]
 
     pt <- if (p > 0L && is.null(solver) && !isFALSE(compress))
-        xtx_p_patterns(x, y, if (isTRUE(cols$weighted)) w, compress, keys = cols$off, fit = "glm")
+        xtx_fit_patterns(x, y, if (isTRUE(cols$weighted)) w, compress, keys = cols$off, fit = "glm")
     units <- rows
     if (!is.null(pt)) {
         W <- pt$w %||% rep(1, length(pt$z))
         xp <- pt$x
-        C <- if (is.null(cf$sat)) pt$within else xtx_colsum(w * cf$sat(y)) - sum(W * cf$sat(pt$z))
+        C <- if (is.null(cf$sat)) pt$within else sum(w * cf$sat(y)) - sum(W * cf$sat(pt$z))
         if (is.finite(C)) {
-            units <- list(lin = function(b) xtx_p_mult(xp, b), wls = xtx_glm_wls_design(xp, tol), y = pt$z, W = W,
+            units <- list(lin = function(b) xtx_fit_mult(xp, b), wls = xtx_glm_wls_design(xp, tol), y = pt$z, W = W,
                           off = if (is.null(pt$keys)) 0 else pt$keys[, 1L], C = C)
         } else {
             pt <- NULL
@@ -444,7 +395,7 @@ xtx_glm_fit <- function(x, cols, family, start, control, intercept, compress, wm
                 nobs = nobs, rows = ck$n, pearson = fin$pearson, zero_weights = fin$zero, family = family,
                 intercept = intercept, compressed = !is.null(pt), patterns = if (is.null(pt)) ck$n else length(units$W),
                 control = control, spec = xtx_fit_spec(x),
-                method = if (!is.null(pt)) "patterns" else switch(xtx_engine(x), sql = "SQL iterations", NULL),
+                method = if (!is.null(pt)) "patterns" else if (inherits(x, "xtx_remote")) "SQL iterations",
                 data = list(design = x, y = y, weights = w, offset = cols$off))
     ## (the last weighted least squares step of another solver)
     if (!is.null(solver)) out$solver_fit <- res$fit
@@ -454,12 +405,12 @@ xtx_glm_fit <- function(x, cols, family, start, control, intercept, compress, wm
 
 ## Weighted least squares of z on a design (rows or patterns) with squared
 ## IRLS weights w2 (0 for rows left out): the least squares core of
-## design_lm() (xtx_fit_ls(): qr() of the scaled design, lm()'s pivoting), at
+## design_lm() (design_wls(): qr() of the scaled design, lm()'s pivoting), at
 ## glm.fit()'s tolerance, as glm.fit()'s Cdqrls.
 xtx_glm_wls_design <- function(x, tol) {
     force(x)
     function(w2, z) {
-        f <- xtx_fit_ls(x, z, w2, tol, FALSE, sums = FALSE)
+        f <- design_wls(x, z, w2, tol, FALSE, sums = FALSE)
         b <- f$coefficients
         b[is.na(b)] <- 0
         list(coefficients = unname(b), rank = f$rank, pivot = f$pivot, R = unname(f$R))
@@ -468,7 +419,7 @@ xtx_glm_wls_design <- function(x, tol) {
 
 ## The same for an intercept alone (the null model): w2 and z sums.
 xtx_glm_wls_mean <- function(w2, z) {
-    s <- xtx_c_sums(w2, w2 * z)
+    s <- unname(col_sums(w2, w2 * z))
     if (!all(is.finite(s))) return(list(coefficients = NaN, rank = 0L, pivot = 1L, R = matrix(0, 1L, 1L)))
     list(coefficients = if (s[1L] > 0) s[2L] / s[1L] else 0, rank = if (s[1L] > 0) 1L else 0L,
          pivot = 1L, R = matrix(sqrt(s[1L]), 1L, 1L))
@@ -479,9 +430,9 @@ xtx_glm_wls_mean <- function(w2, z) {
 xtx_glm_working_memory <- function(u, eta, mu, cf) {
     W <- u$W
     v <- cf$variance(mu)
-    me <- xtx_glm_mu_eta(cf, eta, mu)
-    ## (primitives_fused.R: in memory one pass in C)
-    r <- xtx_c_irls_working(W, eta, mu, u$y, u$off, v, me, table = isTRUE(u$materialize))
+    me <- cf$mu_eta(eta, mu)
+    ## (in memory one pass in C)
+    r <- col_irls_working(W, eta, mu, u$y, u$off, v, me, table = isTRUE(u$materialize))
     xtx_glm_working_checks(r[[3L]], r[[1L]], r[[2L]])
 }
 
@@ -502,7 +453,6 @@ xtx_glm_units <- function(u, cf, k, first = NULL, eta = NULL, mu = NULL) {
     st$first <- first
     st$eta <- eta
     st$mu <- mu
-    eps <- 10 * .Machine$double.eps
     list(
         state = st,
         wls = function() {
@@ -525,11 +475,11 @@ xtx_glm_units <- function(u, cf, k, first = NULL, eta = NULL, mu = NULL) {
             eta <- u$lin(beta)
             ## (no pass to add a zero offset)
             if (!identical(u$off, 0)) eta <- eta + u$off
-            mu <- xtx_c_freeze(cf$linkinv(eta))
+            mu <- col_compute(cf$linkinv(eta), table = FALSE)
             v <- cf$valid(eta, mu)
-            ext <- if (k$family == "binomial") xtx_c_count(mu > 1 - eps | mu < eps)
-                   else if (k$family == "poisson") xtx_c_count(mu < eps) else 0 * mu
-            s <- xtx_c_sums(cf$dev(u$y, mu, u$W), if (is.null(v)) 0 * mu else xtx_c_count(v, negate = TRUE), ext)
+            ## (valid() and boundary() are never NA: the sums count rows)
+            bd <- if (!is.null(cf$boundary)) cf$boundary(mu)
+            s <- unname(col_sums(cf$dev(u$y, mu, u$W), if (is.null(v)) 0 * mu else !v, if (is.null(bd)) 0 * mu else bd))
             st$eta <- eta
             st$mu <- mu
             st$beta <- beta
@@ -643,32 +593,23 @@ xtx_glm_final <- function(lin, cols, cf, k, ck, beta, old, eta0, dev, intercept)
         eta_old <- eta0
     } else {
         P <- lin(cbind(beta, old))
-        eta <- xtx_c_col(P, 1L) + off
-        eta_old <- xtx_c_col(P, 2L) + off
+        eta <- P[, 1L] + off
+        eta_old <- P[, 2L] + off
     }
-    ## (frozen together: columns of one frame)
-    mm <- xtx_c_freeze_all(cf$linkinv(eta), cf$linkinv(eta_old))
+    ## (computed together: columns of one frame)
+    mm <- xtx_fit_compute_all(cf$linkinv(eta), cf$linkinv(eta_old))
     mu <- mm[[1L]]
     mu0 <- mm[[2L]]
-    me <- xtx_glm_mu_eta(cf, eta, mu)
-    me0 <- xtx_glm_mu_eta(cf, eta_old, mu0)
+    me <- cf$mu_eta(eta, mu)
+    me0 <- cf$mu_eta(eta_old, mu0)
     good0 <- (w > 0) & (me0 != 0)
-    w0 <- xtx_c_ifelse(good0, w * me0 * me0 / cf$variance(mu0), 0)
+    w0 <- col_ifelse(good0, w * me0 * me0 / cf$variance(mu0), 0)
     r <- (y - mu) / me
     wtd <- if (intercept) ck$swy / ck$sw else cf$linkinv(0 * y + off)
-    ll <- switch(k$aic,
-        binomial = {
-            m <- if (ck$maxn > 0) cols$n else w
-            xtx_c_binomial_ll(m, y, w, mu)
-        },
-        poisson = w * xtx_c_ifelse(y == 0, -mu, y * log(mu) - mu - xtx_c_lgamma(y + 1)),
-        Gamma = {
-            disp <- dev / ck$sw
-            a <- 1 / disp
-            w * (-lgamma(a) - a * log(mu * disp) + (a - 1) * log(y) - y / (mu * disp))
-        },
-        0 * y)
-    s <- xtx_c_sums(xtx_c_ifelse(good0, w0 * r * r, 0), xtx_c_count(good0, negate = TRUE), cf$dev(y, wtd, w), ll)
+    ## (the weighted log densities of binomial, poisson and Gamma; zero for
+    ## the others)
+    ll <- cf$loglik(y, mu, w, m = if (k$aic == "binomial" && ck$maxn > 0) cols$n else w, disp = dev / ck$sw)
+    s <- unname(col_sums(col_ifelse(good0, w0 * r * r, 0), !xtx_fit_true(good0), cf$dev(y, wtd, w), ll))
     list(pearson = s[1L], zero = isTRUE(s[2L] > 0), nulldev = s[3L], ll = s[4L], mu = mu)
 }
 
@@ -694,7 +635,7 @@ xtx_glm_null_refit <- function(cols, cf, k, control, nobs, mu) {
     eta <- cf$linkfun(mu)
     mu1 <- cf$linkinv(eta)
     v <- cf$valid(eta, mu1)
-    s <- xtx_c_sums(cf$dev(cols$y, mu1, cols$w), if (is.null(v)) 0 * mu1 else xtx_c_count(v, negate = TRUE))
+    s <- unname(col_sums(cf$dev(cols$y, mu1, cols$w), if (is.null(v)) 0 * mu1 else !v))
     if (isTRUE(is.na(s[2L]) || s[2L] > 0)) stop("cannot find valid starting values: please specify some", call. = FALSE)
     B <- xtx_glm_units(u, cf, k, eta = eta, mu = mu1)
     res <- xtx_glm_loop(B, k, control, nobs, s[1L])
@@ -729,18 +670,18 @@ xtx_glm_rows <- function(object, what) {
 }
 
 ## Row-wise results: a vector in memory (the last column, named, padded by
-## pad(na.action)), a remote table remotely (xtx_p_output()).
+## pad(na.action)), a remote table remotely (design_output()).
 xtx_glm_output <- function(x, cols, na_act, pad = stats::napredict) {
-    xtx_p_output(x, cols, na = na_act, memory = function(d) xtx_na_pad(na_act, d[[ncol(d)]], x, pad))
+    design_output(x, cols, na = na_act, memory = function(d) xtx_na_pad(na_act, d[[ncol(d)]], x, pad))
 }
 
 ## A linear predictor (with its NAs kept as NA by the inverse link).
-xtx_glm_response <- function(cf, eta) xtx_c_ifelse(xtx_c_present(eta), cf$linkinv(eta), eta)
+xtx_glm_response <- function(cf, eta) col_ifelse(!is.na(eta), cf$linkinv(eta), eta)
 
 #' @export
 fitted.xtx_glm <- function(object, ...) {
     d <- xtx_glm_rows(object, "fitted()")
-    cf <- xtx_glm_cf(xtx_glm_kind(object$family))
+    cf <- column_family(object$family)
     eta <- xtx_glm_eta(object, d$design, d$offset, d$codes)
     xtx_glm_output(d$design, list(.fitted = cf$linkinv(eta)), object$na.action)
 }
@@ -749,17 +690,16 @@ fitted.xtx_glm <- function(object, ...) {
 residuals.xtx_glm <- function(object, type = c("deviance", "pearson", "working", "response"), ...) {
     type <- match.arg(type)
     d <- xtx_glm_rows(object, "residuals()")
-    cf <- xtx_glm_cf(xtx_glm_kind(object$family))
+    cf <- column_family(object$family)
     eta <- xtx_glm_eta(object, d$design, d$offset, d$codes)
     mu <- cf$linkinv(eta)
     y <- d$y
     w <- d$weights
     res <- switch(type,
                   deviance = if (object$df.residual > 0) {
-                      ## (fast pmax: on the fit's rows, y, w and mu are never
-                      ## NA; a NaN deviance stays NaN with greatest(), as in R)
-                      dd <- sqrt(xtx_fast_pmax(cf$dev(y, mu, w), 0))
-                      xtx_c_ifelse(y > mu, dd, -dd)
+                      ## (a NaN deviance stays NaN, as in R)
+                      dd <- sqrt(col_pmax(cf$dev(y, mu, w), 0))
+                      col_ifelse(y > mu, dd, -dd)
                   } else 0 * mu,
                   pearson = (y - mu) * sqrt(w) / sqrt(cf$variance(mu)),
                   working = (y - mu) / cf$mu.eta(eta),
@@ -778,14 +718,13 @@ residuals.xtx_glm <- function(object, type = c("deviance", "pearson", "working",
 predict.xtx_glm <- function(object, newdata = NULL, type = c("link", "response"),
                                na.action = stats::na.pass, ...) {
     type <- match.arg(type)
-    cf <- xtx_glm_cf(xtx_glm_kind(object$family))
+    cf <- column_family(object$family)
     if (is.null(newdata)) {
         if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
         d <- xtx_glm_rows(object, "predict() without `newdata`")
         x <- d$design
         off <- d$offset
         keys <- d$codes
-        levels <- NULL
         na_act <- object$na.action
     } else {
         ## (with fixed effects, every row of newdata is kept)
@@ -794,13 +733,13 @@ predict.xtx_glm <- function(object, newdata = NULL, type = c("link", "response")
         nd <- xtx_fit_newdata(object, newdata, na.action, list(...))
         x <- nd$D
         off <- nd$off
+        ## (the FE levels of the new rows, coded against those of the fit)
         keys <- if (!is.null(object$fixef)) xtx_fe_new_keys(object, x, newdata)
-        levels <- object$fe_levels
         na_act <- NULL
         if (object$rank < length(object$coefficients))
             warning("prediction from rank-deficient fit; consider predict(., rankdeficient=\"NA\")", call. = FALSE)
     }
-    eta <- xtx_glm_eta(object, x, off, keys, levels)
+    eta <- xtx_glm_eta(object, x, off, keys)
     xtx_glm_output(x, list(.fitted = if (type == "response") xtx_glm_response(cf, eta) else eta), na_act)
 }
 

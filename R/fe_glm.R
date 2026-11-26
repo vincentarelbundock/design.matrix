@@ -3,13 +3,13 @@
 ##
 ## The IRLS iterations of glm.fit() (xtx_glm_loop(), glm.R), with the
 ## weighted least squares step of each iteration replaced by the estimator
-## of linear models with fixed effects (xtx_fe_core(), fe.R): the working
+## of linear models with fixed effects (design_absorb_wls()): the working
 ## response z on the design, with the working weights, absorbing the FE.
 ## The parameters of the loop are the slopes and the FE values together
 ## (theta = c(b, fe_1, ..., fe_K)), so that its step halving, convergence
 ## rule (the deviance criterion of glm.fit()) and warnings are those of
 ## glm(); the linear predictor is X b + sum_k fe_k[code_k] + offset, a
-## product with the design and lookups of the FE values (xtx_fe_fitted()).
+## product with the design and lookups of the FE values (design_absorb_fitted()).
 ## Everything runs on the primitives, so the same code fits data in memory
 ## and remote data.
 ##
@@ -49,12 +49,12 @@ xtx_fe_solver <- function(x, codes, tol, opts) {
             beta <- beta[, 1L]
             fe <- lapply(fe, function(v) v[, 1L])
         }
-        xtx_fe_fitted(x, beta, fe, codes)
+        design_absorb_fitted(x, beta, fe, codes)
     }
     wls <- function(w2, z) {
         ## (the residuals, for clustered standard errors, only for the last
         ## step: see we())
-        est <- xtx_fe_core(x, list(z = z, w = w2, codes = codes), tol, opts, warm = warm, resid_final = FALSE)
+        est <- design_absorb_wls(x, z, w2, codes, tol, opts, warm = warm, resid = FALSE)
         warm$w2 <- w2
         warm$z <- z
         b0 <- est$b
@@ -84,21 +84,21 @@ xtx_fe_bounds <- function(family) {
 ## parent frame.
 xtx_fe_glm <- function(call, env, formula, family, data, start, control, contrasts, compress, model,
                       vcov, fixef.rm, dots) {
-    k <- xtx_glm_kind(family)
+    k <- column_family(family)
     ## (arguments checked by design_glm(): checks.R)
     pf <- xtx_fe_parse(formula)
     clv <- xtx_fe_vcov_arg(vcov)
     fixef.rm <- xtx_fe_rm_arg(fixef.rm, glm = TRUE)
     ## the design of the rows with complete variables, and the columns of the
     ## response, weights and offset (remote_fit.R)
-    base <- design_problem(call, env, pf$main, data, contrasts, dots, family = k, fe = pf, clv = clv)
+    base <- design_problem(call, env, pf$main, data, contrasts, dots, family = k, fe = pf$fe, cluster = clv)
     gc <- base$cols
     ## the columns of the GLM other than y and w go along with the rows kept
     flags <- gc[c("cbind", "weighted")]
     base$y <- gc$y
     base$w <- gc$w
     base$more <- Filter(Negate(is.null), gc[c("n", "off", "a", "b", "y0")])
-    prob <- xtx_fe_prepare(base, pf, clv, fixef.rm, xtx_fe_bounds(family), wmsg = "negative weights not allowed")
+    prob <- xtx_fe_rows(base, fixef.rm, xtx_fe_bounds(family), wmsg = "negative weights not allowed")
     cols <- c(list(y = prob$cols$z, w = prob$cols$w), prob$more, flags)
     if (is.null(cols$y0)) cols["y0"] <- list(NULL)
     res <- xtx_fe_glm_estimate(prob$x, cols, prob$cols$codes, prob$cols$cl, family, control)
@@ -130,7 +130,7 @@ xtx_fe_glm <- function(call, env, formula, family, data, start, control, contras
     ## (remotely, na.exclude pads the results with every row not used:
     ## na_action.R)
     fit$na.action <- xtx_na_result(base, prob$rows, prob$x_rows)
-    fit$method <- switch(xtx_engine(x), sql = "SQL iterations", NULL)
+    fit$method <- if (inherits(x, "xtx_remote")) "SQL iterations"
     ## (the data of a remote fit stay in the database: always kept)
     if (!model && is.null(fit$method)) fit$data <- NULL
     class(fit) <- c("xtx_glm_fe", "xtx_glm")
@@ -138,20 +138,23 @@ xtx_fe_glm <- function(call, env, formula, family, data, start, control, contras
 }
 
 ## The fit, on the design with numeric variables centered when that is
-## exact (xtx_p_center(); coefficients, covariance and FE mapped back with
-## xtx_fe_uncenter()), else on the design. Returns list(fit (of
+## exact (design_center(); coefficients, covariance and FE mapped back with
+## design_uncenter()), else on the design. Returns list(fit (of
 ## xtx_glm_fit()), est (slopes b, FE values fe, bread, cluster covariance,
 ## degrees of freedom), fe_iter).
 xtx_fe_glm_estimate <- function(x, cols, codes, cl, family, control) {
-    opts <- xtx_fe_opts()
+    opts <- absorb_control()
     ## aliasing: fixest's criterion, with feglm()'s collin.tol = 1e-9
     tol <- 1e-9
-    ctr <- if (isTRUE(getOption("xtx.fe_center", TRUE))) xtx_p_center(x) else NULL
-    run <- function(xx, on) {
+    nms <- intersect(c("y", "w", "n", "off", "a", "b", "y0"), names(cols))
+    ## (the columns carried over to the centered design)
+    ctr <- if (isTRUE(getOption("xtx.fe_center", TRUE)))
+        design_center(x, list(cols = cols[nms], codes = codes, cl = cl)) else NULL
+    run <- function(xx, cc0) {
         cc <- cols
-        for (nm in c("y", "w", "n", "off", "a", "b", "y0")) if (!is.null(cc[[nm]])) cc[[nm]] <- on(cc[[nm]])
-        cd <- xtx_cols_map(codes, on)
-        cl2 <- xtx_cols_map(cl, on)
+        for (nm in nms) if (!is.null(cc0$cols[[nm]])) cc[[nm]] <- cc0$cols[[nm]]
+        cd <- cc0$codes
+        cl2 <- cc0$cl
         solver <- xtx_fe_solver(xx, cd, tol, opts)
         fit <- xtx_glm_fit(xx, cc, family, NULL, control, TRUE, FALSE, wmsg = "negative weights not allowed",
                          solver = solver)
@@ -166,23 +169,22 @@ xtx_fe_glm_estimate <- function(x, cols, codes, cl, family, control) {
         list(fit = fit, est = est, fe_iter = solver$warm$iter)
     }
     if (!is.null(ctr)) {
-        xc <- ctr$x
-        r <- run(xc, function(col) xtx_c_on(col, xc))
-        est <- xtx_fe_uncenter(r$est, ctr$T, which(colnames(xc) == "(Intercept)"))
+        r <- run(ctr$x, ctr$cols)
+        est <- design_uncenter(r$est, ctr)
         if (!is.null(est)) {
             r$est <- est
             return(r)
         }
     }
-    run(x, identity)
+    run(x, list(cols = cols[nms], codes = codes, cl = cl))
 }
 
 ## The linear predictor of a GLM fit on the rows of design x: X b, plus the
 ## FE values of the rows' levels (keys: codes, or key columns matched to
 ## `levels`), plus the offset.
-xtx_glm_eta <- function(object, x, off = NULL, keys = NULL, levels = NULL) {
-    eta <- if (is.null(object$fixef)) xtx_p_mult(x, xtx_fit_beta(object))
-           else xtx_fe_fitted(x, xtx_fe_beta(object, x), object$fixef, keys, levels)
+xtx_glm_eta <- function(object, x, off = NULL, keys = NULL) {
+    eta <- if (is.null(object$fixef)) xtx_fit_mult(x, xtx_fit_beta(object))
+           else design_absorb_fitted(x, xtx_fe_beta(object, x), object$fixef, keys)
     if (is.null(off)) eta else eta + off
 }
 
@@ -247,7 +249,7 @@ print.summary.xtx_glm_fe <- function(x, digits = max(3L, getOption("digits") - 3
     cat("\nCall:\n", paste(deparse(x$call), sep = "\n", collapse = "\n"), "\n", sep = "")
     xtx_fe_glm_print_rows(x)
     cat("Standard errors: ", if (identical(x$vcov_type, "cluster"))
-        sprintf("clustered by %s (%s clusters)", x$cluster, xtx_fmt_count(x$G_cluster)) else "iid",
+        sprintf("clustered by %s (%s clusters)", x$cluster, xtx_fit_fmt_count(x$G_cluster)) else "iid",
         "\n", sep = "")
     xtx_fit_print_coefmat(x, digits, signif.stars, ...)
     cat("\n(Dispersion parameter for ", x$family$family, " family taken to be ", format(x$dispersion),
@@ -262,12 +264,12 @@ print.summary.xtx_glm_fe <- function(x, digits = max(3L, getOption("digits") - 3
 
 ## Observations, rows removed and fixed effects of a fit or its summary.
 xtx_fe_glm_print_rows <- function(x) {
-    rm <- c(if (x$nsingletons) sprintf("%s singletons", xtx_fmt_count(x$nsingletons)),
-            if (x$nperfect) sprintf("%s perfectly fit by the fixed effects", xtx_fmt_count(x$nperfect)))
-    cat("\nObservations: ", xtx_fmt_count(x$nobs),
+    rm <- c(if (x$nsingletons) sprintf("%s singletons", xtx_fit_fmt_count(x$nsingletons)),
+            if (x$nperfect) sprintf("%s perfectly fit by the fixed effects", xtx_fit_fmt_count(x$nperfect)))
+    cat("\nObservations: ", xtx_fit_fmt_count(x$nobs),
         if (length(rm)) sprintf(" (removed: %s)", paste(rm, collapse = ", ")), "\n", sep = "")
     if (!is.null(x$method)) cat("Method: ", x$method, "\n", sep = "")
-    cat("Fixed effects: ", paste(sprintf("%s (%s)", names(x$fe_sizes), xtx_fmt_count(x$fe_sizes)),
+    cat("Fixed effects: ", paste(sprintf("%s (%s)", names(x$fe_sizes), xtx_fit_fmt_count(x$fe_sizes)),
                                  collapse = ", "), "\n", sep = "")
 }
 

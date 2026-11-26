@@ -1,15 +1,18 @@
 ## Linear models fitted on a design_matrix, without the dense matrix.
 ##
-## The code is split so that a later glm() fit can reuse it:
+## The fitting code uses xtx only through its exports (so that it can live
+## in a package of its own): base generics on designs and columns (`%*%`,
+## arithmetic, sum(), is.finite(), ...), the column helpers (col_sums(),
+## col_ifelse(), col_const(), ...) and the layers of the input stage and the
+## least squares:
 ##
-##  * design_problem():  (remote_fit.R) design, response, weights and
-##                       offset, as lm() and glm() extract them;
+##  * design_problem():    design, response, weights and offset, as lm()
+##                         and glm() extract them;
 ##  * xtx_fit_check():     checks of the response, weights and offset;
-##  * xtx_fit_groups():    rows that share a design pattern (the dedup
-##                       machinery of algebra.R);
-##  * xtx_fit_suffstats(): per-pattern sufficient statistics of the response;
-##  * xtx_fit_ls():        a weighted least squares fit with lm()'s pivoting,
-##                       on rows or on patterns;
+##  * design_patterns():   the rows that share a design pattern and their
+##                         sufficient statistics (compression);
+##  * design_wls():        a weighted least squares fit with lm()'s pivoting,
+##                         on rows or on patterns;
 ##  * xtx_fit_vcov():      the covariance matrix with NA for aliased columns;
 ##  * xtx_fit_spec():      the design specification kept for predictions.
 
@@ -153,7 +156,7 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
     fit$na.action <- xtx_na_result(P)
     fit$offset_call <- P$offset_call
     fit$env <- P$env
-    fit$method <- switch(xtx_engine(P$x), sql = if (fit$compressed) "patterns" else "SQL moments")
+    fit$method <- if (inherits(P$x, "xtx_remote")) { if (fit$compressed) "patterns" else "SQL moments" }
     ## (the rows of a remote design, which later queries reuse)
     if (!is.null(fit$method)) assign("n", fit$rows, envir = P$x$cache)
     ## (the data of a remote fit or a fit on a design: always kept)
@@ -164,15 +167,17 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
 
 ## Response minus offset, and checks of the response, weights and offset,
 ## as lm.wfit() makes them, in one pass (one query remotely). Columns:
-## numeric vectors in memory, remote columns (primitives.R).
+## numeric vectors in memory, remote columns (design_column()).
 xtx_fit_check <- function(n, y, weights, offset) {
     if (n == 0L) stop("0 (non-NA) cases", call. = FALSE)
     z <- if (is.null(offset)) y else y - offset
     w <- weights
-    s <- xtx_c_sums(xtx_c_count(xtx_c_is_finite(z), negate = TRUE),
-                  if (!is.null(w)) xtx_c_count(xtx_c_present(w) & w >= 0, negate = TRUE) else 0,
-                  if (!is.null(w)) xtx_c_count(abs(w) == Inf) else 0,
-                  if (!is.null(w)) xtx_c_count(w != 0) else 1)
+    ## (logical columns that are never NA count their TRUE rows; w != 0
+    ## is read only once no weight is missing)
+    s <- unname(col_sums(!is.finite(z),
+                         if (!is.null(w)) !(!is.na(w) & w >= 0) else 0,
+                         if (!is.null(w)) is.infinite(w) else 0,
+                         if (!is.null(w)) w != 0 else 1))
     if (s[1L] > 0) stop("NA/NaN/Inf in 'y'", call. = FALSE)
     if (s[2L] > 0) stop("missing or negative weights not allowed", call. = FALSE)
     if (s[3L] > 0) stop("NA/NaN/Inf in 'weights'", call. = FALSE)
@@ -183,12 +188,22 @@ xtx_fit_check <- function(n, y, weights, offset) {
 ## Number of observations (non-zero weights) and sum of the log weights.
 xtx_fit_wstats <- function(n, weights) {
     if (is.null(weights)) return(list(nobs = n, sumlogw = 0))
-    s <- xtx_c_sums(xtx_c_count(weights != 0), xtx_c_ifelse(weights != 0, log(weights), 0))
+    s <- unname(col_sums(weights != 0, col_ifelse(weights != 0, log(weights), 0)))
     list(nobs = s[1L], sumlogw = s[2L])
 }
 
+## The patterns of a fit (design_patterns() on the columns of x, already
+## checked), with the weights NULL for an unweighted fit whose patterns all
+## have weight 1; NULL without compression.
+xtx_fit_patterns <- function(x, z, w, compress, keys = NULL, fit = "lm") {
+    g <- design_patterns(x, z, w, keys = keys, compress = compress, fit = fit, check = FALSE)
+    if (is.null(g)) return(NULL)
+    if (is.null(w) && all(g$w == 1)) g["w"] <- list(NULL)
+    g
+}
+
 ## A least squares fit of z (response minus offset) on x with weights w,
-## compressed to patterns when xtx_fit_groups() finds them.
+## compressed to patterns when design_patterns() finds them.
 xtx_fit_lm <- function(x, y, weights = NULL, offset = NULL, compress = "auto",
                      tol = 1e-07, intercept = TRUE) {
     n <- nrow(x)
@@ -198,13 +213,14 @@ xtx_fit_lm <- function(x, y, weights = NULL, offset = NULL, compress = "auto",
     ## integers, as in lm() (remote counts are doubles)
     if (is.double(nobs) && nobs < .Machine$integer.max) nobs <- as.integer(nobs)
     sumlogw <- st$sumlogw
-    g <- xtx_p_patterns(x, z, weights, compress)
+    g <- xtx_fit_patterns(x, z, weights, compress)
     if (!is.null(g)) {
         xs <- g$x
         zs <- g$z
         ws <- g$w
         within <- g$within
-        n <- g$rows
+        ## (an integer in memory, as nrow())
+        n <- if (is.integer(n)) as.integer(g$rows) else g$rows
     } else {
         xs <- x
         zs <- z
@@ -212,7 +228,7 @@ xtx_fit_lm <- function(x, y, weights = NULL, offset = NULL, compress = "auto",
         ## (rows with zero weight count for nothing in the sums)
         within <- 0
     }
-    out <- xtx_fit_ls(xs, zs, ws, tol, intercept)
+    out <- design_wls(xs, zs, ws, tol, intercept)
     out$rss <- out$rss + within
     out$df.residual <- nobs - out$rank
     ## as many observations as coefficients: the fit is exact, and what is
@@ -268,8 +284,8 @@ xtx_fit_data <- function(object, what) {
 
 ## X b for a design, without the offset.
 xtx_fit_linpred <- function(object, D) {
-    if (ncol(D) == 0L) return(xtx_c_const(D, 0))
-    xtx_p_mult(D, xtx_fit_beta(object))
+    if (ncol(D) == 0L) return(col_const(D, 0))
+    drop(D %*% xtx_fit_beta(object))
 }
 
 #' @export
@@ -305,9 +321,9 @@ xtx_fit_print_coefmat <- function(x, digits, signif.stars, ...) {
 ## rows (`method`).
 xtx_fit_print_rows <- function(x, prefix = "\n") {
     if (isTRUE(x$compressed)) {
-        cat(sprintf("%sFitted on %s design patterns of %s rows.\n", prefix, xtx_fmt_count(x$patterns), xtx_fmt_count(x$rows)))
+        cat(sprintf("%sFitted on %s design patterns of %s rows.\n", prefix, xtx_fit_fmt_count(x$patterns), xtx_fit_fmt_count(x$rows)))
     } else if (!is.null(x$method)) {
-        cat(sprintf("%sFitted from %s of %s rows.\n", prefix, x$method, xtx_fmt_count(x$rows)))
+        cat(sprintf("%sFitted from %s of %s rows.\n", prefix, x$method, xtx_fit_fmt_count(x$rows)))
     }
 }
 
@@ -371,7 +387,7 @@ residuals.xtx_lm <- function(object, ...) {
     rw <- xtx_fit_predict_rows(object, NULL, NULL, list(), "residuals()")
     xb <- xtx_fit_linpred(object, rw$D)
     fit <- if (is.null(rw$off)) xb else xb + rw$off
-    xtx_p_output(rw$D, list(.fitted = fit, .resid = rw$z - xb), design = TRUE,
+    design_output(rw$D, list(.fitted = fit, .resid = rw$z - xb), design = TRUE,
                memory = function(d) xtx_na_pad(rw$na_act, d$.resid, rw$D, stats::naresid))
 }
 
@@ -431,7 +447,7 @@ xtx_fit_predict_rows <- function(object, newdata, na.action, dots, what) {
 ## the `table`, `sql`, `engine` and `chunk_size` of `dots`).
 xtx_fit_newdata <- function(object, newdata, na.action = stats::na.pass, dots = list()) {
     if (is.null(object$spec)) stop("This design cannot be applied to new data.", call. = FALSE)
-    if (xtx_is_remote_source(newdata))
+    if (is_remote_source(newdata))
         return(xtx_remote_new_offset(object, do.call(design_matrix, c(list(object$spec, newdata, na.action = na.action), dots))))
     if (length(dots)) stop("Unknown arguments: ", paste(names(dots), collapse = ", "), call. = FALSE)
     D <- design_matrix(object$spec, newdata, na.action = na.action)
@@ -439,7 +455,7 @@ xtx_fit_newdata <- function(object, newdata, na.action = stats::na.pass, dots = 
 }
 
 ## Predictions, standard errors, intervals and non-estimable cases of a
-## linear fit, computed once on the primitives (primitives.R); the result is
+## linear fit, computed once on columns (both backends); the result is
 ## a vector, matrix or list in memory (as predict.lm()), a table remotely.
 xtx_fit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, dots = list(),
                           se.fit = FALSE, interval = "none", level = 0.95,
@@ -461,9 +477,9 @@ xtx_fit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, 
         } else {
             checkmate::assert_number(tol, lower = 0)
             nonest <- xtx_fit_nonestimable(object, D, tol)
-            k <- xtx_colsum(xtx_c_count(nonest))
+            k <- sum(nonest, na.rm = TRUE)
             if (startsWith(rankdeficient, "NA")) {
-                fit <- xtx_c_ifelse(nonest, NA_real_, fit)
+                fit <- col_ifelse(nonest, NA_real_, fit)
                 if (rankdeficient == "NAwarn" && k > 0)
                     warning(gettextf("%s: NAs produced for non-estimable cases", msg), call. = FALSE)
                 nonest <- NULL
@@ -481,7 +497,7 @@ xtx_fit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, 
         res_var <- object$sigma^2
         V <- xtx_fit_vcov(object, 1)
         V[is.na(V)] <- 0
-        ip <- if (ncol(D) == 0L) xtx_c_const(fit, 0) else xtx_p_quad(D, V)
+        ip <- if (ncol(D) == 0L) col_const(fit, 0) else quadratic_diagonal(D, V)
         se <- sqrt(ip * res_var)
         if (interval != "none") {
             pred_var <- res_var
@@ -513,7 +529,7 @@ xtx_fit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, 
     if (!is.null(nonest)) cols$.nonestim <- nonest
     na_act <- rw$na_act
     ## remotely a table; in memory, the values of predict.lm()
-    xtx_p_output(D, cols, na = na_act,
+    design_output(D, cols, na = na_act,
                attrs = if (se.fit) list(df = object$df.residual, residual.scale = object$sigma),
                memory = function(d) {
         rn <- dimnames(D)[[1L]]
@@ -547,10 +563,10 @@ xtx_fit_nonestimable <- function(object, D, tol) {
     B <- matrix(0, p, p - k)
     B[object$pivot, ] <- nb
     ## (a logical vector in memory, a logical column remotely)
-    Xb <- xtx_p_mult(D, B)
-    Xb_norm <- sqrt(xtx_c_rowsums(Xb * Xb))
+    Xb <- D %*% B
+    Xb_norm <- sqrt(rowSums(Xb * Xb))
     ## (remotely both products bind together, at the first use of the result)
-    X_norm <- sqrt(xtx_p_quad(D, diag(1, p)))
+    X_norm <- sqrt(quadratic_diagonal(D, diag(1, p)))
     tol * X_norm <= Xb_norm
 }
 
@@ -641,3 +657,6 @@ print.summary.xtx_lm <- function(x, digits = max(3L, getOption("digits") - 3L),
     cat("\n")
     invisible(x)
 }
+
+## 1234567 as "1,234,567" (counts in printed output)
+xtx_fit_fmt_count <- function(n) format(n, big.mark = ",", scientific = FALSE, trim = TRUE)
