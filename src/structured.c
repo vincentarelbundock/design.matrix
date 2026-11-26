@@ -45,19 +45,20 @@
    Leaves one object PROTECTed (the coerced variables). */
 void build_sctx(sctx *S, SEXP setup, SEXP vars)
 {
-    SEXP factors = VECTOR_ELT(setup, 0), contr1 = VECTOR_ELT(setup, 1),
-	contr2 = VECTOR_ELT(setup, 2);
-    const int *nlevs = INTEGER(VECTOR_ELT(setup, 3)),
-	*columns = INTEGER(VECTOR_ELT(setup, 4)),
-	*count = INTEGER(VECTOR_ELT(setup, 5));
-    int rhs_response = asInteger(VECTOR_ELT(setup, 6)),
-	intercept = asInteger(VECTOR_ELT(setup, 7)),
-	nVar = asInteger(VECTOR_ELT(setup, 10)),
-	nterms = asInteger(VECTOR_ELT(setup, 11));
+    SEXP factors = VECTOR_ELT(setup, DM_SETUP_FACTORS),
+	contr1 = VECTOR_ELT(setup, DM_SETUP_CONTR1),
+	contr2 = VECTOR_ELT(setup, DM_SETUP_CONTR2);
+    const int *nlevs = INTEGER(VECTOR_ELT(setup, DM_SETUP_NLEVS)),
+	*columns = INTEGER(VECTOR_ELT(setup, DM_SETUP_COLUMNS)),
+	*count = INTEGER(VECTOR_ELT(setup, DM_SETUP_COUNT));
+    int rhs_response = asInteger(VECTOR_ELT(setup, DM_SETUP_RHS_RESPONSE)),
+	intercept = asInteger(VECTOR_ELT(setup, DM_SETUP_INTERCEPT)),
+	nVar = asInteger(VECTOR_ELT(setup, DM_SETUP_NVAR)),
+	nterms = asInteger(VECTOR_ELT(setup, DM_SETUP_NTERMS));
     const int *fac = nterms > 0 ? INTEGER(factors) : NULL;
     SEXP variable = PROTECT(dm_vars(setup, vars));
     S->n = nrows(VECTOR_ELT(vars, 0));
-    S->p = LENGTH(VECTOR_ELT(setup, 8));
+    S->p = LENGTH(VECTOR_ELT(setup, DM_SETUP_XNAMES));
     S->t = (sterm *) R_alloc(nterms + 1, sizeof(sterm));
     S->nt = 0;
     int off = 0;
@@ -115,6 +116,19 @@ void build_sctx(sctx *S, SEXP setup, SEXP vars)
 	    T->L = T->kc = T->ns = -1;
 	}
     }
+}
+
+/* Offset of numeric column u (u < T->ns) of term T among the term's
+   columns: u's digits in the radices nnc (first fastest) times the
+   numeric components' strides. */
+static inline int num_offset(const sterm *T, int u)
+{
+    int part = 0;
+    for (int q = 0; q < T->nn; q++) {
+	part += (u % T->nnc[q]) * T->nstride[q];
+	u /= T->nnc[q];
+    }
+    return part;
 }
 
 /* Combined levels and numeric products of rows i0 .. i0 + nb - 1:
@@ -300,14 +314,8 @@ SEXP dm_struct_info(SEXP setup, SEXP vars)
 		fpart += (rem % T->fnc[f]) * T->fstride[f];
 		rem /= T->fnc[f];
 	    }
-	    for (int u = 0; u < T->ns; u++) {
-		int r3 = u, npart = 0;
-		for (int q = 0; q < T->nn; q++) {
-		    npart += (r3 % T->nnc[q]) * T->nstride[q];
-		    r3 /= T->nnc[q];
-		}
-		m[u + k * T->ns] = npart + fpart;
-	    }
+	    for (int u = 0; u < T->ns; u++)
+		m[u + k * T->ns] = num_offset(T, u) + fpart;
 	}
     }
     UNPROTECT(2);
@@ -484,14 +492,7 @@ static void gram_block(const sterm *A, const sterm *B, int same, const double *M
 	for (int side = 0; side < 2; side++) {
 	    const sterm *T = side ? B : A;
 	    int *np = side ? npt : nps;
-	    for (int u = 0; u < T->ns; u++) {
-		int r3 = u, part = 0;
-		for (int q = 0; q < T->nn; q++) {
-		    part += (r3 % T->nnc[q]) * T->nstride[q];
-		    r3 /= T->nnc[q];
-		}
-		np[u] = part;
-	    }
+	    for (int u = 0; u < T->ns; u++) np[u] = num_offset(T, u);
 	}
 	int l0 = ml[0];
 	const double *sc0 = scl[0];
@@ -599,14 +600,7 @@ static void gram_block(const sterm *A, const sterm *B, int same, const double *M
     for (int side = 0; side < 2; side++) {
 	const sterm *T = side ? B : A;
 	int *np = side ? npt : nps;
-	for (int u = 0; u < T->ns; u++) {
-	    int r3 = u, part = 0;
-	    for (int q = 0; q < T->nn; q++) {
-		part += (r3 % T->nnc[q]) * T->nstride[q];
-		r3 /= T->nnc[q];
-	    }
-	    np[u] = part;
-	}
+	for (int u = 0; u < T->ns; u++) np[u] = num_offset(T, u);
     }
     R_xlen_t *ro = (R_xlen_t *) R_alloc((size_t) R, sizeof(R_xlen_t)),
 	*co = (R_xlen_t *) R_alloc((size_t) R, sizeof(R_xlen_t));
