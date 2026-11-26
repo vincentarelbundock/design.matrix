@@ -118,6 +118,19 @@ void build_sctx(sctx *S, SEXP setup, SEXP vars)
     }
 }
 
+/* Offset of numeric column u (u < T->ns) of term T among the term's
+   columns: u's digits in the radices nnc (first fastest) times the
+   numeric components' strides. */
+static inline int num_offset(const sterm *T, int u)
+{
+    int part = 0;
+    for (int q = 0; q < T->nn; q++) {
+	part += (u % T->nnc[q]) * T->nstride[q];
+	u /= T->nnc[q];
+    }
+    return part;
+}
+
 /* Combined levels and numeric products of rows i0 .. i0 + nb - 1:
    N[u * BLOCK + r] (column-major, leading dimension BLOCK), so that every
    loop over rows reads contiguous memory and the dense terms' columns can
@@ -301,14 +314,8 @@ SEXP dm_struct_info(SEXP setup, SEXP vars)
 		fpart += (rem % T->fnc[f]) * T->fstride[f];
 		rem /= T->fnc[f];
 	    }
-	    for (int u = 0; u < T->ns; u++) {
-		int r3 = u, npart = 0;
-		for (int q = 0; q < T->nn; q++) {
-		    npart += (r3 % T->nnc[q]) * T->nstride[q];
-		    r3 /= T->nnc[q];
-		}
-		m[u + k * T->ns] = npart + fpart;
-	    }
+	    for (int u = 0; u < T->ns; u++)
+		m[u + k * T->ns] = num_offset(T, u) + fpart;
 	}
     }
     UNPROTECT(2);
@@ -485,14 +492,7 @@ static void gram_block(const sterm *A, const sterm *B, int same, const double *M
 	for (int side = 0; side < 2; side++) {
 	    const sterm *T = side ? B : A;
 	    int *np = side ? npt : nps;
-	    for (int u = 0; u < T->ns; u++) {
-		int r3 = u, part = 0;
-		for (int q = 0; q < T->nn; q++) {
-		    part += (r3 % T->nnc[q]) * T->nstride[q];
-		    r3 /= T->nnc[q];
-		}
-		np[u] = part;
-	    }
+	    for (int u = 0; u < T->ns; u++) np[u] = num_offset(T, u);
 	}
 	int l0 = ml[0];
 	const double *sc0 = scl[0];
@@ -600,14 +600,7 @@ static void gram_block(const sterm *A, const sterm *B, int same, const double *M
     for (int side = 0; side < 2; side++) {
 	const sterm *T = side ? B : A;
 	int *np = side ? npt : nps;
-	for (int u = 0; u < T->ns; u++) {
-	    int r3 = u, part = 0;
-	    for (int q = 0; q < T->nn; q++) {
-		part += (r3 % T->nnc[q]) * T->nstride[q];
-		r3 /= T->nnc[q];
-	    }
-	    np[u] = part;
-	}
+	for (int u = 0; u < T->ns; u++) np[u] = num_offset(T, u);
     }
     R_xlen_t *ro = (R_xlen_t *) R_alloc((size_t) R, sizeof(R_xlen_t)),
 	*co = (R_xlen_t *) R_alloc((size_t) R, sizeof(R_xlen_t));
