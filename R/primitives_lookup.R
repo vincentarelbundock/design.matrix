@@ -196,7 +196,8 @@ dmc_dense_codes <- function(key) {
                                   paste(sprintf("%s AS k%d", sql, seq_along(sql)), collapse = ", "),
                                   frame$src$select, frame$filter))
     for (j in seq_along(lv)) if (is.factor(lv[[j]])) lv[[j]] <- as.character(lv[[j]])
-    lv <- lv[do.call(order, unname(as.list(lv))), , drop = FALSE]
+    ## (sorted as in memory, dm_fe_code(): radix order, strings in the C locale)
+    lv <- lv[do.call(order, c(unname(as.list(lv)), method = "radix")), , drop = FALSE]
     rownames(lv) <- NULL
     codes <- dmc_lookup(seq_len(nrow(lv)), key, lv)
     list(codes = dmc_codes(codes, nrow(lv)), levels = lv)
