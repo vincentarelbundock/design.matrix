@@ -1,6 +1,6 @@
 # Regression tests for the findings of Roborev job 1262.
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 close_na <- function(a, b, tol = 1e-10) {
     a <- unname(as.matrix(a)); b <- unname(as.matrix(b))
@@ -27,7 +27,7 @@ expect_identical(w, "problem with term 2 in model.matrix: no columns are assigne
 # 2. The fast path evaluates the variables together, as model.frame() does
 dd <- data.frame(x = rnorm(10), z = rnorm(10))
 fo <- ~ I({ z <- x + 1; z }) + z
-p <- design.matrix:::design_plan(fo, dd)
+p <- xtx:::design_plan(fo, dd)
 nd <- dd[3:6, ]
 ref <- stats::model.matrix(p$terms, stats::model.frame(p$terms, nd, xlev = p$xlevels,
                            na.action = stats::na.pass), contrasts.arg = p$contrasts)
@@ -84,9 +84,9 @@ expect_true(close_na(quadratic_diagonal(D7, V7), rowSums((X7 %*% V7) * X7)))
 
 # 8. Formula subclasses with their own method keep their dispatch, and
 #    omitted arguments stay omitted
-registerS3method("model.matrix", "dm_test_formula",
+registerS3method("model.matrix", "xtx_test_formula",
                  function(object) "custom method", envir = globalenv())
-fo8 <- structure(y ~ x, class = c("dm_test_formula", "formula"))
+fo8 <- structure(y ~ x, class = c("xtx_test_formula", "formula"))
 expect_identical(as.matrix(design_matrix(fo8)), "custom method")
 expect_identical(design_matrix(fo8)$path, "dense")
 fit <- stats::lm(x ~ z, data = dd)

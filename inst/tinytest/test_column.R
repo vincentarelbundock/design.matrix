@@ -3,7 +3,7 @@
 ## col_compute(), as.data.frame(), print/format and x[, j]. The same chain of public calls
 ## gives the same values in memory and on DuckDB. Only exported functions.
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 same <- function(a, b, tol = 1e-8) isTRUE(all.equal(as.vector(a), as.vector(b), tolerance = tol))
 
@@ -63,7 +63,7 @@ by_id <- function(col) {
 
 ## ---- the class, printing ----
 pr <- D %*% b
-expect_inherits(pr, "design_column")
+expect_inherits(pr, "xtx_column")
 ## dim() is c(n, k), length() n * k, as for the matrix in memory
 expect_equal(dim(pr), c(n, 1))
 expect_equal(dim(pr), dim(M %*% b))
@@ -89,7 +89,7 @@ expect_true(same(sort(as.matrix(pr)[, 1]), sort(drop(M %*% b))))
 
 ## ---- design_column() ----
 y <- design_column(D, "y")
-expect_inherits(y, "design_column")
+expect_inherits(y, "xtx_column")
 expect_identical(names(as.data.frame(y, keep = "id")), c("id", "y"))
 expect_true(same(by_id(y), d$y))
 expect_true(same(by_id(design_column(D, "flag")), as.numeric(d$flag)))
@@ -107,7 +107,7 @@ expect_identical(names(as.data.frame(y, keep = "y", nm = "y2")), c("y", "y2"))
 ## ---- chains: the same values in memory and remotely ----
 cm <- chain(M)
 cr <- chain(D)
-expect_inherits(cr$r2, "design_column")
+expect_inherits(cr$r2, "xtx_column")
 expect_true(same(by_id(cr$eta), cm$eta))
 expect_true(same(by_id(cr$r), cm$r))
 expect_true(same(by_id(cr$r2), cm$r2))
@@ -119,14 +119,14 @@ expect_true(same(by_id(chain_cols(D)), chain_cols(M)))
 expect_true(same(by_id(chain_quad(D)), chain_quad(M)))
 
 ## ---- rowSums, rowMeans, quadratic_diagonal, several columns ----
-expect_inherits(rowSums(D), "design_column")
+expect_inherits(rowSums(D), "xtx_column")
 expect_true(same(by_id(rowSums(D)), rowSums(M)))
 expect_true(same(by_id(rowMeans(D)), rowMeans(M)))
 expect_true(same(by_id(rowSums("w" * D)), rowSums(d$w * M)))
 expect_identical(names(as.data.frame(rowSums(D))), ".rowsum")
 expect_identical(names(as.data.frame(rowMeans(D))), ".rowmean")
 q <- quadratic_diagonal(D, V)
-expect_inherits(q, "design_column")
+expect_inherits(q, "xtx_column")
 expect_identical(names(as.data.frame(q)), ".quad")
 expect_true(same(by_id(q), quadratic_diagonal(M, V)))
 expect_true(same(by_id(sqrt(quadratic_diagonal("w" * D, V))), sqrt(quadratic_diagonal(d$w * M, V))))
@@ -223,10 +223,10 @@ expect_true(same(by_id(P12[, 1] + P12[, 2]), two(M)))
 
 ## ---- col_compute(name =): a permanent table, aligned with the design ----
 r <- design_column(D, "y") - D %*% b
-rt <- col_compute(r, name = "dm_test_resid")
-expect_inherits(rt, "design_column")
-expect_true(DBI::dbExistsTable(con, "dm_test_resid"))
-tab <- DBI::dbReadTable(con, "dm_test_resid")
+rt <- col_compute(r, name = "xtx_test_resid")
+expect_inherits(rt, "xtx_column")
+expect_true(DBI::dbExistsTable(con, "xtx_test_resid"))
+tab <- DBI::dbReadTable(con, "xtx_test_resid")
 expect_equal(nrow(tab), n)
 expect_true(all(c("id", "y", "x", ".value") %in% names(tab)))
 tab <- tab[order(tab$id), ]
@@ -236,25 +236,25 @@ expect_true(same(by_id(rt), d$y - drop(M %*% b)))
 expect_true(same(by_id(rt - r), rep(0, n)))
 expect_true(same(by_id(rt + D %*% b2), d$y - drop(M %*% b) + drop(M %*% b2)))
 ## an existing table: an error, unless overwrite = TRUE
-expect_error(col_compute(r, name = "dm_test_resid"), "already exists")
-rt2 <- col_compute(2 * r, name = "dm_test_resid", overwrite = TRUE)
+expect_error(col_compute(r, name = "xtx_test_resid"), "already exists")
+rt2 <- col_compute(2 * r, name = "xtx_test_resid", overwrite = TRUE)
 expect_true(same(by_id(rt2), 2 * (d$y - drop(M %*% b))))
 ## value names: the label, `nm`, and a clash with a column of the data
-expect_error(col_compute(design_column(D, "y"), name = "dm_test_y"), "already has a column `y`")
-expect_false(DBI::dbExistsTable(con, "dm_test_y"))
-yt <- col_compute(design_column(D, "y"), name = "dm_test_y", nm = "y_copy")
-expect_true("y_copy" %in% DBI::dbListFields(con, "dm_test_y"))
+expect_error(col_compute(design_column(D, "y"), name = "xtx_test_y"), "already has a column `y`")
+expect_false(DBI::dbExistsTable(con, "xtx_test_y"))
+yt <- col_compute(design_column(D, "y"), name = "xtx_test_y", nm = "y_copy")
+expect_true("y_copy" %in% DBI::dbListFields(con, "xtx_test_y"))
 expect_identical(names(as.data.frame(yt)), "y_copy")
-pt <- col_compute(D %*% B, name = "dm_test_p")
-expect_true(all(c("b1", "b2") %in% DBI::dbListFields(con, "dm_test_p")))
+pt <- col_compute(D %*% B, name = "xtx_test_p")
+expect_true(all(c("b1", "b2") %in% DBI::dbListFields(con, "xtx_test_p")))
 expect_true(same(by_id(pt), M %*% B))
-expect_error(col_compute(r, name = "dm_test_r2", nm = c("a", "b")), "nm")
+expect_error(col_compute(r, name = "xtx_test_r2", nm = c("a", "b")), "nm")
 expect_error(col_compute(r, name = c("a", "b")), "name")
 ## a subset design: only its rows
 Dsub <- D[DBI::SQL("x > 0"), ]
-ct <- col_compute(design_column(Dsub, "y") * 2, name = "dm_test_sub")
-expect_equal(nrow(DBI::dbReadTable(con, "dm_test_sub")), sum(d$x > 0))
-for (tn in c("dm_test_resid", "dm_test_y", "dm_test_p", "dm_test_sub")) DBI::dbRemoveTable(con, tn)
+ct <- col_compute(design_column(Dsub, "y") * 2, name = "xtx_test_sub")
+expect_equal(nrow(DBI::dbReadTable(con, "xtx_test_sub")), sum(d$x > 0))
+for (tn in c("xtx_test_resid", "xtx_test_y", "xtx_test_p", "xtx_test_sub")) DBI::dbRemoveTable(con, tn)
 
 ## ---- rows of the design ----
 i <- d$x > 0

@@ -2,20 +2,20 @@
 #
 # Test tiers. By default (R CMD check, CRAN, quick iterations) the suite
 # runs a fast tier: every feature in memory and on a DuckDB table (the SQL
-# backend). DESIGN_MATRIX_TESTS=full runs the full tier: also on Parquet
+# backend). XTX_TESTS=full runs the full tier: also on Parquet
 # files, every case of the parity loops remotely (both compression modes,
 # all fixed-effect cases), the random-formula sweeps at full length and the
 # slow regression tests. Run it before every merge, the files in parallel
 # (4 worker processes, each limited to a share of the threads):
-#   DESIGN_MATRIX_TESTS=full Rscript -e 'cl <- parallel::makeCluster(4); invisible(parallel::clusterEvalQ(cl, { library(design.matrix); options(design.matrix.threads = max(1L, parallel::detectCores() %/% 4L)) })); tinytest::run_test_dir(normalizePath("inst/tinytest"), cluster = cl)'
+#   XTX_TESTS=full Rscript -e 'cl <- parallel::makeCluster(4); invisible(parallel::clusterEvalQ(cl, { library(xtx); options(xtx.threads = max(1L, parallel::detectCores() %/% 4L)) })); tinytest::run_test_dir(normalizePath("inst/tinytest"), cluster = cl)'
 # or one file after another (slower):
-#   DESIGN_MATRIX_TESTS=full Rscript -e 'tinytest::run_test_dir("inst/tinytest")'
+#   XTX_TESTS=full Rscript -e 'tinytest::run_test_dir("inst/tinytest")'
 # tests/tinytest.R (R CMD check) runs the files in parallel the same way;
-# see there for the number of processes (DESIGN_MATRIX_TEST_NCPU).
+# see there for the number of processes (XTX_TEST_NCPU).
 # Files shorten their loops with `full_tests` and `remote_modes`; a file
 # that only belongs to the full tier starts with
-#   if (!full_tests) exit_file("full tier only: set DESIGN_MATRIX_TESTS=full")
-full_tests <- identical(Sys.getenv("DESIGN_MATRIX_TESTS"), "full")
+#   if (!full_tests) exit_file("full tier only: set XTX_TESTS=full")
+full_tests <- identical(Sys.getenv("XTX_TESTS"), "full")
 # remote data sources a test runs on: a DuckDB table, plus Parquet in full
 remote_modes <- if (full_tests) c("sql", "parquet") else "sql"
 
@@ -29,14 +29,14 @@ remote_modes <- if (full_tests) c("sql", "parquet") else "sql"
 # per process, in the connection's temp catalog). A
 # file that needs a connection of its own (test_query_counts.R counts every
 # statement) opens one with DBI::dbConnect().
-if (!exists(".dm_test_db", envir = globalenv(), inherits = FALSE)) {
-    assign(".dm_test_db", new.env(), envir = globalenv())
-    reg.finalizer(get(".dm_test_db", envir = globalenv()), function(e) {
+if (!exists(".xtx_test_db", envir = globalenv(), inherits = FALSE)) {
+    assign(".xtx_test_db", new.env(), envir = globalenv())
+    reg.finalizer(get(".xtx_test_db", envir = globalenv()), function(e) {
         if (!is.null(e$con) && DBI::dbIsValid(e$con)) DBI::dbDisconnect(e$con)
     }, onexit = TRUE)
 }
 test_con <- function() {
-    st <- get(".dm_test_db", envir = globalenv())
+    st <- get(".xtx_test_db", envir = globalenv())
     if (is.null(st$con) || !DBI::dbIsValid(st$con)) {
         st$con <- DBI::dbConnect(duckdb::duckdb())
         st$home <- DBI::dbGetQuery(st$con, "SELECT current_database() AS db")$db
@@ -45,13 +45,13 @@ test_con <- function() {
     }
     test_con_done(st$con)
     st$i <- st$i + 1L
-    st$db <- sprintf("dm_test_%d", st$i)
+    st$db <- sprintf("xtx_test_%d", st$i)
     DBI::dbExecute(st$con, sprintf("ATTACH ':memory:' AS %s", st$db))
     DBI::dbExecute(st$con, sprintf("USE %s", st$db))
     st$con
 }
 test_con_done <- function(con) {
-    st <- get(".dm_test_db", envir = globalenv())
+    st <- get(".xtx_test_db", envir = globalenv())
     if (is.null(st$db)) return(invisible())
     DBI::dbExecute(con, sprintf("USE %s", DBI::dbQuoteIdentifier(con, st$home)))
     DBI::dbExecute(con, sprintf("DETACH DATABASE IF EXISTS %s", st$db))
@@ -165,7 +165,7 @@ write_fe_source <- function(con, dir, d, name) {
 # Count the SQL statements an expression sends to the database: every call
 # of DBI::dbGetQuery, dbExecute, dbSendQuery, dbSendStatement, dbWriteTable,
 # dbAppendTable and duckdb::duckdb_register, wherever it comes from (unlike
-# the option design.matrix.remote_debug, which only sees dm_query()). A call
+# the option xtx.remote_debug, which only sees xtx_query()). A call
 # made while another traced call runs (a DBI method built on another
 # generic) is not counted again. Returns list(value, count); the functions
 # are untraced on exit, even on error.

@@ -1,5 +1,5 @@
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 # The column-structured kernels (used for finite designs) agree with the
 # dense computation and with the row kernels, up to rounding.
@@ -9,7 +9,7 @@ close_to <- function(a, b, tol = 1e-10) {
         isTRUE(all(abs(a - b) <= tol * pmax(1, abs(b))))
 }
 rows_only <- function(expr) {
-    old <- options(design.matrix.structured = FALSE)
+    old <- options(xtx.structured = FALSE)
     on.exit(options(old))
     expr
 }
@@ -23,7 +23,7 @@ for (r in 1:150) {
                   error = function(e) NULL)
     if (is.null(D) || ncol(D) == 0L) next
     X <- as.matrix(D)
-    if (!all(is.finite(X)) || !design.matrix:::dm_struct_ok(D)) next
+    if (!all(is.finite(X)) || !xtx:::xtx_struct_ok(D)) next
     used <- used + 1
     info <- paste(r, deparse(fo))
     n <- nrow(X); p <- ncol(X)
@@ -47,11 +47,11 @@ expect_true(used > 50)
 d <- data.frame(x = c(1, Inf, 3, 4), f = factor(c("a", "b", NA, "a")), y = 1:4)
 p <- design_matrix(y ~ x + f, d[c(1, 4), ])
 D <- design_matrix(p, d)
-expect_false(design.matrix:::dm_struct_ok(D))
+expect_false(xtx:::xtx_struct_ok(D))
 D2 <- design_matrix(y ~ x * f, data.frame(x = c(1e200, 2, 3), f = gl(3, 1), y = 1:3))
-expect_false(design.matrix:::dm_struct_ok(D2))
+expect_false(xtx:::xtx_struct_ok(D2))
 D3 <- design_matrix(y ~ x * f, data.frame(x = c(1, 2, 3, 4), f = gl(2, 2), y = 1:4))
-expect_true(design.matrix:::dm_struct_ok(D3))
+expect_true(xtx:::xtx_struct_ok(D3))
 X3 <- as.matrix(D3)
 w <- c(1, NA, 2, 3)
 expect_identical(is.na(crossprod(D3, w * D3)), is.na(crossprod(X3, w * X3)))
@@ -60,7 +60,7 @@ s <- c(1, Inf, 1, 1)
 expect_identical(unname(is.nan((s * D3) %*% c(1, 1, 1, 1))), unname(is.nan((s * X3) %*% c(1, 1, 1, 1))))
 
 # the option turns the structured kernels off
-expect_false(rows_only(design.matrix:::dm_struct_ok(D3)))
+expect_false(rows_only(xtx:::xtx_struct_ok(D3)))
 
 # The model frame skips na.omit()'s copy when nothing is missing; results
 # stay identical to model.matrix() under every standard na.action, with and
@@ -114,7 +114,7 @@ d7 <- data.frame(f1 = factor(c("1", "2", "3"), levels = lv), f2 = factor(c("3", 
                  f3 = factor(c("2", "3", "1"), levels = lv))
 cm <- matrix(seq_len(1300) / 1300, ncol = 1)
 D7 <- design_matrix(~ f1 * f2 * f3, d7, contrasts.arg = list(f1 = cm, f2 = cm, f3 = cm))
-expect_false(design.matrix:::dm_struct_ok(D7))
+expect_false(xtx:::xtx_struct_ok(D7))
 X7 <- as.matrix(D7)
 expect_equal(unname(crossprod(D7)), unname(crossprod(X7)))
 
@@ -142,7 +142,7 @@ expect_true(crossprod(1e-100 * D2b, 1e-250) != 0)
 d3 <- data.frame(y = rnorm(4), x = c(1, 2, 3, 4) * 1e-200, f = factor(c("a", "b", "a", "b")))
 cm3 <- matrix(c(-1e100, 1e100), ncol = 1)
 D3 <- design_matrix(y ~ x:f, d3, contrasts.arg = list(f = cm3))
-expect_false(design.matrix:::dm_struct_ok(D3))
+expect_false(xtx:::xtx_struct_ok(D3))
 X3 <- as.matrix(D3)
 expect_equal(qr(D3)$rank, qr(X3)$rank)
 
@@ -180,7 +180,7 @@ for (n in c(30, 400)) {
         info <- paste(n, deparse(fo), paste(names(ca), collapse = ","))
         D <- suppressWarnings(design_matrix(fo, d, contrasts.arg = ca))
         X <- suppressWarnings(model.matrix(fo, d, contrasts.arg = ca))
-        expect_true(design.matrix:::dm_struct_ok(D), info = info)
+        expect_true(xtx:::xtx_struct_ok(D), info = info)
         expect_true(close_to(crossprod(D), crossprod(X)), info = paste(info, "gram"))
         expect_true(close_to(crossprod(D), rows_only(crossprod(D))), info = paste(info, "gram vs rows"))
         expect_true(isSymmetric(unname(crossprod(D))), info = paste(info, "symmetric"))
@@ -192,7 +192,7 @@ for (n in c(30, 400)) {
         B <- matrix(rnorm(2 * ncol(X)), ncol(X))
         expect_true(close_to(D %*% B, X %*% B), info = paste(info, "mult"))
         expect_true(close_to(colSums(D, group = g), rowsum(X, g)), info = paste(info, "group sums"))
-        gs <- design.matrix:::dmp_colsums_groups(w * D, list(design.matrix:::dmc_codes(g, 5L)))[[1L]]
+        gs <- xtx:::xtx_p_colsums_groups(w * D, list(xtx:::xtx_c_codes(g, 5L)))[[1L]]
         expect_true(close_to(gs$S, rowsum(w * X, g)), info = paste(info, "structured group sums"))
         expect_true(close_to(quadratic_diagonal(D, diag(ncol(X))), rowSums(X^2)), info = paste(info, "quad"))
     }

@@ -9,7 +9,7 @@
 
 if (!requireNamespace("fixest", quietly = TRUE)) exit_file("fixest not installed")
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 remote <- requireNamespace("DBI", quietly = TRUE) && requireNamespace("duckdb", quietly = TRUE)
 
 TOL <- 1e-8
@@ -217,7 +217,7 @@ if (remote) {
 # Methods --------------------------------------------------------------------
 a <- design_glm(y ~ x1 + x2 | a + b, poisson, d, vcov = ~cl, control = CTRL)
 b <- fx_fit(y ~ x1 + x2 | a + b, d, poisson, vcov = ~cl)
-expect_inherits(a, "design_glm_fe")
+expect_inherits(a, "xtx_glm_fe")
 expect_equal(unname(summary(a)$coefficients), unname(fixest::coeftable(b)[, 1:4]), tolerance = TOL)
 expect_equal(AIC(a), AIC(b), tolerance = TOL)
 # fixef(): differences within a connected set are those of fixest
@@ -258,7 +258,7 @@ if (remote) {
 if (remote && full_tests) {
     qlen <- integer()
     withCallingHandlers({
-        op <- options(design.matrix.remote_debug = TRUE)
+        op <- options(xtx.remote_debug = TRUE)
         fp <- design_glm(yb ~ x1 + x2 | a + b + c, binomial("probit"), con, table = "dglm")
         options(op)
     }, message = function(m) {

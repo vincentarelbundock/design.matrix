@@ -4,10 +4,10 @@
 # number of threads; with one thread they are those of the single-threaded
 # kernels; with different numbers of threads they agree up to rounding.
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 old_threads <- design_threads()
-old_opts <- options(design.matrix.dedup = FALSE)
+old_opts <- options(xtx.dedup = FALSE)
 
 set.seed(42)
 n <- 40000
@@ -27,7 +27,7 @@ Yna[c(11, 30001), 2] <- NA
 reductions <- function() {
     out <- list()
     for (st in c(TRUE, FALSE)) {
-        options(design.matrix.structured = st)
+        options(xtx.structured = st)
         for (fo in list(~ x * f1 + f2, ~ f1 * f2, ~ x + z + x:z, ~ z:f1:f2 + x)) {
             D <- design_matrix(fo, d)
             k <- paste(if (st) "structured" else "row", deparse(fo))
@@ -45,7 +45,7 @@ reductions <- function() {
             out[[paste(k, "%*%")]] <- D %*% seq_len(ncol(D))
         }
     }
-    options(design.matrix.structured = TRUE)
+    options(xtx.structured = TRUE)
     out
 }
 
@@ -70,8 +70,8 @@ if (at_home() && file.exists(ref_file)) {
 }
 
 # several threads (when OpenMP is available)
-if (.Call(design.matrix:::C_dm_omp_max_threads) > 1L) {
-    nmax <- min(4L, .Call(design.matrix:::C_dm_omp_max_threads))
+if (.Call(xtx:::C_xtx_omp_max_threads) > 1L) {
+    nmax <- min(4L, .Call(xtx:::C_xtx_omp_max_threads))
     for (nt in unique(c(2L, nmax))) {
         design_threads(nt)
         ra <- reductions()

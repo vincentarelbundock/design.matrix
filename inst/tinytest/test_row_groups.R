@@ -1,7 +1,7 @@
 source("helpers.R")
-library(design.matrix)
-design_row_groups <- design.matrix:::design_row_groups
-op <- options(design.matrix.dedup = "auto")
+library(xtx)
+design_row_groups <- xtx:::design_row_groups
+op <- options(xtx.dedup = "auto")
 
 same_partition <- function(a, b) identical(a$map, b$map) && identical(a$first, b$first)
 
@@ -26,15 +26,15 @@ invisible(design_row_groups(X0)); invisible(design_row_groups(X1))
 b <- rnorm(ncol(X0), sd = 0.3)
 e0 <- drop(X0 %*% b); e1 <- drop(X1 %*% b)  # scales are functions of the row
 J <- stats::dlogis(e1) * X1 - stats::dlogis(e0) * X0
-derived <- design.matrix:::dm_groups_from_designs(J)
+derived <- xtx:::xtx_groups_from_designs(J)
 expect_false(is.null(derived))
 J_hash <- stats::dlogis(e1) * X1 - stats::dlogis(e0) * X0
-direct <- do.call(.Call, c(list(design.matrix:::C_dm_row_groups), design.matrix:::jac_args(J_hash), list(NULL, 1)))
+direct <- do.call(.Call, c(list(xtx:::C_xtx_row_groups), xtx:::jac_args(J_hash), list(NULL, 1)))
 names(direct) <- c("map", "first")
 expect_true(same_partition(derived, direct))
 V <- crossprod(matrix(rnorm(ncol(X0)^2), ncol(X0)))
 q_seeded <- quadratic_diagonal(J, V)
-op2 <- options(design.matrix.dedup = FALSE)
+op2 <- options(xtx.dedup = FALSE)
 q_plain <- quadratic_diagonal(stats::dlogis(e1) * X1 - stats::dlogis(e0) * X0, V)
 options(op2)
 expect_true(strict_identical(q_seeded, q_plain))
@@ -42,8 +42,8 @@ expect_true(strict_identical(q_seeded, q_plain))
 # a scale that differs within a design group: not derived, hashed instead
 s_noise <- stats::dlogis(e0) + seq_len(nrow(d)) * 1e-9
 J2 <- s_noise * X0
-expect_null(design.matrix:::dm_groups_from_designs(J2))
-op2 <- options(design.matrix.dedup = FALSE)
+expect_null(xtx:::xtx_groups_from_designs(J2))
+op2 <- options(xtx.dedup = FALSE)
 ref2 <- quadratic_diagonal(s_noise * X0, V)
 options(op2)
 expect_true(strict_identical(quadratic_diagonal(J2, V), ref2))
@@ -51,7 +51,7 @@ expect_true(strict_identical(quadratic_diagonal(J2, V), ref2))
 # dense designs are refused
 fit <- stats::lm(y ~ x1, data = base)
 expect_error(design_row_groups(design_matrix(fit)), "formula or a plan")
-expect_error(design_row_groups(1), "design")
+expect_error(design_row_groups(1), "xtx_matrix")
 options(op)
 
 # Preserve first-occurrence ids as the hash table grows and rehashes.

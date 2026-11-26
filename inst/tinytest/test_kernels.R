@@ -1,5 +1,5 @@
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 # compare numbers to rounding, with NA/NaN in the same places
 close_enough <- function(a, b, tol = 1e-10) {

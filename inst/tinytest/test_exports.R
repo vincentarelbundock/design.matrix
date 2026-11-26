@@ -2,9 +2,9 @@
 ## and design_patterns(). Only exported functions are called here (and base
 ## R / stats), in memory and on a DuckDB table.
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
-expect_true(all(c("design_parts", "design_plan", "design_patterns") %in% getNamespaceExports("design.matrix")))
+expect_true(all(c("design_parts", "design_plan", "design_patterns") %in% getNamespaceExports("xtx")))
 
 same <- function(a, b, tol = 1e-9) isTRUE(all.equal(unname(a), unname(b), tolerance = tol))
 
@@ -58,7 +58,7 @@ X <- model.matrix(fo, d)
 ## the public list
 p <- design_patterns(D, d$y, compress = TRUE)
 expect_identical(names(p), c("x", "z", "w", "within", "rows", "keys"))
-expect_inherits(p$x, "design_matrix")
+expect_inherits(p$x, "xtx_matrix")
 expect_identical(colnames(as.matrix(p$x)), colnames(X))
 expect_true(nrow(p$x) < n)
 expect_true(is.double(p$w) && length(p$w) == nrow(p$x))
@@ -121,7 +121,7 @@ if (requireNamespace("duckdb", quietly = TRUE) && requireNamespace("DBI", quietl
 
     pr <- design_patterns(R, "y", compress = TRUE)
     expect_identical(names(pr), names(p))
-    expect_inherits(pr$x, "design_matrix")
+    expect_inherits(pr$x, "xtx_matrix")
     expect_identical(colnames(as.matrix(pr$x)), colnames(X))
     expect_true(same_patterns(sorted(pr), sorted(p)))
 
@@ -171,7 +171,7 @@ fo2 <- y ~ poly(x, 2) + f
 
 ## on a formula: the matrix of model.matrix() on the training terms
 pf <- design_plan(fo2, tr)
-expect_inherits(pf, "design_plan")
+expect_inherits(pf, "xtx_plan")
 mf <- model.frame(pf$terms, nd, xlev = pf$xlevels)
 expect_true(strict_identical(as.matrix(design_matrix(pf, nd)),
                              model.matrix(pf$terms, mf, contrasts.arg = pf$contrasts)))
@@ -184,7 +184,7 @@ expect_true(all(c("terms", "xlevels", "contrasts") %in% names(parts)))
 expect_inherits(parts$terms, "terms")
 expect_identical(parts$xlevels, fl$xlevels)
 pl <- design_plan(fl)
-expect_inherits(pl, "design_plan")
+expect_inherits(pl, "xtx_plan")
 expect_true(same(drop(as.matrix(design_matrix(pl, nd)) %*% coef(fl)), predict(fl, nd), 1e-12))
 fg <- glm(yb ~ poly(x, 2) + f, binomial, tr)
 expect_identical(design_parts(fg)$xlevels, fg$xlevels)
@@ -202,7 +202,7 @@ design_parts.toyfit <- function(model, ...) {
 .S3method("design_parts", "toyfit", design_parts.toyfit)
 expect_identical(design_parts(toy)$contrasts, list(f = "contr.sum"))
 pt <- design_plan(toy)
-expect_inherits(pt, "design_plan")
+expect_inherits(pt, "xtx_plan")
 Xt <- as.matrix(design_matrix(pt, nd))
 expect_true(same(c(Xt), c(model.matrix(~ log(x) + f, nd, contrasts.arg = list(f = "contr.sum")))))
 expect_identical(colnames(Xt), c("(Intercept)", "log(x)", "f1", "f2"))

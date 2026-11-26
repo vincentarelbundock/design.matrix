@@ -6,18 +6,18 @@
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
-dmp_column <- design.matrix:::dmp_column
-dmp_collect <- design.matrix:::dmp_collect
-dmc_cbind <- design.matrix:::dmc_cbind
-dmc_ifelse <- design.matrix:::dmc_ifelse
-dmc_count <- design.matrix:::dmc_count
-dmc_present <- design.matrix:::dmc_present
-dmc_is_finite <- design.matrix:::dmc_is_finite
-dmc_key <- design.matrix:::dmc_key
-dmc_complete <- design.matrix:::dmc_complete
-dm_colsum <- design.matrix:::dm_colsum
+xtx_p_column <- xtx:::xtx_p_column
+xtx_p_collect <- xtx:::xtx_p_collect
+xtx_c_cbind <- xtx:::xtx_c_cbind
+xtx_c_ifelse <- xtx:::xtx_c_ifelse
+xtx_c_count <- xtx:::xtx_c_count
+xtx_c_present <- xtx:::xtx_c_present
+xtx_c_is_finite <- xtx:::xtx_c_is_finite
+xtx_c_key <- xtx:::xtx_c_key
+xtx_c_complete <- xtx:::xtx_c_complete
+xtx_colsum <- xtx:::xtx_colsum
 
 vals <- c(NA, NaN, Inf, -Inf, 0, 1, -2.5)
 g <- expand.grid(a = vals, b = vals)
@@ -27,14 +27,14 @@ d <- data.frame(id = seq_len(nrow(g)), y = 1, a = g$a, b = g$b,
 con <- test_con()
 DBI::dbWriteTable(con, "d", d)
 R <- design_matrix(y ~ id, con, table = "d")
-col <- function(v) dmp_column(R, sprintf('CAST(s."%s" AS DOUBLE)', v))
+col <- function(v) xtx_p_column(R, sprintf('CAST(s."%s" AS DOUBLE)', v))
 id <- col("id")
 a <- col("a")
 b <- col("b")
 
 ## a remote column in the order of d's rows, as doubles (logicals as 0/1)
 get <- function(x) {
-    m <- dmp_collect(dmc_cbind(id, x))
+    m <- xtx_p_collect(xtx_c_cbind(id, x))
     m[order(m[, 1]), 2]
 }
 ## the data went in with NA and NaN distinct
@@ -42,7 +42,7 @@ expect_identical(get(a), d$a)
 expect_identical(get(b), d$b)
 
 check <- function(remote, local, what) {
-    expect_true(inherits(remote, "design_column"), info = what)
+    expect_true(inherits(remote, "xtx_column"), info = what)
     expect_identical(get(remote), as.double(local), info = what)
 }
 
@@ -52,11 +52,11 @@ check(is.nan(a), is.nan(d$a), "is.nan")
 check(is.finite(a), is.finite(d$a), "is.finite")
 check(is.infinite(a), is.infinite(d$a), "is.infinite")
 check(!is.na(a), !is.na(d$a), "!is.na")
-check(dmc_present(a), !is.na(d$a), "dmc_present")
-check(dmc_is_finite(a), is.finite(d$a), "dmc_is_finite")
+check(xtx_c_present(a), !is.na(d$a), "xtx_c_present")
+check(xtx_c_is_finite(a), is.finite(d$a), "xtx_c_is_finite")
 ## on a multi-column column, one column each
-ab <- dmc_cbind(a, b)
-m <- dmp_collect(dmc_cbind(id, is.na(ab), is.infinite(ab)))
+ab <- xtx_c_cbind(a, b)
+m <- xtx_p_collect(xtx_c_cbind(id, is.na(ab), is.infinite(ab)))
 m <- m[order(m[, 1]), -1]
 expect_identical(unname(m), unname(1 * cbind(is.na(d$a), is.na(d$b), is.infinite(d$a), is.infinite(d$b))))
 
@@ -101,24 +101,24 @@ check(a^2, d$a^2, "^2")
 ## pmax/pmin (design.matrix#2tr6): NA or NaN where either side is missing,
 ## y's where both are (R's pmax takes the later missing argument), with
 ## nothing platform-dependent
-dmc_pmax <- design.matrix:::dmc_pmax
-dmc_pmin <- design.matrix:::dmc_pmin
-check(dmc_pmax(a, b), pmax(d$a, d$b), "pmax")
-check(dmc_pmin(a, b), pmin(d$a, d$b), "pmin")
-check(dmc_pmax(b, a), pmax(d$b, d$a), "pmax swapped")
-check(dmc_pmin(b, a), pmin(d$b, d$a), "pmin swapped")
+xtx_c_pmax <- xtx:::xtx_c_pmax
+xtx_c_pmin <- xtx:::xtx_c_pmin
+check(xtx_c_pmax(a, b), pmax(d$a, d$b), "pmax")
+check(xtx_c_pmin(a, b), pmin(d$a, d$b), "pmin")
+check(xtx_c_pmax(b, a), pmax(d$b, d$a), "pmax swapped")
+check(xtx_c_pmin(b, a), pmin(d$b, d$a), "pmin swapped")
 for (k in list(0, 1, -2.5, Inf, -Inf, NA, NaN)) {
     lab <- format(k)
-    check(dmc_pmax(a, k), pmax(d$a, k), paste("pmax", lab))
-    check(dmc_pmin(a, k), pmin(d$a, k), paste("pmin", lab))
-    check(dmc_pmax(k, a), pmax(k, d$a), paste(lab, "pmax"))
-    check(dmc_pmin(k, a), pmin(k, d$a), paste(lab, "pmin"))
+    check(xtx_c_pmax(a, k), pmax(d$a, k), paste("pmax", lab))
+    check(xtx_c_pmin(a, k), pmin(d$a, k), paste("pmin", lab))
+    check(xtx_c_pmax(k, a), pmax(k, d$a), paste(lab, "pmax"))
+    check(xtx_c_pmin(k, a), pmin(k, d$a), paste(lab, "pmin"))
 }
 ## nested, as the glm links clamp
-check(dmc_pmin(dmc_pmax(a, -1), 1), pmin(pmax(d$a, -1), 1), "clamp")
-check(dmc_pmax(0.001, dmc_pmin(0.999, a)), pmax(0.001, pmin(0.999, d$a)), "clamp constant first")
+check(xtx_c_pmin(xtx_c_pmax(a, -1), 1), pmin(pmax(d$a, -1), 1), "clamp")
+check(xtx_c_pmax(0.001, xtx_c_pmin(0.999, a)), pmax(0.001, pmin(0.999, d$a)), "clamp constant first")
 ## on a multi-column column, one column each
-m <- dmp_collect(dmc_cbind(id, dmc_pmax(ab, 0), dmc_pmin(ab, 0)))
+m <- xtx_p_collect(xtx_c_cbind(id, xtx_c_pmax(ab, 0), xtx_c_pmin(ab, 0)))
 m <- m[order(m[, 1]), -1]
 expect_identical(unname(m), unname(cbind(pmax(d$a, 0), pmax(d$b, 0), pmin(d$a, 0), pmin(d$b, 0))))
 
@@ -132,7 +132,7 @@ check(sign(-a), sign(-d$a), "sign of -a")
 ## missing, R's result (x + y) depends on the platform: only missingness
 ## compared there.
 checkm <- function(remote, local, miss, what) {
-    expect_true(inherits(remote, "design_column"), info = what)
+    expect_true(inherits(remote, "xtx_column"), info = what)
     r <- get(remote)
     expect_identical(r[!miss], as.double(local)[!miss], info = what)
     expect_true(all(is.na(r[miss])), info = what)
@@ -178,7 +178,7 @@ tens <- col("id") * 0 + 10
 check(log(a, tens), lg(d$a, 10), "log column base 10")
 check(log(a, tens - 8), lg(d$a, 2), "log column base 2")
 ## a multi-column column: one column each
-m <- dmp_collect(dmc_cbind(id, log(ab, 2), log(ab)))
+m <- xtx_p_collect(xtx_c_cbind(id, log(ab, 2), log(ab)))
 m <- m[order(m[, 1]), -1]
 expect_identical(unname(m), unname(cbind(lg(d$a, 2), lg(d$b, 2), lg(d$a), lg(d$b))))
 expect_error(log(a, c(2, 3)), "one number or a column")
@@ -188,23 +188,23 @@ check(log1p(a), suppressWarnings(log1p(d$a)), "log1p")
 lpv <- c(-1, -1.5, 1e-10, -1e-12, 3e-17, 2.5, 1e300)
 DBI::dbWriteTable(con, "lp", data.frame(y = 1, id = seq_along(lpv), v = lpv))
 Rp <- design_matrix(y ~ id, con, table = "lp")
-m <- dmp_collect(dmc_cbind(dmp_column(Rp, 's."id"'), log1p(dmp_column(Rp, 's."v"'))))
+m <- xtx_p_collect(xtx_c_cbind(xtx_p_column(Rp, 's."id"'), log1p(xtx_p_column(Rp, 's."v"'))))
 expect_equal(m[order(m[, 1]), 2], suppressWarnings(log1p(lpv)), tolerance = 1e-15, info = "log1p near 0")
 
 ## ifelse and counts: a NA test gives NA (ifelse) and does not count
-check(dmc_ifelse(a > 0, a, 7), dmc_ifelse(d$a > 0, d$a, 7), "ifelse")
-check(dmc_ifelse(a == b, 1, 0), dmc_ifelse(d$a == d$b, 1, 0), "ifelse ==")
-check(dmc_count(a > b), dmc_count(d$a > d$b), "count")
-check(dmc_count(a > b, negate = TRUE), dmc_count(d$a > d$b, negate = TRUE), "count negate")
-expect_equal(dm_colsum(dmc_count(a != 0)), sum(dmc_count(d$a != 0)))
-expect_equal(dm_colsum(dmc_count(is.na(a))), sum(is.na(d$a)))
+check(xtx_c_ifelse(a > 0, a, 7), xtx_c_ifelse(d$a > 0, d$a, 7), "ifelse")
+check(xtx_c_ifelse(a == b, 1, 0), xtx_c_ifelse(d$a == d$b, 1, 0), "ifelse ==")
+check(xtx_c_count(a > b), xtx_c_count(d$a > d$b), "count")
+check(xtx_c_count(a > b, negate = TRUE), xtx_c_count(d$a > d$b, negate = TRUE), "count negate")
+expect_equal(xtx_colsum(xtx_c_count(a != 0)), sum(xtx_c_count(d$a != 0)))
+expect_equal(xtx_colsum(xtx_c_count(is.na(a))), sum(is.na(d$a)))
 
 ## complete keys: NaN is missing in both (complete.cases); a text or
 ## integer key only NA
 for (vars in list("a", c("a", "b"), "f", c("f", "i"), c("f", "b"))) {
-    kl <- dmc_key(NULL, vars, data = d)
-    kr <- dmc_key(R, vars)
-    check(dmc_complete(kr), dmc_complete(kl), paste("not_na", paste(vars, collapse = ",")))
+    kl <- xtx_c_key(NULL, vars, data = d)
+    kr <- xtx_c_key(R, vars)
+    check(xtx_c_complete(kr), xtx_c_complete(kl), paste("not_na", paste(vars, collapse = ",")))
 }
 
 test_con_done(con)

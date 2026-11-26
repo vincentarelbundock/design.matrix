@@ -1,10 +1,10 @@
-# The solver of the reduced FE system (R/fe.R: dm_fe_system(), dm_fe_solve(),
-# dm_fe_pcg()) on small replicas of the worker x firm panels of the fixest
+# The solver of the reduced FE system (R/fe.R: xtx_fe_system(), xtx_fe_solve(),
+# xtx_fe_pcg()) on small replicas of the worker x firm panels of the fixest
 # benchmarks: "simple" (a random firm per row: high mobility, the reduced
 # system near dense, applied matrix-free) and "difficult" (firms assigned
 # round robin: low mobility, the reduced system sparse and ill conditioned,
 # formed and preconditioned by IC(0)). Each path is forced in turn
-# (design.matrix.fe_form_max = 0: matrix-free; Inf: formed) and compared
+# (xtx.fe_form_max = 0: matrix-free; Inf: formed) and compared
 # with feols() at a tight fixef.tol, in memory and on remote data, without
 # warnings. With 132 firms (even) and 10 years, round robin makes firm
 # parity determine year parity: the FE are collinear beyond the references
@@ -12,7 +12,7 @@
 
 if (!requireNamespace("fixest", quietly = TRUE)) exit_file("fixest not installed")
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 remote <- requireNamespace("DBI", quietly = TRUE) && requireNamespace("duckdb", quietly = TRUE)
 
 TOL <- 1e-8
@@ -49,8 +49,8 @@ warns <- function(expr) {
 if (remote) con <- test_con()
 
 f3 <- y ~ x1 + x2 | indiv_id + year + firm_id
-paths <- list(matfree = list(design.matrix.fe_solver = "pcg", design.matrix.fe_form_max = 0),
-              formed = list(design.matrix.fe_solver = "pcg", design.matrix.fe_form_max = Inf),
+paths <- list(matfree = list(xtx.fe_solver = "pcg", xtx.fe_form_max = 0),
+              formed = list(xtx.fe_solver = "pcg", xtx.fe_form_max = Inf),
               auto = list())
 for (type in c("simple", "difficult")) {
     d <- dgp(30360, type)
@@ -87,7 +87,7 @@ for (type in c("simple", "difficult")) {
     }
 }
 # the default paths: the simple panel matrix-free, the difficult one formed
-op <- options(design.matrix.fe_solver = "pcg")
+op <- options(xtx.fe_solver = "pcg")
 expect_false(design_lm(f3, dgp(2e5, "simple"))$fe_info$formed)
 a <- design_lm(f3, dgp(30360, "difficult"))
 expect_true(a$fe_info$formed)
@@ -96,7 +96,7 @@ options(op)
 
 # the dense solver (pivoted Cholesky) on the singular system of the
 # difficult panel: one more level dropped, and the exact rank of the FE
-op <- options(design.matrix.fe_solver = "dense")
+op <- options(xtx.fe_solver = "dense")
 d <- dgp(30360, "difficult")
 a <- design_lm(f3, d)
 options(op)
@@ -109,8 +109,8 @@ expect_equal(unname(coef(a)), unname(coef(b)), tolerance = TOL)
 d <- dgp(30360, "difficult")
 for (f in list(f3, y ~ x1 + x2 | indiv_id + firm_id)) {
     b <- fixest::feols(f, d, fixef.tol = 1e-11, fixef.iter = 1e5, notes = FALSE, warn = FALSE)
-    op <- options(design.matrix.fe_solver = "pcg", design.matrix.fe_precond = "jacobi",
-                  design.matrix.fe_form_max = Inf)
+    op <- options(xtx.fe_solver = "pcg", xtx.fe_precond = "jacobi",
+                  xtx.fe_form_max = Inf)
     r <- warns(design_lm(f, d))
     options(op)
     a <- r$value
@@ -120,42 +120,42 @@ for (f in list(f3, y ~ x1 + x2 | indiv_id + firm_id)) {
 }
 
 # Options
-op <- options(design.matrix.fe_form_max = -1)
+op <- options(xtx.fe_form_max = -1)
 expect_error(design_lm(f3, d), "fe_form_max")
 options(op)
-op <- options(design.matrix.fe_precond = "amg")
+op <- options(xtx.fe_precond = "amg")
 expect_error(design_lm(f3, d), "fe_precond")
 options(op)
 
-# Warm start: dm_fe_apply() from the solution of a nearby system gives the
+# Warm start: xtx_fe_apply() from the solution of a nearby system gives the
 # same solution in fewer iterations, on both paths
-ns <- asNamespace("design.matrix")
+ns <- asNamespace("xtx")
 d <- dgp(30360, "simple")
 codes <- lapply(d[c("indiv_id", "year", "firm_id")], function(v) match(v, sort(unique(v))))
 G <- vapply(codes, max, 1L)
 gsum <- function(v) lapply(codes, function(cd) matrix(rowsum(v, cd, reorder = TRUE)[, 1L], ncol = 1L))
 for (fm in c(0, Inf)) {
-    opts <- ns$dm_fe_opts()
+    opts <- ns$xtx_fe_opts()
     opts$solver <- "pcg"
     opts$form_max <- fm
     for (w in list(rep(1, nrow(d)), runif(nrow(d), 0.5, 2))) {
         nk <- lapply(codes, function(cd) rowsum(w, cd, reorder = TRUE)[, 1L])
         crosstab <- function(a, b) Matrix::sparseMatrix(i = codes[[b]], j = codes[[a]], x = w,
                                                        dims = c(G[b], G[a]))
-        sys <- ns$dm_fe_system(G, nk, crosstab, opts)
+        sys <- ns$xtx_fe_system(G, nk, crosstab, opts)
         expect_equal(sys$info$formed, is.infinite(fm))
         v <- rnorm(nrow(d))
-        s0 <- ns$dm_fe_apply(sys, gsum(w * v))
+        s0 <- ns$xtx_fe_apply(sys, gsum(w * v))
         v2 <- v + 1e-3 * rnorm(nrow(d))
-        cold <- ns$dm_fe_apply(sys, gsum(w * v2))
-        warm <- ns$dm_fe_apply(sys, gsum(w * v2), Z0 = s0$Z)
+        cold <- ns$xtx_fe_apply(sys, gsum(w * v2))
+        warm <- ns$xtx_fe_apply(sys, gsum(w * v2), Z0 = s0$Z)
         expect_true(warm$info$iter < cold$info$iter, info = paste(fm, warm$info$iter, cold$info$iter))
         expect_equal(warm$Q, cold$Q, tolerance = 1e-10)
         ## (the FE values are unique up to normalization: compare their sums)
         fsum <- function(A) Reduce(`+`, lapply(seq_along(G), function(k) A[[k]][codes[[k]], 1L]))
         expect_equal(fsum(warm$A), fsum(cold$A), tolerance = 1e-8)
         ## a starting value worse than zero is dropped
-        bad <- ns$dm_fe_apply(sys, gsum(w * v2), Z0 = 1e6 * s0$Z + 1)
+        bad <- ns$xtx_fe_apply(sys, gsum(w * v2), Z0 = 1e6 * s0$Z + 1)
         expect_equal(bad$info$iter, cold$info$iter)
         expect_equal(fsum(bad$A), fsum(cold$A), tolerance = 1e-8)
     }

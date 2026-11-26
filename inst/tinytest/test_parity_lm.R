@@ -5,7 +5,7 @@
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 con <- test_con()
 same <- function(a, b, tol = 1e-7) isTRUE(all.equal(unname(a), unname(b), tolerance = tol))

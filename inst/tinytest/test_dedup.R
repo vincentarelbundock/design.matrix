@@ -1,10 +1,10 @@
 # Grouping identical rows never changes results.
 source("helpers.R")
-library(design.matrix)
-old <- options(design.matrix.dedup = "auto")
+library(xtx)
+old <- options(xtx.dedup = "auto")
 
 with_mode <- function(mode, f) {
-    op <- options(design.matrix.dedup = mode)
+    op <- options(xtx.dedup = mode)
     on.exit(options(op))
     f()
 }
@@ -67,7 +67,7 @@ expect_true(strict_identical(q, with_mode(FALSE, function() quadratic_diagonal(d
 options(old)
 
 # a costly kernel on distinct rows: attempted, given up, failure cached
-op <- options(design.matrix.dedup = "auto")
+op <- options(xtx.dedup = "auto")
 Dd <- design_matrix(~ poly(x, 3) * f, du, contrasts.arg = list(f = "contr.sum"))
 invisible(quadratic_diagonal(Dd, diag(ncol(Dd))))
 expect_identical(Dd$cache$groups, FALSE)

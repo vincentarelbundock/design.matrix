@@ -1,5 +1,5 @@
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 set.seed(3)
 d <- data.frame(x = rnorm(40), f = gl(4, 10), g = sample(c(3, 1, 2), 40, TRUE))
@@ -60,7 +60,7 @@ for (J in list(dense, -dense, w * dense, dense - w * dense)) {
 expect_equal(colSums(-D, group = d$g), rowsum(-X, d$g))
 expect_identical(dim(colSums(-D0, group = integer(0))), c(0L, ncol(D0)))
 for (X in list(matrix(.Machine$integer.max, 3L), matrix(TRUE, 3L))) {
-    dense <- design.matrix:::dm_dense_design(X)
+    dense <- xtx:::xtx_dense_design(X)
     expect_identical(unname(colSums(dense, group = c(1L, 1L, 1L))), matrix(sum(as.double(X))))
 }
 

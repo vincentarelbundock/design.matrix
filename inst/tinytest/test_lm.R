@@ -1,5 +1,5 @@
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 # design_lm() must agree with lm(): coefficients (with the same NA pattern
 # for aliased columns), vcov, sigma, degrees of freedom, number of
@@ -272,8 +272,8 @@ b <- design_lm(y ~ x * f, dd)
 expect_true(b$compressed)
 expect_true(same_fit(lm(y ~ x * f, dd), b))
 
-# compress = "auto" follows the option design.matrix.dedup
-op <- options(design.matrix.dedup = FALSE)
+# compress = "auto" follows the option xtx.dedup
+op <- options(xtx.dedup = FALSE)
 expect_false(design_lm(y ~ x * f, transform(dd))$compressed)
 options(op)
 
@@ -291,7 +291,7 @@ expect_true(grepl("fitted with type", msg))
 spec <- design_matrix(design_matrix(y ~ x + f, dt), newdata = NULL)
 expect_error(design_matrix(spec, nd_bad), msg, fixed = TRUE)
 expect_error(design_matrix(design_matrix(y ~ x + f, dt), nd_bad), msg, fixed = TRUE)
-expect_error(design_matrix(design.matrix:::design_plan(y ~ x + f, dt), nd_bad), msg, fixed = TRUE)
+expect_error(design_matrix(xtx:::design_plan(y ~ x + f, dt), nd_bad), msg, fixed = TRUE)
 fit <- design_lm(y ~ x + f, dt)
 expect_error(predict(fit, nd_bad), msg, fixed = TRUE)
 # the plan's fast path is learned from good data, then gets bad data

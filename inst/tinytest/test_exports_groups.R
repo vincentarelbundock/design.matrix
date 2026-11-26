@@ -5,7 +5,7 @@
 ## group_sums()/group_lookup()) that reproduces lm() with factor dummies on
 ## both backends. Only exported functions.
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 same <- function(a, b, tol = 1e-8) isTRUE(all.equal(as.vector(a), as.vector(b), tolerance = tol))
 
@@ -31,7 +31,7 @@ firms <- sort(unique(d$firm), method = "radix")
 
 ## ---- in memory ----
 g <- design_groups(M, d["firm"])
-expect_true(inherits(g, "design_groups"))
+expect_true(inherits(g, "xtx_groups"))
 expect_identical(g$G, 5L)
 expect_identical(firms[1L], "C")
 expect_identical(g$levels$firm, firms)
@@ -213,8 +213,8 @@ by_id <- function(col) {
 }
 
 gr <- design_groups(R, "firm")
-expect_true(inherits(gr, "design_groups"))
-expect_true(inherits(gr$codes, "design_column"))
+expect_true(inherits(gr, "xtx_groups"))
+expect_true(inherits(gr$codes, "xtx_column"))
 expect_identical(gr$G, g$G)
 expect_equal(gr$levels, g$levels)
 expect_identical(as.integer(by_id(gr$codes)), g$codes)
@@ -243,7 +243,7 @@ expect_true(same(group_sums(col_compute(design_column(R, "y") - R %*% b), gr),
 
 ## group_lookup
 lk <- group_lookup(vals, gr)
-expect_true(inherits(lk, "design_column"))
+expect_true(inherits(lk, "xtx_column"))
 expect_identical(by_id(lk), vals[g$codes])
 expect_identical(by_id(group_lookup(V2, gr)), unname(V2[g$codes, ]))
 expect_identical(by_id(group_lookup(c(1, NA, 3, 4, 5), gr)), c(1, NA, 3, 4, 5)[g$codes])

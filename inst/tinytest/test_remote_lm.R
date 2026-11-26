@@ -3,12 +3,12 @@
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 con <- test_con()
 same <- function(a, b, tol = 1e-7) isTRUE(all.equal(unname(a), unname(b), tolerance = tol))
 no_compress <- function(expr) {
-    op <- options(design.matrix.remote_compress = FALSE)
+    op <- options(xtx.remote_compress = FALSE)
     on.exit(options(op))
     expr
 }
@@ -74,7 +74,7 @@ for (spec in formulas) {
             } else {
                 design_lm(fo, con, table = "d", engine = engine, compress = cp)
             })
-            expect_inherits(f, "design_lm")
+            expect_inherits(f, "xtx_lm")
             expect_identical(f$compressed, spec$method == "patterns", info = info)
             check_fit(f, l, info)
         }
@@ -88,7 +88,7 @@ expect_false(design_lm(y ~ xd + f1, con, table = "d", compress = FALSE)$compress
 ## (every row is a distinct pattern: nothing to compress)
 expect_false(design_lm(y ~ xc + f1, con, table = "d", compress = TRUE)$compressed)
 ## with many patterns, "auto" gives up and TRUE compresses
-op <- options(design.matrix.remote_compress_max = 10)
+op <- options(xtx.remote_compress_max = 10)
 expect_false(design_lm(y ~ xd * f1, con, table = "d")$compressed)
 expect_true(design_lm(y ~ xd * f1, con, table = "d", compress = TRUE)$compressed)
 options(op)
@@ -96,7 +96,7 @@ check_fit(design_lm(y ~ xc + f1, con, table = "d", compress = TRUE), lm(y ~ xc +
 
 ## the "auto" decision: the queries it runs, and its outcome
 queries <- function(expr, ...) {
-    op <- options(design.matrix.remote_debug = TRUE, ...)
+    op <- options(xtx.remote_debug = TRUE, ...)
     on.exit(options(op))
     q <- character()
     v <- withCallingHandlers(expr, message = function(m) {
@@ -116,11 +116,11 @@ check_fit(q$value, lm(y ~ xc + f1, dd), "auto: continuous")
 ## 25 patterns, 0.8% of the rows, at most 20%), not of an lm (at most 0.1%)
 q <- queries(design_glm(y ~ xd7 + f1, gaussian, con, table = "d"))
 expect_true(q$value$compressed)
-expect_true(has(q, "TABLESAMPLE") && has(q, "approx_count_distinct(hash(") && has(q, "var_pop(__dm_y1)"))
+expect_true(has(q, "TABLESAMPLE") && has(q, "approx_count_distinct(hash(") && has(q, "var_pop(__xtx_y1)"))
 q <- queries(design_lm(y ~ xd7 + f1, con, table = "d"))
 expect_false(q$value$compressed)
 expect_true(has(q, "TABLESAMPLE") && has(q, "approx_count_distinct(hash("))
-expect_false(has(q, "var_pop(__dm_y1)"))
+expect_false(has(q, "var_pop(__xtx_y1)"))
 ## integer keys: no sample, the estimate decides
 q <- queries(design_glm(y ~ xd + f1, gaussian, con, table = "d"))
 expect_true(q$value$compressed)
@@ -128,16 +128,16 @@ expect_false(has(q, "TABLESAMPLE"))
 q <- queries(design_lm(y ~ id + f1, con, table = "d"))  # an integer id: one pattern per row
 expect_false(q$value$compressed)
 expect_true(has(q, "approx_count_distinct(hash("))
-expect_false(has(q, "var_pop(__dm_y1)"))
+expect_false(has(q, "var_pop(__xtx_y1)"))
 check_fit(q$value, lm(y ~ id + f1, dd), "auto: integer id")
 ## the threshold on the estimate
-q <- queries(design_lm(y ~ xd + f1, con, table = "d"), design.matrix.remote_compress_ratio = 1e-6)
+q <- queries(design_lm(y ~ xd + f1, con, table = "d"), xtx.remote_compress_ratio = 1e-6)
 expect_false(q$value$compressed)
-expect_false(has(q, "var_pop(__dm_y1)"))
+expect_false(has(q, "var_pop(__xtx_y1)"))
 ## the safety net after the GROUP BY: more than n / 2 patterns
-op <- options(design.matrix.remote_compress_ratio = 1, design.matrix.remote_compress_max = 1e9)
+op <- options(xtx.remote_compress_ratio = 1, xtx.remote_compress_max = 1e9)
 D <- design_matrix(y ~ id + f1, con, table = "d")
-expect_null(design.matrix:::dm_sql_patterns(D, "CAST(s.y AS DOUBLE)"))
+expect_null(xtx:::xtx_sql_patterns(D, "CAST(s.y AS DOUBLE)"))
 options(op)
 
 ## printing
@@ -186,8 +186,8 @@ expect_true(same(p2$.fitted[order(p2$id)], ref))
 ## compressed products agree with the uncompressed ones
 for (engine in "auto") {
     D <- suppressMessages(design_matrix(y ~ poly(xd, 2) * f2 + f1, con, table = "d", engine = engine))
-    m1 <- design.matrix:::dm_remote_moments(D, ys = "s.y", w = "s.w")
-    m0 <- no_compress(design.matrix:::dm_remote_moments(D, ys = "s.y", w = "s.w"))
+    m1 <- xtx:::xtx_remote_moments(D, ys = "s.y", w = "s.w")
+    m0 <- no_compress(xtx:::xtx_remote_moments(D, ys = "s.y", w = "s.w"))
     expect_true(same(m1$xtx, m0$xtx) && same(m1$xty, m0$xty) && same(m1$yty, m0$yty), info = engine)
     expect_equal(m1$n, m0$n, info = engine)
     expect_true(same(m1$sumw, m0$sumw), info = engine)
@@ -217,7 +217,7 @@ e <- unname(residuals(l))
 for (engine in "auto") {
     f <- suppressMessages(design_lm(y ~ xc + f1, con, table = "d", engine = engine))
     R <- residuals(f)
-    expect_inherits(R, "dm_remote")
+    expect_inherits(R, "xtx_remote")
     expect_true(same(crossprod(R, DBI::SQL('".resid" * ".resid"') * R), crossprod(X, e^2 * X)), info = engine)
     expect_true(same(colSums(".resid" * R, group = "cl"), rowsum(e * X, dk$cl)), info = engine)
 }

@@ -8,7 +8,7 @@
 
 if (!requireNamespace("fixest", quietly = TRUE)) exit_file("fixest not installed")
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 remote <- requireNamespace("DBI", quietly = TRUE) && requireNamespace("duckdb", quietly = TRUE)
 
 TOL <- 1e-8
@@ -119,7 +119,7 @@ check_fe(y ~ poly(x1, 2) + log(w) | b, d, src, cluster = ~b, info = "transformat
 
 # Every solver of the reduced system gives the same fit
 for (s in c("dense", "chol", "pcg")) {
-    op <- options(design.matrix.fe_solver = s)
+    op <- options(xtx.fe_solver = s)
     a <- design_lm(y ~ x1 + x2 | a + b + c, d, vcov = ~b)
     b <- fx_fit(y ~ x1 + x2 | a + b + c, d)
     expect_equal(a$fe_info$solver, s, info = s)
@@ -130,13 +130,13 @@ for (s in c("dense", "chol", "pcg")) {
 # conjugate gradients: on a reduced system that is formed, IC(0) (block
 # IC(0) for 3+ FE) by default, Jacobi on request; the same fit either way
 # (more in test_fe_solver.R)
-op <- options(design.matrix.fe_solver = "pcg", design.matrix.fe_precond = "jacobi")
+op <- options(xtx.fe_solver = "pcg", xtx.fe_precond = "jacobi")
 a <- design_lm(y ~ x1 + x2 | a + b, d)
 expect_equal(a$fe_info$precond, "jacobi")
 expect_equal(unname(coef(a)), unname(coef(fx_fit(y ~ x1 + x2 | a + b, d))), tolerance = TOL)
 options(op)
 for (f in list(y ~ x1 + x2 | a + b, y ~ x1 + x2 | a + b + c)) {
-    op <- options(design.matrix.fe_solver = "pcg", design.matrix.fe_precond = "ichol")
+    op <- options(xtx.fe_solver = "pcg", xtx.fe_precond = "ichol")
     a <- design_lm(f, d, vcov = ~a)
     options(op)
     expect_equal(a$fe_info$precond, "ichol")
@@ -144,7 +144,7 @@ for (f in list(y ~ x1 + x2 | a + b, y ~ x1 + x2 | a + b + c)) {
     expect_equal(unname(coef(a)), unname(coef(b)), tolerance = TOL)
     expect_equal(plain(vcov(a)), plain(vcov(b, cluster = ~a)), tolerance = TOL)
 }
-op <- options(design.matrix.fe_precond = "amg")
+op <- options(xtx.fe_precond = "amg")
 expect_error(design_lm(y ~ x1 | a + b, d), "fe_precond")
 options(op)
 
@@ -238,7 +238,7 @@ for (nm in names(fits)) {
 }
 # without centering, the covariance loses accuracy (refinement only fixes
 # the coefficients)
-op <- options(design.matrix.fe_center = FALSE)
+op <- options(xtx.fe_center = FALSE)
 a <- design_lm(y ~ x1 + x2 | a + b, dp)
 b <- fx_fit(y ~ x1 + x2 | a + b, dp)
 expect_equal(unname(coef(a)), unname(coef(b)), tolerance = 1e-6)
@@ -259,8 +259,8 @@ fits <- fe_fits(y ~ x1 + x2 | a + b, d, src, ~a)
 b <- fx_fit(y ~ x1 + x2 | a + b, d, cluster = ~a)
 for (nm in names(fits)) {
     a <- fits[[nm]]
-    expect_inherits(a, "design_lm_fe", info = nm)
-    expect_inherits(a, "design_lm", info = nm)
+    expect_inherits(a, "xtx_lm_fe", info = nm)
+    expect_inherits(a, "xtx_lm", info = nm)
     s <- summary(a)
     ct <- fixest::coeftable(b)
     expect_equal(unname(s$coefficients), unname(ct[, 1:4]), tolerance = 1e-7, info = nm)
@@ -383,7 +383,7 @@ for (nm in names(fo)) {
     }
 }
 
-# LM and gaussian GLM with FE: the fields they share (dm_fe_fields(),
+# LM and gaussian GLM with FE: the fields they share (xtx_fe_fields(),
 # design.matrix#62n9) are the same, and so is the clustered covariance
 # (fit$vcov of the LM, fit$vcov_cluster of the GLM)
 for (vc in list("iid", ~b)) {

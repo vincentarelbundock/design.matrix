@@ -1,5 +1,5 @@
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 # Row subsetting: design_matrix(plan, nd)[i, ] is design_matrix(plan, nd[i, ]),
 # in the strict sense, on fuzzed data and formulas with transformations,
@@ -68,7 +68,7 @@ dd <- fuzz_data(400, special = FALSE)
 dd <- dd[sample(400, 3000, TRUE), ]
 Dg <- design_matrix(design_matrix(y ~ f1 * f2 + o1, dd), dd)
 Vg <- diag(ncol(Dg))
-op <- options(design.matrix.dedup = TRUE)
+op <- options(xtx.dedup = TRUE)
 invisible(quadratic_diagonal(Dg, Vg))
 expect_true(is.list(Dg$cache$groups))
 ig <- c(sample(3000, 500), 7, 7)
@@ -76,12 +76,12 @@ sub <- Dg[ig, ]
 expect_true(is.list(sub$cache$groups))
 expect_identical(sub$cache$groups$map, match(Dg$cache$groups$map[ig], unique(Dg$cache$groups$map[ig])))
 q_carried <- quadratic_diagonal(sub, Vg)
-options(design.matrix.dedup = FALSE)
+options(xtx.dedup = FALSE)
 expect_true(strict_identical(q_carried, quadratic_diagonal(Dg[ig, ], Vg)))
 options(op)
 
 # dense designs (non-default model.matrix methods) are subset too
-Dd <- design.matrix:::dm_dense_design(model.matrix(~ x1 + f1, d))
+Dd <- xtx:::xtx_dense_design(model.matrix(~ x1 + f1, d))
 expect_true(strict_identical(as.matrix(Dd[c(2, 4), ]), model.matrix(~ x1 + f1, d[c(2, 4), ])))
 
 # the subset is a design of its own: reuse, and cached groups are not shared

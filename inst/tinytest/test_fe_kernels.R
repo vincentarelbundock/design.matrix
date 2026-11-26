@@ -1,10 +1,10 @@
 # The C kernels of the fixed-effect fits (src/fe.c) against the R code
 # they replace.
 source("helpers.R")
-library(design.matrix)
-ns <- asNamespace("design.matrix")
+library(xtx)
+ns <- asNamespace("xtx")
 
-# ---- FE codes (dm_fe_code()): direct indexing or hashing, rows per level
+# ---- FE codes (xtx_fe_code()): direct indexing or hashing, rows per level
 # the codes as sort(unique()) and match() give them (factors: level order)
 code_ref <- function(v) {
     if (is.factor(v)) {
@@ -32,7 +32,7 @@ cases <- list(
     many = sample(1e5, n, TRUE) + 0.5)
 for (nm in names(cases)) {
     v <- cases[[nm]]
-    a <- ns$dm_fe_code(v)
+    a <- ns$xtx_fe_code(v)
     b <- code_ref(v)
     expect_identical(a$codes, b$codes, info = nm)
     expect_identical(a$G, b$G, info = nm)
@@ -43,10 +43,10 @@ for (nm in names(cases)) {
 lat <- rawToChar(as.raw(c(0x63, 0x61, 0x66, 0xe9)))
 Encoding(lat) <- "latin1"
 enc <- c(enc2utf8(lat), lat, "tea")[sample(3, 300, TRUE)]
-expect_identical(ns$dm_fe_code(enc)[c("codes", "G", "levels")], code_ref(enc))
+expect_identical(ns$xtx_fe_code(enc)[c("codes", "G", "levels")], code_ref(enc))
 # interactions: the combined codes and their levels
 d <- data.frame(a = sample(c("u", "v", "w"), n, TRUE), b = sample(c(10.5, 2, 3), n, TRUE))
-ct <- ns$dm_fe_code_term(d, c("a", "b"))
+ct <- ns$xtx_fe_code_term(d, c("a", "b"))
 key <- paste(d$a, d$b)
 lv <- unique(d[order(d$a, d$b, method = "radix"), ])
 expect_identical(ct$levels$a[ct$codes], d$a)
@@ -55,8 +55,8 @@ expect_identical(nrow(unique(ct$levels)), ct$G)
 expect_identical(ct$n, tabulate(ct$codes, ct$G))
 expect_equal(unname(as.list(ct$levels)), unname(as.list(lv)), check.attributes = FALSE)
 
-# ---- sums of the FE fits on several threads (dm_fe_gsum(),
-# dm_fe_struct_gsum() with dense crosstabs, dm_fe_crosstabs())
+# ---- sums of the FE fits on several threads (xtx_fe_gsum(),
+# xtx_fe_struct_gsum() with dense crosstabs, xtx_fe_crosstabs())
 old_threads <- design_threads()
 set.seed(7)
 n <- 40000
@@ -64,7 +64,7 @@ fd <- data.frame(id = rep(1:4000, each = 10), t = rep(1:10, 4000), firm = sample
                  x1 = rnorm(n), x2 = rnorm(n), w = runif(n) + 0.1)
 fd$y <- fd$x1 - fd$x2 + rnorm(300)[fd$firm] + rnorm(4000)[fd$id] + rnorm(n)
 fd$cnt <- rpois(n, exp(0.3 * fd$x1))
-cds <- lapply(fd[c("id", "firm", "t")], function(v) ns$dmc_codes(v, max(v)))
+cds <- lapply(fd[c("id", "firm", "t")], function(v) ns$xtx_c_codes(v, max(v)))
 perm <- sample(n)
 
 # crosstabs: the sums of w by pair of levels, in row order, as the sparse
@@ -78,8 +78,8 @@ for (wt in list(NULL, fd$w)) for (pm in list(seq_len(n), perm)) {
     a <- cds$firm$codes[pm]
     bs <- list(cds$id$codes[pm], cds$t$codes[pm])
     ww <- if (!is.null(wt)) wt[pm]
-    c1 <- .Call(ns$C_dm_fe_crosstabs, a, bs, ww, 300L, c(4000L, 10L), 1L)
-    c4 <- .Call(ns$C_dm_fe_crosstabs, a, bs, ww, 300L, c(4000L, 10L), 4L)
+    c1 <- .Call(ns$C_xtx_fe_crosstabs, a, bs, ww, 300L, c(4000L, 10L), 1L)
+    c4 <- .Call(ns$C_xtx_fe_crosstabs, a, bs, ww, 300L, c(4000L, 10L), 4L)
     expect_true(strict_identical(c1, c4))
     for (k in 1:2) {
         r <- ct_ref(a, bs[[k]], ww)
@@ -95,28 +95,28 @@ for (wt in list(NULL, fd$w)) for (pm in list(seq_len(n), perm)) {
 X <- design_matrix(~ x1 + x2, fd)
 design_threads(1)
 for (wt in list(NULL, fd$w)) {
-    r <- ns$dm_gsums_memory(X, wt, cds, fd$y, list(c(2L, 3L), c(3L, 2L)))
-    s <- .Call(ns$C_dm_fe_crosstabs, cds$firm$codes, list(cds$t$codes), wt, 300L, 10L, 1L)[[1L]]
-    expect_true(strict_identical(r$ct[[1L]], ns$dm_ct_matrix(s, 10L, 300L)))
-    s2 <- .Call(ns$C_dm_fe_crosstabs, cds$t$codes, list(cds$firm$codes), wt, 10L, 300L, 1L)[[1L]]
-    expect_true(strict_identical(r$ct[[2L]], ns$dm_ct_matrix(s2, 300L, 10L)))
+    r <- ns$xtx_gsums_memory(X, wt, cds, fd$y, list(c(2L, 3L), c(3L, 2L)))
+    s <- .Call(ns$C_xtx_fe_crosstabs, cds$firm$codes, list(cds$t$codes), wt, 300L, 10L, 1L)[[1L]]
+    expect_true(strict_identical(r$ct[[1L]], ns$xtx_ct_matrix(s, 10L, 300L)))
+    s2 <- .Call(ns$C_xtx_fe_crosstabs, cds$t$codes, list(cds$firm$codes), wt, 10L, 300L, 1L)[[1L]]
+    expect_true(strict_identical(r$ct[[2L]], ns$xtx_ct_matrix(s2, 300L, 10L)))
     # and the grouped sums those of the pass without crosstabs
-    expect_true(strict_identical(r$gs, ns$dm_gsums_memory(X, wt, cds, fd$y)$gs))
+    expect_true(strict_identical(r$gs, ns$xtx_gsums_memory(X, wt, cds, fd$y)$gs))
 }
 # grouped sums: one thread as rowsum(); a given number of threads repeats
 W <- cbind(fd$x1, fd$w)
-g1 <- .Call(ns$C_dm_fe_gsum, cds$id$codes, 4000L, W, 1L)
+g1 <- .Call(ns$C_xtx_fe_gsum, cds$id$codes, 4000L, W, 1L)
 expect_equal(g1, unname(rowsum(W, cds$id$codes)), tolerance = 1e-13)
-g4 <- .Call(ns$C_dm_fe_gsum, cds$id$codes, 4000L, W, 4L)
-expect_true(strict_identical(g4, .Call(ns$C_dm_fe_gsum, cds$id$codes, 4000L, W, 4L)))
+g4 <- .Call(ns$C_xtx_fe_gsum, cds$id$codes, 4000L, W, 4L)
+expect_true(strict_identical(g4, .Call(ns$C_xtx_fe_gsum, cds$id$codes, 4000L, W, 4L)))
 expect_equal(g4, g1, tolerance = 1e-12)
 for (wt in list(NULL, fd$w)) {
     design_threads(4)
-    a <- ns$dm_gsums_memory(X, wt, cds, fd$y, list(c(2L, 3L)))
-    b <- ns$dm_gsums_memory(X, wt, cds, fd$y, list(c(2L, 3L)))
+    a <- ns$xtx_gsums_memory(X, wt, cds, fd$y, list(c(2L, 3L)))
+    b <- ns$xtx_gsums_memory(X, wt, cds, fd$y, list(c(2L, 3L)))
     expect_true(strict_identical(a, b))
     design_threads(1)
-    c1 <- ns$dm_gsums_memory(X, wt, cds, fd$y, list(c(2L, 3L)))
+    c1 <- ns$xtx_gsums_memory(X, wt, cds, fd$y, list(c(2L, 3L)))
     expect_equal(a, c1, tolerance = 1e-12)
 }
 
@@ -135,7 +135,7 @@ fe_fits <- function() {
          f2 = hex(design_lm(y ~ x1 | firm + t, fd, vcov = ~t)),
          pois = hex(design_glm(cnt ~ x1 + x2 | id + firm, fd, family = poisson())))
 }
-op <- options(design.matrix.fe_refine = 1L)
+op <- options(xtx.fe_refine = 1L)
 design_threads(1)
 r1 <- fe_fits()
 expect_true(strict_identical(r1, fe_fits()))
@@ -144,8 +144,8 @@ if (at_home() && file.exists(ref_file)) {
     ref <- readRDS(ref_file)
     for (k in names(ref)) expect_identical(r1[[k]], ref[[k]], info = paste("1 thread, stored:", k))
 }
-if (.Call(ns$C_dm_omp_max_threads) > 1L) {
-    design_threads(min(4L, .Call(ns$C_dm_omp_max_threads)))
+if (.Call(ns$C_xtx_omp_max_threads) > 1L) {
+    design_threads(min(4L, .Call(ns$C_xtx_omp_max_threads)))
     ra <- fe_fits()
     expect_true(strict_identical(ra, fe_fits()))
     num <- function(h) suppressWarnings(as.numeric(h))
@@ -155,7 +155,7 @@ if (.Call(ns$C_dm_omp_max_threads) > 1L) {
 options(op)
 design_threads(old_threads)
 
-# ---- the refinement step (design.matrix.fe_refine = "auto", default): its
+# ---- the refinement step (xtx.fe_refine = "auto", default): its
 # correction is always applied; the residuals are computed again only when
 # the correction is not negligible. Coefficients and FE values are those of
 # one step with the residuals recomputed (fe_refine = 1); the residual sum
@@ -169,12 +169,12 @@ cases <- list(simple = list(y ~ x1 + x2 | id + firm + t, "iid", TRUE),
 pass <- character()
 for (nm in names(cases)) {
     cs <- cases[[nm]]
-    op <- options(design.matrix.fe_center = cs[[3]])
+    op <- options(xtx.fe_center = cs[[3]])
     a <- design_lm(cs[[1]], fd, vcov = cs[[2]])
-    options(design.matrix.fe_refine = 1L)
+    options(xtx.fe_refine = 1L)
     b <- design_lm(cs[[1]], fd, vcov = cs[[2]])
     options(op)
-    options(design.matrix.fe_refine = NULL)
+    options(xtx.fe_refine = NULL)
     expect_identical(coef(a), coef(b), info = nm)
     expect_identical(a$fixef, b$fixef, info = nm)
     expect_equal(a$rss, b$rss, tolerance = 1e-14, info = nm)
@@ -187,7 +187,7 @@ for (nm in names(cases)) {
 # lose digits, b moves by 1e-6 and 4e-3 standard errors)
 expect_identical(unname(pass), c("skipped", "skipped", "done", "done"))
 
-# ---- conjugate gradients on several threads (dm_fe_pcg(), src/fe.c): the
+# ---- conjugate gradients on several threads (xtx_fe_pcg(), src/fe.c): the
 # reduced system of a worker x firm x year panel (workers eliminated),
 # applied matrix-free (Jacobi) or formed (IC(0)), the references dropped
 # (rows of N mapped to -1). One thread: the single-threaded code, bit for
@@ -213,7 +213,7 @@ pw <- local({
     map <- rep(-1L, m)
     map[keep] <- seq_along(keep) - 1L
     d <- 1 / tabulate(id, nid)
-    op <- structure(list(A = A, N = N, map = map, d = d, m = length(keep)), class = "dm_fe_op")
+    op <- structure(list(A = A, N = N, map = map, d = d, m = length(keep)), class = "xtx_fe_op")
     Ak <- Matrix::forceSymmetric(Matrix::tril(Af), uplo = "L")[keep, keep]
     Rf <- Ak - Nt[keep, ] %*% Matrix::Diagonal(x = d) %*% Matrix::t(Nt[keep, ])
     Rf <- methods::as(Matrix::forceSymmetric(methods::as(Rf, "generalMatrix"), uplo = "L"), "CsparseMatrix")
@@ -221,8 +221,8 @@ pw <- local({
 })
 pcg_run <- function(R, B, precond, nthreads, Z0 = NULL) {
     args <- list(R, B, 1e-12, 10000L, pw$block, precond, new.env(), Z0 = Z0)
-    if ("nthreads" %in% names(formals(ns$dm_fe_pcg))) args$nthreads <- nthreads
-    do.call(ns$dm_fe_pcg, args)
+    if ("nthreads" %in% names(formals(ns$xtx_fe_pcg))) args$nthreads <- nthreads
+    do.call(ns$xtx_fe_pcg, args)
 }
 pcg_B <- lapply(c(1L, 2L, 5L), function(k) matrix(rnorm(pw$mk * k), pw$mk, k))
 pcg_hex <- function(nthreads = 1L) {
@@ -273,8 +273,8 @@ pcg_fits <- function() {
     hex <- function(f) sprintf("%a", unname(c(coef(f), as.vector(vcov(f)), f$rss, unlist(f$fixef))))
     out <- list()
     for (fm in c(0, Inf)) {
-        op <- options(design.matrix.fe_solver = "pcg", design.matrix.fe_form_max = fm,
-                      design.matrix.fe_refine = 1L)
+        op <- options(xtx.fe_solver = "pcg", xtx.fe_form_max = fm,
+                      xtx.fe_refine = 1L)
         out[[paste("f3", fm)]] <- hex(design_lm(y ~ x1 + x2 | id + firm + t, fd, vcov = ~firm))
         out[[paste("f3w", fm)]] <- hex(design_lm(y ~ x1 + x2 | id + firm + t, fd, weights = fd$w))
         options(op)
@@ -291,21 +291,21 @@ if (at_home() && file.exists(ref_file)) {
 }
 # a reduced system large enough for threads (9000 firms, matrix-free):
 # identical across runs on 4 threads, one thread's values up to rounding
-if (full_tests && .Call(ns$C_dm_omp_max_threads) > 1L) {
+if (full_tests && .Call(ns$C_xtx_omp_max_threads) > 1L) {
     set.seed(12)
     nb <- 300000L
     bd <- data.frame(id = rep(1:30000, each = 10), t = rep(1:10, 30000), firm = sample(9000, nb, TRUE),
                      x1 = rnorm(nb))
     bd$y <- bd$x1 + rnorm(9000)[bd$firm] + rnorm(30000)[bd$id] + rnorm(nb)
     big <- function() {
-        op <- options(design.matrix.fe_solver = "pcg", design.matrix.fe_form_max = 0)
+        op <- options(xtx.fe_solver = "pcg", xtx.fe_form_max = 0)
         on.exit(options(op))
         f <- design_lm(y ~ x1 | id + firm + t, bd)
         c(coef(f), as.vector(vcov(f)), f$rss, unlist(f$fixef))
     }
     design_threads(1)
     b1 <- big()
-    design_threads(min(4L, .Call(ns$C_dm_omp_max_threads)))
+    design_threads(min(4L, .Call(ns$C_xtx_omp_max_threads)))
     b4 <- big()
     expect_true(strict_identical(b4, big()))
     expect_equal(b4, b1, tolerance = 1e-9)

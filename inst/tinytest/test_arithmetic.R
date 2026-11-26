@@ -1,6 +1,6 @@
 source("helpers.R")
-library(design.matrix)
-design_row_groups <- design.matrix:::design_row_groups
+library(xtx)
+design_row_groups <- xtx:::design_row_groups
 
 set.seed(11)
 d <- data.frame(x = rnorm(30), f = gl(3, 10))
@@ -20,8 +20,8 @@ same <- function(a, b) {
 
 # one class for everything
 for (D in list(X0, s0 * X0, X1 - X0, s1 * X1 - s0 * X0)) {
-    expect_true(inherits(D, "design_matrix"))
-    expect_identical(class(D), "design_matrix")
+    expect_true(inherits(D, "xtx_matrix"))
+    expect_identical(class(D), "xtx_matrix")
     expect_identical(dim(D), dim(M0))
     expect_identical(dimnames(D), dimnames(as.matrix(X0)))
 }

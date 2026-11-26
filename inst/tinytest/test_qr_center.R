@@ -1,5 +1,5 @@
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 # In memory, qr() of a design with numeric variables far from zero factors
 # the X'X of the centered design (as remote designs do), so that R, hence
@@ -96,11 +96,11 @@ for (fo in list(y ~ f + x + I(x^2), y ~ f * log(x) + x)) {
 # (design.matrix#r6g7) the shifted design is X T on every row: T is found
 # on prototypes built, like the shifted design, from the frame's columns as
 # stored; such designs are now centered (no guard)
-ns <- asNamespace("design.matrix")
+ns <- asNamespace("xtx")
 for (fo in list(y ~ f + x + I(x^2), y ~ f * log(x) + x, y ~ I(x^2) + f, y ~ log(x) * I(x^2))) {
     info <- paste(deparse(fo), "X T")
     D <- design_matrix(fo, dc)
-    ctr <- ns$dmp_center(D)
+    ctr <- ns$xtx_p_center(D)
     expect_false(is.null(ctr), info = info)
     X <- as.matrix(D)
     err <- abs(X %*% ctr$T - as.matrix(ctr$x))

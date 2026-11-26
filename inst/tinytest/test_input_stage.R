@@ -24,7 +24,7 @@
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 con <- test_con()
 set.seed(1)
@@ -93,8 +93,8 @@ expect_error(design_lm(y ~ x, d, na.action = function(x) stop("custom na")), nal
 expect_error(design_lm(y ~ x, d, na.action = function(x) x, foo = 1), nalm, fixed = TRUE)
 expect_error(design_lm(y ~ x, d, na.action = function(x) x, compress = "no"), nalm, fixed = TRUE)
 expect_error(design_lm(y ~ x, d, na.action = "na.nosuch"), nalm, fixed = TRUE)
-expect_inherits(design_lm(y ~ x, d, na.action = na.pass), "design_lm")
-expect_inherits(design_lm(y ~ x, d, na.action = "na.fail"), "design_lm")
+expect_inherits(design_lm(y ~ x, d, na.action = na.pass), "xtx_lm")
+expect_inherits(design_lm(y ~ x, d, na.action = "na.fail"), "xtx_lm")
 expect_error(design_lm(~ x, d, foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, foo = 1, weights = ch),
@@ -141,8 +141,8 @@ expect_error(design_lm(y ~ x, con, table = "d", na.action = function(x) x), nalm
 expect_error(design_lm(y ~ x, con, table = "d", na.action = function(x) x, foo = 1), nalm, fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", na.action = function(x) x, compress = "no"), nalm, fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", na.action = "na.nosuch"), nalm, fixed = TRUE)
-expect_inherits(design_lm(y ~ x, con, table = "d", na.action = na.pass), "design_lm")
-expect_inherits(design_lm(y ~ x, con, table = "d", na.action = "na.fail"), "design_lm")
+expect_inherits(design_lm(y ~ x, con, table = "d", na.action = na.pass), "xtx_lm")
+expect_inherits(design_lm(y ~ x, con, table = "d", na.action = "na.fail"), "xtx_lm")
 # (unknown arguments first, as in memory)
 expect_error(design_lm(~ x, con, table = "d", foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
@@ -242,7 +242,7 @@ expect_error(design_glm(f ~ x, poisson, con, table = "d"),
              "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(ch ~ x, poisson, con, table = "d"),
              "A factor response needs a binomial family.", fixed = TRUE)
-expect_inherits(design_glm(f ~ x, binomial, con, table = "d"), "design_glm")
+expect_inherits(design_glm(f ~ x, binomial, con, table = "d"), "xtx_glm")
 expect_error(design_glm(design_matrix(~ x, con, table = "d"), poisson, y = "f"),
              "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(cbind(b1, fails, k) ~ x, binomial, con, table = "d"),
@@ -289,7 +289,7 @@ expect_error(design_lm(y ~ x | id, d, na.action = function(x) x),
              "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, d, na.action = na.fail, foo = 1),
              "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
-expect_inherits(design_lm(yna ~ x | id, d, na.action = "na.exclude"), "design_lm")
+expect_inherits(design_lm(yna ~ x | id, d, na.action = "na.exclude"), "xtx_lm")
 expect_error(design_lm(y ~ x | id, d, subset = x > 0),
              "`subset` is not supported with fixed effects.", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, d, compress = TRUE),
@@ -344,7 +344,7 @@ expect_error(design_lm(y ~ x | id, con, table = "d", na.action = function(x) x),
              "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", na.action = na.fail, foo = 1),
              "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
-expect_inherits(design_lm(yna ~ x | id, con, table = "d", na.action = "na.exclude"), "design_lm")
+expect_inherits(design_lm(yna ~ x | id, con, table = "d", na.action = "na.exclude"), "xtx_lm")
 expect_error(design_lm(y ~ x | id, con, table = "d", foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", foo = 1, weights = wneg),
@@ -471,24 +471,24 @@ expect_error(design_lm(ch ~ x | id, d, offset = cbind(z, z)),
              "number of offsets is 80 should equal 40 (number of observations)", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, weights = wneg, offset = cbind(z, z)),
              "number of offsets is 80, should equal 40 (number of observations)", fixed = TRUE)
-expect_inherits(design_lm(y ~ x, d, na.action = na.exclude), "design_lm")
-expect_inherits(design_lm(y ~ x, con, table = "d", na.action = "na.omit"), "design_lm")
-expect_inherits(suppressWarnings(design_lm(y ~ x, d, contrasts = list(f = "nosuch"))), "design_lm")
+expect_inherits(design_lm(y ~ x, d, na.action = na.exclude), "xtx_lm")
+expect_inherits(design_lm(y ~ x, con, table = "d", na.action = "na.omit"), "xtx_lm")
+expect_inherits(suppressWarnings(design_lm(y ~ x, d, contrasts = list(f = "nosuch"))), "xtx_lm")
 expect_warning(design_lm(y ~ x, d, contrasts = list(f = "nosuch")),
                "variable 'f' is absent, its contrast will be ignored", fixed = TRUE)
-expect_inherits(suppressWarnings(design_lm(y ~ x, con, table = "d", contrasts = list(nosuch = "contr.sum"))), "design_lm")
+expect_inherits(suppressWarnings(design_lm(y ~ x, con, table = "d", contrasts = list(nosuch = "contr.sum"))), "xtx_lm")
 expect_warning(design_lm(y ~ x, con, table = "d", contrasts = list(nosuch = "contr.sum")),
                "variable 'nosuch' is absent, its contrast will be ignored", fixed = TRUE)
-expect_inherits(suppressWarnings(design_glm(y ~ x, gaussian, d, contrasts = list(nosuch = "contr.sum"))), "design_glm")
+expect_inherits(suppressWarnings(design_glm(y ~ x, gaussian, d, contrasts = list(nosuch = "contr.sum"))), "xtx_glm")
 expect_warning(design_glm(y ~ x, gaussian, d, contrasts = list(nosuch = "contr.sum")),
                "variable 'nosuch' is absent, its contrast will be ignored", fixed = TRUE)
-expect_inherits(suppressWarnings(design_glm(y ~ x, gaussian, con, table = "d", contrasts = list(nosuch = "contr.sum"))), "design_glm")
+expect_inherits(suppressWarnings(design_glm(y ~ x, gaussian, con, table = "d", contrasts = list(nosuch = "contr.sum"))), "xtx_glm")
 expect_warning(design_glm(y ~ x, gaussian, con, table = "d", contrasts = list(nosuch = "contr.sum")),
                "variable 'nosuch' is absent, its contrast will be ignored", fixed = TRUE)
-expect_inherits(suppressWarnings(design_lm(y ~ x | id, d, contrasts = list(nosuch = "contr.sum"))), "design_lm")
+expect_inherits(suppressWarnings(design_lm(y ~ x | id, d, contrasts = list(nosuch = "contr.sum"))), "xtx_lm")
 expect_warning(design_lm(y ~ x | id, d, contrasts = list(nosuch = "contr.sum")),
                "variable 'nosuch' is absent, its contrast will be ignored", fixed = TRUE)
-expect_inherits(suppressWarnings(design_lm(y ~ x | id, con, table = "d", contrasts = list(nosuch = "contr.sum"))), "design_lm")
+expect_inherits(suppressWarnings(design_lm(y ~ x | id, con, table = "d", contrasts = list(nosuch = "contr.sum"))), "xtx_lm")
 expect_warning(design_lm(y ~ x | id, con, table = "d", contrasts = list(nosuch = "contr.sum")),
                "variable 'nosuch' is absent, its contrast will be ignored", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, offset = ch),
@@ -571,8 +571,8 @@ for (src in list(list(d3), list(con, table = "d3"))) {
     expect_error(suppressMessages(fit(design_glm, cbind(b1, fails, k) ~ x, binomial, offset = quote(cbind(z, z)))),
                  "number of offsets is 80 should equal 40 (number of observations)", fixed = TRUE)
 }
-expect_inherits(design_lm(lg ~ x, d3), "design_lm")
-expect_inherits(design_lm(lg ~ x, con, table = "d3"), "design_lm")
+expect_inherits(design_lm(lg ~ x, d3), "xtx_lm")
+expect_inherits(design_lm(lg ~ x, con, table = "d3"), "xtx_lm")
 # cbind() of one column is that column, in both modes
 expect_equal(coef(design_glm(cbind(b1) ~ x, binomial, con, table = "d")), coef(design_glm(cbind(b1) ~ x, binomial, d)))
 expect_equal(coef(design_glm(cbind(b1) ~ x, binomial, d)), coef(glm(b1 ~ x, binomial, d)))
@@ -621,7 +621,7 @@ f <- design_lm(yna ~ x + f, con, table = "d2", weights = w, offset = z, na.actio
 expect_identical(fit_names(f), sort(c("coefficients", "rank", "pivot", "R", "tol", "rss", "mss", "intercept",
     "df.residual", "sigma", "nobs", "sumlogw", "weighted", "compressed", "patterns", "rows", "spec", "method",
     "contrasts", "xlevels", "data", "na.action", "offset_call", "env", "call", "terms")))
-expect_inherits(f$na.action, "dm_remote_exclude")
+expect_inherits(f$na.action, "xtx_remote_exclude")
 expect_identical(f$offset_call, quote(z))
 expect_identical(f$method, "SQL moments")
 expect_identical(names(f$data), c("design", "y", "weights", "offset"))
@@ -646,7 +646,7 @@ expect_identical(fit_names(f), sort(c("coefficients", "rank", "pivot", "R", "tol
     "aic", "iter", "converged", "boundary", "df.residual", "df.null", "nobs", "rows", "pearson", "zero_weights",
     "family", "intercept", "compressed", "patterns", "control", "spec", "method", "data", "na.action", "call",
     "terms", "formula", "contrasts", "xlevels", "offset_call", "env")))
-expect_inherits(f$na.action, "dm_remote_exclude")
+expect_inherits(f$na.action, "xtx_remote_exclude")
 expect_identical(f$offset_call, quote(log(z)))
 expect_identical(f$formula, k ~ x + f)
 
@@ -661,20 +661,20 @@ expect_identical(fit_names(f), sort(c("coefficients", "vcov", "vcov_type", "sigm
     "nobs", "rank", "fixef", "fe_levels", "fe_vars", "fe_sizes", "fe_dof", "fe_dof_exact", "nsingletons",
     "cov.unscaled", "tss", "tss_within", "compressed", "patterns", "rows", "fe_info", "intercept", "weighted",
     "sumlogw", "x", "cols", "offset_call", "env", "terms", "xlevels", "spec", "na.action", "method", "call")))
-expect_inherits(f$na.action, "dm_remote_exclude")
+expect_inherits(f$na.action, "xtx_remote_exclude")
 f <- design_glm(k ~ x | id, poisson, d2, weights = w, offset = log(z), na.action = na.exclude)
 expect_inherits(f$na.action, "exclude")
 expect_identical(f$rows, 39L)
 f <- design_glm(k ~ x | id, poisson, con, table = "d2", weights = w, offset = log(z), na.action = na.exclude)
-expect_inherits(f$na.action, "dm_remote_exclude")
+expect_inherits(f$na.action, "xtx_remote_exclude")
 
 # The compression of a GLM is weighted only when weights are given (or a
 # two-column response gives trials), in memory as remotely
-kp <- design.matrix:::dmglm_kind(poisson())
-kb <- design.matrix:::dmglm_kind(binomial())
-expect_false(design.matrix:::dmglm_mem_cols(c(1, 2, 3), NULL, NULL, kp)$weighted)
-expect_true(design.matrix:::dmglm_mem_cols(c(1, 2, 3), c(1, 1, 2), NULL, kp)$weighted)
-expect_true(design.matrix:::dmglm_mem_cols(cbind(c(1, 2), c(0, 1)), NULL, NULL, kb)$weighted)
+kp <- xtx:::xtx_glm_kind(poisson())
+kb <- xtx:::xtx_glm_kind(binomial())
+expect_false(xtx:::xtx_glm_mem_cols(c(1, 2, 3), NULL, NULL, kp)$weighted)
+expect_true(xtx:::xtx_glm_mem_cols(c(1, 2, 3), c(1, 1, 2), NULL, kp)$weighted)
+expect_true(xtx:::xtx_glm_mem_cols(cbind(c(1, 2), c(0, 1)), NULL, NULL, kb)$weighted)
 
 # fit$env: the formula's environment on every path; the arguments are
 # evaluated there (and in the data), as model.frame() does

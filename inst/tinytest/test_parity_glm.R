@@ -7,7 +7,7 @@
 ## responses, start values) run in every mode as well.
 source("helpers.R")
 source("glm_cases.R", local = TRUE)
-library(design.matrix)
+library(xtx)
 
 d <- glm_data(n = 800)
 dm <- d
@@ -47,7 +47,7 @@ fit_in <- function(mode, fo, fam, ..., data = mode$data) {
 ## A row-wise result as a vector, in the order of the rows (remote tables
 ## are sorted by `id`).
 as_vec <- function(x, col) {
-    if (!inherits(x, "dm_remote_table")) return(unname(as.vector(x)))
+    if (!inherits(x, "xtx_remote_table")) return(unname(as.vector(x)))
     r <- as.data.frame(x)
     r[[col]][order(r$id)]
 }
@@ -145,11 +145,11 @@ for (mode in modes) {
 ## regression: nested expressions (probit: DuckDB expands the qnorm and
 ## pnorm macros inline) once made queries so long that DuckDB hung; the
 ## linear predictor, fitted means and working weights are computed once
-## (dmc_freeze()), which bounds the queries (full tier)
+## (xtx_c_freeze()), which bounds the queries (full tier)
 if (length(modes) > 1L && full_tests) {
     qlen <- integer()
     withCallingHandlers({
-        op <- options(design.matrix.remote_debug = TRUE)
+        op <- options(xtx.remote_debug = TRUE)
         fp <- design_glm(yb ~ xd + f, binomial("probit"), con, table = "d", compress = FALSE)
         options(op)
     }, message = function(m) {

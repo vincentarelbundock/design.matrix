@@ -5,7 +5,7 @@
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 con <- test_con()
 same <- function(a, b, tol = 1e-8) isTRUE(all.equal(unname(a), unname(b), tolerance = tol, check.attributes = FALSE))
@@ -24,7 +24,7 @@ formulas <- list(sql = y ~ x * f + log(z), r = y ~ x * f + log(z) + splines::ns(
 ## row-wise results (a remote column, read with the key `id`, or a table
 ## with the columns of the data), in the order of the rows of M
 by_id <- function(tab, col) {
-    p <- if (inherits(tab, "design_column")) as.data.frame(tab, keep = "id") else as.data.frame(tab)
+    p <- if (inherits(tab, "xtx_column")) as.data.frame(tab, keep = "id") else as.data.frame(tab)
     p[[col]][match(dk$id, p$id)]
 }
 
@@ -59,7 +59,7 @@ for (fname in names(formulas)) for (src in names(sources)) {
     expect_true(same(as.matrix(crossprod(S)), crossprod(X)), info = paste(info, "sparse"))
     expect_true(same(as.matrix(as(D, "dgCMatrix")), X), info = paste(info, "dgCMatrix"))
     expect_true(same(as.matrix("w" * D), dk$w * X), info = paste(info, "as.matrix scaled"))
-    op <- options(design.matrix.remote_max_rows = 10)
+    op <- options(xtx.remote_max_rows = 10)
     expect_error(as.matrix(D), "force = TRUE")
     expect_error(as(D, "CsparseMatrix"), "remote_max_rows")
     expect_true(same(colSums(as.matrix(D, force = TRUE)), colSums(X)))
@@ -67,7 +67,7 @@ for (fname in names(formulas)) for (src in names(sources)) {
     ## products
     expect_true(same(by_id(D %*% B[, 1], ".fitted"), drop(X %*% B[, 1])), info = paste(info, "%*% vector"))
     pB <- D %*% B
-    expect_inherits(pB, "design_column")
+    expect_inherits(pB, "xtx_column")
     expect_equal(dim(pB), c(nrow(D), 2), info = paste(info, "dim of a column"))
     expect_equal(length(pB), 2 * nrow(D), info = paste(info, "length of a column"))
     expect_true(same(cbind(by_id(pB, "b1"), by_id(pB, "b2")), X %*% B), info = paste(info, "%*% matrix"))
@@ -113,11 +113,11 @@ for (fname in names(formulas)) for (src in names(sources)) {
     expect_true(same(crossprod(Ds), crossprod(X[dk$x > 0, ])), info = paste(info, "D[SQL, ]"))
     expect_error(D[1:3, ], "not by position")
     expect_error(D[rep(TRUE, nrow(D)), ], "not by position")
-    pos <- design.matrix:::dmp_column(D, "s.x > 0")
+    pos <- xtx:::xtx_p_column(D, "s.x > 0")
     expect_true(same(crossprod(D[pos, ]), crossprod(X[dk$x > 0, ])), info = paste(info, "D[column, ]"))
     expect_equal(nrow(D[pos, ]), sum(dk$x > 0), info = paste(info, "nrow(D[column, ])"))
-    fr <- design.matrix:::finite_rows(D)
-    expect_equal(design.matrix:::dm_colsum(design.matrix:::dmc_ifelse(fr, 1, 0)), sum(design.matrix:::finite_rows(M)),
+    fr <- xtx:::finite_rows(D)
+    expect_equal(xtx:::xtx_colsum(xtx:::xtx_c_ifelse(fr, 1, 0)), sum(xtx:::finite_rows(M)),
                  info = paste(info, "finite_rows"))
     ## qr() and its methods
     q <- qr(D)

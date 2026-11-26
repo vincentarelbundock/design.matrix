@@ -1,5 +1,5 @@
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 # design_frame() must return what stats::model.frame() returns: strictly
 # identical frames, same warnings, same error messages. Most cases below
@@ -11,7 +11,7 @@ same_frame <- function(f, d, ...) {
                  capture(function() do.call(design_frame, args)))
 }
 
-fr <- design.matrix:::the$frame
+fr <- xtx:::the$frame
 # On the versions of R this was written for, both shortcuts are on. (On
 # another version they may be off: design_frame() is then model.frame().)
 if (getRversion() >= "4.5.0" && getRversion() < "4.6.0") {
@@ -240,12 +240,12 @@ fit <- lm(y ~ x + f, dn, na.action = na.exclude)
 expect_true(strict_identical(design_frame(fit), stats::model.frame(fit)))
 expect_true(strict_identical(design_frame(fit, data = dn), stats::model.frame(fit, data = dn)))
 calls <- 0L
-model.frame.dm_test_formula <- function(formula, ...) {
+model.frame.xtx_test_formula <- function(formula, ...) {
     calls <<- calls + 1L
     if (!identical(substitute(formula), quote(ff))) stop("not the caller's expression")
     NextMethod()
 }
-ff <- structure(y ~ x, class = c("dm_test_formula", "formula"))
+ff <- structure(y ~ x, class = c("xtx_test_formula", "formula"))
 expect_true(strict_identical(design_frame(ff, d), stats::model.frame(ff, d)))
 expect_identical(calls, 2L)
 local({
@@ -255,11 +255,11 @@ local({
 })
 
 # option: without the shortcuts, model.frame() itself
-options(design.matrix.skip_na_copy = FALSE)
+options(xtx.skip_na_copy = FALSE)
 for (cs in cases[seq(1, length(cases), by = 7)]) {
     expect_true(do.call(same_frame, c(list(cs$f, cs$d), cs$args)), info = cs$label)
 }
-options(design.matrix.skip_na_copy = NULL)
+options(xtx.skip_na_copy = NULL)
 
 # Through design_matrix() and plans ---------------------------------------------
 same_matrix <- function(f, d, ...) {
@@ -280,7 +280,7 @@ set.seed(11)
 tr <- fuzz_data(60)
 nd <- fuzz_data(40, na = TRUE)
 fo <- y ~ x1 * f1 + o1 + ch + poly(z, 2)
-plan <- design.matrix:::design_plan(fo, tr)
+plan <- xtx:::design_plan(fo, tr)
 for (na in list(na.pass, na.omit, na.exclude, "na.omit")) {
     for (newd in list(nd, tr, tr[sample(60), ])) {
         ref <- capture(function() stats::model.matrix(
@@ -298,7 +298,7 @@ counting <- function(object, ...) {
     seen <<- c(seen, length(object))
     stats::na.omit(object, ...)
 }
-wrap <- design.matrix:::dm_wrap_na(counting, stats::na.omit)
+wrap <- xtx:::xtx_wrap_na(counting, stats::na.omit)
 frame_of <- function(d, f = y ~ x + f) {
     mf <- stats::model.frame(f, d, na.action = NULL)
     attr(mf, "terms") <- NULL
@@ -328,7 +328,7 @@ d <- base_d(); contrasts(d$f) <- contr.sum(3); expect_identical(path(d), 3L)
 d <- base_d(); d$x <- as.Date("2020-01-01") + 0:4; expect_identical(path(d), 3L)
 expect_identical(path(base_d()[0, ]), 3L)                      # no rows
 
-int_unique <- function(x) .Call(design.matrix:::C_dm_int_unique, x)
+int_unique <- function(x) .Call(xtx:::C_xtx_int_unique, x)
 expect_true(int_unique(c(5L, 1L, 3L)))
 expect_true(int_unique(integer()))
 expect_true(int_unique(c(-3L, 0L, 3L, -.Machine$integer.max)[1:3]))
@@ -343,7 +343,7 @@ for (k in 1:50) {
     expect_identical(int_unique(v), !anyDuplicated(v))
 }
 
-str_unique <- function(x) .Call(design.matrix:::C_dm_str_unique, x)
+str_unique <- function(x) .Call(xtx:::C_xtx_str_unique, x)
 expect_true(str_unique(c("b", "a", "")))
 expect_true(str_unique(character()))
 expect_true(str_unique(c(e_utf8, paste0(e_utf8, e_utf8))))
@@ -359,7 +359,7 @@ for (k in 1:50) {
 }
 v <- as.character(sample(1e5)); expect_true(str_unique(v)); v[77777] <- v[3]; expect_false(str_unique(v))
 
-same_factor <- design.matrix:::dm_same_factor
+same_factor <- xtx:::xtx_same_factor
 f <- factor(c("a", "b", NA, "a"), levels = c("a", "b", "c"))
 expect_true(same_factor(f, c("a", "b", "c")))
 expect_true(same_factor(factor(f, levels = c("a", "b", "c"), ordered = TRUE), c("a", "b", "c")))
@@ -381,8 +381,8 @@ expect_false(same_factor(c("a", "b"), c("a", "b")))
 
 # A version of R with other code ----------------------------------------------------
 # Each patch is applied only to the statements it was written for.
-make <- design.matrix:::dm_make_frame
-replace <- design.matrix:::dm_replace
+make <- xtx:::xtx_make_frame
+replace <- xtx:::xtx_replace
 count <- function() { e <- new.env(); e$n <- 0L; e }
 if (isTRUE(fr$na) && isTRUE(fr$xlev)) {
     mfd <- stats::model.frame.default
@@ -431,7 +431,7 @@ if (isTRUE(fr$na) && isTRUE(fr$xlev)) {
 }
 
 # The self-test at load rejects a function that returns anything else.
-selftest <- design.matrix:::dm_frame_selftest
+selftest <- xtx:::xtx_frame_selftest
 expect_true(selftest(stats::model.frame.default))
 if (!is.null(fr)) expect_true(selftest(fr$fun))
 expect_false(selftest(function(...) { mf <- stats::model.frame(...); attr(mf, "note") <- 1; mf }))

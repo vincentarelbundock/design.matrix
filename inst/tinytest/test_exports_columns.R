@@ -7,9 +7,9 @@
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
-expect_true(all(c("col_ifelse", "col_pmin", "col_pmax", "col_sums") %in% getNamespaceExports("design.matrix")))
+expect_true(all(c("col_ifelse", "col_pmin", "col_pmax", "col_sums") %in% getNamespaceExports("xtx")))
 
 ## Values whose sums and products are exact in any order, so that remote
 ## results are identical() to R's.
@@ -106,7 +106,7 @@ expect_identical(sum(is.finite(a)), as.double(sum(is.finite(d$a))))
 ## one query per summary, whatever the number of arguments
 nq <- function(f) {
     msgs <- character()
-    op <- options(design.matrix.remote_debug = TRUE)
+    op <- options(xtx.remote_debug = TRUE)
     on.exit(options(op))
     withCallingHandlers(f(), message = function(m) {
         msgs <<- c(msgs, conditionMessage(m))
@@ -185,7 +185,7 @@ expect_error(digamma(v), "not supported")
 ## ---- helpers: elementwise, in memory and remote ----
 
 check <- function(remote, local, info) {
-    expect_true(inherits(remote, "design_column"), info = info)
+    expect_true(inherits(remote, "xtx_column"), info = info)
     expect_identical(get(remote), local, info = info)
 }
 

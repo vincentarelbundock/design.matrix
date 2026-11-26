@@ -1,15 +1,15 @@
 # The pieces of the FE estimator (R/fe.R, design.matrix#6sq4): the
-# pivoted Cholesky kernel shared with qr() (dm_pivchol(): per-column
+# pivoted Cholesky kernel shared with qr() (xtx_pivchol(): per-column
 # thresholds, tie mode, suspect band), the absorption operator
-# (dm_absorb(): project, effects, scores, solve) against dense dummies, the
-# refinement driver (dm_refine()), and the un-centering helpers.
+# (xtx_absorb(): project, effects, scores, solve) against dense dummies, the
+# refinement driver (xtx_refine()), and the un-centering helpers.
 source("helpers.R")
-library(design.matrix)
-ns <- asNamespace("design.matrix")
+library(xtx)
+ns <- asNamespace("xtx")
 
 # The kernel ----------------------------------------------------------------
 # FE's rule (ties drop) is the sequential rule of the former R loop
-# dm_fe_pivchol(), kept here as the reference
+# xtx_fe_pivchol(), kept here as the reference
 old_pivchol <- function(M, scale, tol) {
     keep <- integer(0)
     Rf <- matrix(0, 0, 0)
@@ -46,24 +46,24 @@ for (case in 1:20) {
     M <- crossprod(X)
     scale <- diag(M) * runif(p, 1, 3)
     for (tol in c(1e-10, 1e-7, 1e-3)) {
-        a <- ns$dm_fe_pivchol(M, scale, tol)
+        a <- ns$xtx_fe_pivchol(M, scale, tol)
         b <- old_pivchol(M, scale, tol)
         expect_identical(a$keep, b$keep, info = paste(case, tol))
         expect_equal(a$R, b$R, tolerance = 1e-13, info = paste(case, tol))
     }
 }
 # no column
-z <- ns$dm_fe_pivchol(matrix(0, 0, 0), numeric(0), 1e-10)
+z <- ns$xtx_fe_pivchol(matrix(0, 0, 0), numeric(0), 1e-10)
 expect_identical(z$keep, integer(0))
 expect_identical(dim(z$R), c(0L, 0L))
 # tie mode: d == tol * scale exactly (tol = 0.5, scale = 8, d = 4)
 M <- diag(c(1, 4))
-expect_identical(ns$dm_pivchol(M, c(1, 8), 0.5, "keep")$rank, 2L)
-expect_identical(ns$dm_pivchol(M, c(1, 8), 0.5, "drop")$rank, 1L)
+expect_identical(ns$xtx_pivchol(M, c(1, 8), 0.5, "keep")$rank, 2L)
+expect_identical(ns$xtx_pivchol(M, c(1, 8), 0.5, "drop")$rank, 1L)
 # suspect band: listed, judged by recheck() (which sees the factor of the
 # columns taken before), and the factorization redone
 seen <- NULL
-ch <- ns$dm_pivchol(M, c(1, 8), 0.5, "drop", band = list(lo = c(-1, 3), hi = c(-1, 5)),
+ch <- ns$xtx_pivchol(M, c(1, 8), 0.5, "drop", band = list(lo = c(-1, 3), hi = c(-1, 5)),
                     recheck = function(ch, cols) {
                         seen <<- c(seen, cols)
                         list(dres = 4.5, taken = TRUE)
@@ -71,11 +71,11 @@ ch <- ns$dm_pivchol(M, c(1, 8), 0.5, "drop", band = list(lo = c(-1, 3), hi = c(-
 expect_identical(seen, 2L)
 expect_identical(ch$rank, 2L)
 expect_equal(ch$R[2, 2], sqrt(4.5))
-ch <- ns$dm_pivchol(M, c(1, 8), 0.5, "drop", band = list(lo = c(-1, 3), hi = c(-1, 5)),
+ch <- ns$xtx_pivchol(M, c(1, 8), 0.5, "drop", band = list(lo = c(-1, 3), hi = c(-1, 5)),
                     recheck = function(ch, cols) list(dres = 3.5, taken = FALSE))
 expect_identical(ch$rank, 1L)
 expect_identical(ch$pivot, c(1L, 2L))
-expect_null(ns$dm_pivchol(M, c(1, 8), 0.5, "drop", band = list(lo = c(-1, 3), hi = c(-1, 5)),
+expect_null(ns$xtx_pivchol(M, c(1, 8), 0.5, "drop", band = list(lo = c(-1, 3), hi = c(-1, 5)),
                           recheck = function(ch, cols) NULL))
 # lm()'s rule (qr()): rank and pivot of qr() on aliased designs, a zero
 # column moved to the end, lup = min(n, p)
@@ -101,14 +101,14 @@ d <- data.frame(a = sample(30, n, TRUE), b = sample(8, n, TRUE), cl = sample(12,
 d$y <- d$x1 - d$x2 + d$a / 10 + rnorm(n)
 D <- design_matrix(~ x1 + x2, d)
 xcols <- 2:3
-codes <- lapply(d[c("a", "b")], function(v) ns$dmc_codes(match(v, sort(unique(v))), length(unique(v))))
-cl <- ns$dmc_codes(d$cl, 12L)
+codes <- lapply(d[c("a", "b")], function(v) ns$xtx_c_codes(match(v, sort(unique(v))), length(unique(v))))
+cl <- ns$xtx_c_codes(d$cl, 12L)
 Fd <- cbind(model.matrix(~ factor(a) - 1, d), model.matrix(~ factor(b) - 1, d))
 X <- as.matrix(D)[, xcols]
 for (w in list(NULL, d$w)) {
     info <- if (is.null(w)) "unweighted" else "weighted"
     ww <- if (is.null(w)) rep(1, n) else w
-    A <- ns$dm_absorb(D, d$y, w, codes, xcols, ns$dm_fe_opts())
+    A <- ns$xtx_absorb(D, d$y, w, codes, xcols, ns$xtx_fe_opts())
     expect_identical(unname(A$G), c(30L, 8L), info = info)
     Z <- cbind(X, d$y)
     M <- crossprod(Z, ww * Z)
@@ -148,7 +148,7 @@ for (w in list(NULL, d$w)) {
 # (residual, correct, the caller's stopping rule; r: the residual the last
 # step started from)
 calls <- 0
-rf <- ns$dm_refine(1, function(s) {
+rf <- ns$xtx_refine(1, function(s) {
     calls <<- calls + 1
     s
 }, function(s, r) list(sol = s / 2), steps = 5, stop = function(step, r, it) it == 3)
@@ -156,15 +156,15 @@ expect_identical(rf$sol, 1 / 8)
 expect_identical(rf$r, 1 / 4)
 expect_true(rf$stopped)
 expect_identical(calls, 3)
-rf <- ns$dm_refine(1, identity, function(s, r) list(sol = s / 2), steps = 2)
+rf <- ns$xtx_refine(1, identity, function(s, r) list(sol = s / 2), steps = 2)
 expect_identical(rf$sol, 1 / 4)
 expect_false(rf$stopped)
-expect_null(ns$dm_refine(1, identity, function(s, r) list(sol = s), steps = 0)$r)
+expect_null(ns$xtx_refine(1, identity, function(s, r) list(sol = s), steps = 0)$r)
 
 # fits with FE: the refinement options, as before the split
 ref <- lm(y ~ x1 + x2 + factor(a) + factor(b), d, weights = w)
 for (rf in list("auto", 0L, 1L, 2L)) {
-    op <- options(design.matrix.fe_refine = rf)
+    op <- options(xtx.fe_refine = rf)
     a <- design_lm(y ~ x1 + x2 | a + b, d, weights = w)
     options(op)
     expect_equal(coef(a), coef(ref)[c("x1", "x2")], tolerance = 1e-10, info = paste("refine", rf))
@@ -176,11 +176,11 @@ for (rf in list("auto", 0L, 1L, 2L)) {
 # Un-centering helpers --------------------------------------------------------
 Tm <- diag(3)
 Tm[1, 2] <- 5
-expect_true(ns$dm_uncenter_ok(Tm, c(1L, 2L), 3L))
-expect_false(ns$dm_uncenter_ok(Tm, 2L, 1L))
-expect_true(ns$dm_uncenter_ok(Tm, integer(0), 1:3))
+expect_true(ns$xtx_uncenter_ok(Tm, c(1L, 2L), 3L))
+expect_false(ns$xtx_uncenter_ok(Tm, 2L, 1L))
+expect_true(ns$xtx_uncenter_ok(Tm, integer(0), 1:3))
 V <- crossprod(matrix(rnorm(9), 3))
-expect_equal(ns$dm_uncenter_cov(Tm, V), Tm %*% V %*% t(Tm))
+expect_equal(ns$xtx_uncenter_cov(Tm, V), Tm %*% V %*% t(Tm))
 
 # The suspect band of FE (design.matrix#6sq4, part b) -------------------------
 # x2 = x1 + a e, e orthogonal to the FE and x1 (in the weighted inner
@@ -215,7 +215,7 @@ for (wt in c(FALSE, TRUE)) {
         expect_false(is.na(coef(fit)[["x1"]]), info = info)
         ## the same decision for every solver of the reduced system
         for (s in c("dense", "pcg")) {
-            op <- options(design.matrix.fe_solver = s)
+            op <- options(xtx.fe_solver = s)
             fs <- if (wt) design_lm(y ~ x1 + x2 | a + b, d, weights = w) else design_lm(y ~ x1 + x2 | a + b, d)
             options(op)
             expect_identical(is.na(coef(fs)), is.na(coef(fit)), info = paste(info, s))
@@ -232,7 +232,7 @@ for (wt in c(FALSE, TRUE)) {
         ## Cholesky pivot of the demeaned X'X), which keeps x2 down to a
         ## ratio of about 1e-12 and depends on the scale of the columns,
         ## so it keeps x2 there while the 1e-10 variance-ratio rule drops it
-        ## (as dm_fe_pivchol did before design.matrix#6sq4).
+        ## (as xtx_fe_pivchol did before design.matrix#6sq4).
         if (m == 2 && requireNamespace("fixest", quietly = TRUE)) {
             b <- fixest::feols(y ~ x1 + x2 | a + b, d, weights = if (wt) ~w, notes = FALSE, warn = FALSE)
             expect_identical(names(coef(fit))[!is.na(coef(fit))], names(coef(b)), info = paste(info, "feols"))

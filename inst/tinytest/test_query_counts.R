@@ -1,10 +1,10 @@
 ## The exact number of SQL statements each remote fit sends, counted with
 ## count_queries() (every DBI and duckdb_register call, including those that
-## bypass dm_query()). A change in a count is a change in the remote plan:
+## bypass xtx_query()). A change in a count is a change in the remote plan:
 ## update the number only when the change is intended (fewer is better).
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
-library(design.matrix)
+library(xtx)
 source("helpers.R")
 
 con <- suppressMessages(DBI::dbConnect(duckdb::duckdb()))
@@ -46,8 +46,8 @@ expect_equal(nq(design_lm(y ~ x1 + xd | a + b, con, table = "d", vcov = ~a)), 25
 expect_equal(nq(design_glm(yp ~ x1 + xd | a + b, poisson, con, table = "d", vcov = ~a)), 147L,
              info = "FE-GLM Poisson cluster")
 
-## the counter sees statements dm_query() does not log
-op <- options(design.matrix.remote_debug = TRUE)
+## the counter sees statements xtx_query() does not log
+op <- options(xtx.remote_debug = TRUE)
 logged <- 0L
 cnt <- withCallingHandlers(nq(design_lm(y ~ x1 + xd | a + b, con, table = "d", vcov = ~a)),
                            message = function(m) {

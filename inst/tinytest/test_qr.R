@@ -1,5 +1,5 @@
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 
 # Least squares through qr() on a design matrix agrees with qr() on the
 # dense matrix, up to rounding: same rank and pivot, coefficients (NA for
@@ -14,7 +14,7 @@ check_qr <- function(D, y, info) {
     X <- as.matrix(D)
     q <- qr(D)
     q0 <- qr(X)
-    expect_inherits(q, "design_qr", info = info)
+    expect_inherits(q, "xtx_qr", info = info)
     expect_equal(q$rank, q0$rank, info = paste(info, "rank"))
     expect_equal(q$pivot, q0$pivot, info = paste(info, "pivot"))
     expect_true(close_to(qr.coef(q, y), qr.coef(q0, y)), info = paste(info, "coef"))
@@ -152,7 +152,7 @@ expect_equal(sol, solve.qr(qr(as.matrix(Dw)), dw$y), check.attributes = FALSE)
 
 # 9. The methods dispatch through the package namespace
 q9 <- qr(D1)
-expect_equal(design.matrix::qr.coef(q9, d1$y), qr.coef(q9, d1$y))
+expect_equal(xtx::qr.coef(q9, d1$y), qr.coef(q9, d1$y))
 
 # Roborev 1272 regressions -------------------------------------------------
 

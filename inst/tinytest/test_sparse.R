@@ -1,5 +1,5 @@
 source("helpers.R")
-library(design.matrix)
+library(xtx)
 if (!requireNamespace("Matrix", quietly = TRUE)) exit_file("Matrix not installed")
 
 sparse_of <- function(x) methods::as(x, "CsparseMatrix")
@@ -58,4 +58,4 @@ D <- design_matrix(y ~ f1 * f2 + x1, tr)
 expect_true(same_sparse(methods::as(D, "dgCMatrix"), methods::as(D, "CsparseMatrix")))
 J <- runif(nrow(tr)) * D
 expect_true(same_sparse(methods::as(J, "dgCMatrix"), dense_ref(J)))
-expect_false("dm_sparse" %in% getNamespaceExports("design.matrix"))
+expect_false("xtx_sparse" %in% getNamespaceExports("xtx"))
