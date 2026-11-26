@@ -1,9 +1,10 @@
 ## Parity of design_lm() in memory and on remote data: one set of cases,
 ## each fitted by lm(), by design_lm() on a data frame, and by design_lm()
-## on a DuckDB table and a Parquet file (both engines), compared on every
+## on a DuckDB table and a Parquet file (full tier), compared on every
 ## method.
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
+source("helpers.R")
 library(design.matrix)
 
 con <- DBI::dbConnect(duckdb::duckdb())
@@ -93,7 +94,7 @@ for (nm in names(cases)) {
     check_methods(m, l, paste(nm, "memory"))
     sources <- list(
         sql = list(data = quote(con), extra = list(table = "d")),
-        parquet = list(data = quote(pq), extra = list()))
+        parquet = list(data = quote(pq), extra = list()))[remote_modes]
     for (src in names(sources)) {
         info <- paste(nm, src)
         s <- sources[[src]]
