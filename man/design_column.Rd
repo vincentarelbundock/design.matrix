@@ -4,9 +4,7 @@
 \alias{design_column}
 \alias{as.vector.design_column}
 \alias{as.matrix.design_column}
-\alias{compute}
-\alias{compute.default}
-\alias{compute.design_column}
+\alias{col_compute}
 \alias{as.data.frame.design_column}
 \alias{[.design_column}
 \alias{format.design_column}
@@ -19,11 +17,7 @@ design_column(x, column)
 
 \method{as.matrix}{design_column}(x, ...)
 
-compute(x, ...)
-
-\method{compute}{default}(x, ...)
-
-\method{compute}{design_column}(x, ...)
+col_compute(x, name = NULL, overwrite = FALSE, nm = NULL)
 
 \method{as.data.frame}{design_column}(x, row.names = NULL, optional = FALSE, ..., keep = NULL, nm = NULL)
 
@@ -49,8 +43,16 @@ SQL expression over its columns (\code{DBI::SQL()}).}
 \item{keep}{Names of columns of the remote data to read with the values
 (for instance a key, to match the rows with other data).}
 
-\item{nm}{Names of the value columns of the data frame (one per column of
-\code{x}).}
+\item{nm}{Names of the value columns (one per column of \code{x}): of the data
+frame for \code{as.data.frame()}, of the table for \code{col_compute()} with a
+\code{name}.}
+
+\item{name}{For \code{col_compute()}: \code{NULL} (default) for a temporary table,
+or the name of a permanent table to create on the connection (a
+string, quoted as an identifier).}
+
+\item{overwrite}{For \code{col_compute()} with a \code{name}: replace a table of
+that name if it exists (otherwise that is an error).}
 
 \item{i}{Not supported for a remote column (remote rows have no order).}
 
@@ -61,8 +63,8 @@ SQL expression over its columns (\code{DBI::SQL()}).}
 \value{
 \code{design_column()}: a double vector in memory, a \code{design_column}
 remotely. \code{as.vector()}: a double vector. \code{as.matrix()}: a double
-matrix. \code{as.data.frame()}: a
-data frame. \code{compute()}: a \code{design_column} (in memory, \code{x}).
+matrix. \code{as.data.frame()}: a data frame. \code{col_compute()}: a
+\code{design_column} that reads the table (in memory, \code{x}).
 }
 \description{
 A \emph{column} holds one value per row of a design. In memory it is a plain
@@ -131,10 +133,24 @@ or \code{nm}), after the columns \code{keep} of the remote data, read in the sam
 query. Remote rows have no order: to match the values with other data,
 keep a key column. Two calls to \code{as.vector()} need not return the rows
 in the same order.
-\item \code{compute(x)}: the column computed once into a temporary table, and a
-column that reads it (later queries scan the table instead of
-recomputing the expression and the views below it). In memory it
-returns \code{x}.
+\item \code{col_compute(x)}: the column computed once into a temporary table, and
+a column that reads it (later queries scan the table instead of
+recomputing the expression and the views below it).
+\code{col_compute(x, name = "preds")}: the same, into a permanent table
+\code{preds} of the connection (\verb{CREATE TABLE ... AS}; an error if the
+table exists, unless \code{overwrite = TRUE}, which replaces it), for use
+outside the package. The table holds the rows of the design (after its
+filter: \code{na.action}, subsets), each with every column of the frame the
+values were computed on: the columns of the data, the values (named
+\code{nm}: by default as \code{as.data.frame()} names them) and internal columns
+of the package (names starting with \verb{__dm_}, the products and lookups
+under the column), which can be ignored. The column returned reads
+that table and stays aligned with the rows of its design, as with a
+temporary table: the rows keep, next to the values, the columns that
+later columns of the design read, so a product made later is a view
+over the table. To match the values with other data outside the
+package, join on a key column of the data (such as \code{id}). In memory
+\code{col_compute()} returns \code{x} (there is no table).
 \item \code{x[, j]}: the columns \code{j} of a column with several columns (as for the
 matrix in memory), for instance of \code{D \%*\% cbind(b1, b2)}. Rows cannot
 be selected: remote rows have no order.
@@ -147,24 +163,23 @@ of columns of \code{x} (not of rows: remotely, use \code{nrow(D)}).
 \section{Lifetime}{
 
 A remote column is valid while its connection is open. The views and
-temporary tables it reads (from products, and from \code{compute()}) live in
-the session of that connection, and disappear when it is closed; for a
-Parquet source, the column keeps its private connection open. To keep
-values beyond the session, read them with \code{as.data.frame()} and write
-them where they belong. Columns of one design combine with each other,
+temporary tables it reads (from products, and from \code{col_compute()})
+live in the session of that connection, and disappear when it is
+closed; for a Parquet source, the column keeps its private connection
+open. To keep values beyond the session, store them in a permanent table
+with \code{col_compute(x, name = )} (on the connection of the design: for a
+Parquet source, a private in-memory connection, so read them with
+\code{as.data.frame()} instead), or read them with \code{as.data.frame()} and
+write them where they belong. Columns of one design combine with each other,
 including the results of separate products (\code{D \%*\% b1 + D \%*\% b2}, or
 \code{(D \%*\% b) / sqrt(quadratic_diagonal(D, V))}): a product becomes a view
 only when its values are first needed, on top of the other products it
 is combined with. Columns of different designs do not combine. Nor do
 two products that were each read (by \code{as.vector()}, \code{as.data.frame()},
-\code{compute()} or a sum) before being combined, since their views then
+\code{col_compute()} or a sum) before being combined, since their views then
 stand side by side and the database has no key to align their rows:
 combine the columns first, compute them in one product (\code{D \%*\% cbind(b1, b2)}, then \verb{[, 1]} and \verb{[, 2]}), or read them with \code{as.data.frame(keep = "id")} and match them in R. A column made by \code{design_column()} combines
 with any product of its design.
-
-\code{compute()} is a generic of this package. If another package that
-defines a function of the same name is attached after design.matrix,
-call \code{design.matrix::compute()}.
 }
 
 \examples{
@@ -182,8 +197,10 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     r <- design_column(Dr, "y") - Dr \%*\% b
     r
     head(as.data.frame(r, keep = "id", nm = "resid"))
-    r2 <- compute(r^2)
-    sum(as.vector(r2))
+    r2 <- col_compute(r^2)
+    sum(r2)
+    rt <- col_compute(r, name = "resid", nm = "resid")
+    head(DBI::dbGetQuery(con, "SELECT id, resid FROM resid ORDER BY id"))
     DBI::dbDisconnect(con)
 }
 }

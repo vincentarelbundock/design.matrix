@@ -136,7 +136,8 @@ lazy SQL expression over the rows of the design, where a design in
 memory returns a vector. Arithmetic on it builds another column;
 \code{as.vector(p)} reads its values into R, \code{as.data.frame(p, keep = "id")}
 reads them with columns of the remote data (to join them back), and
-\code{\link[=compute]{compute()}} stores it in a temporary table. \code{design_column(D, "y")}
+\code{\link[=col_compute]{col_compute()}} stores it in a table (temporary, or permanent with a
+\code{name}). \code{design_column(D, "y")}
 makes a column from a column of the remote data. Columns of one design
 combine, separate products included (\code{D \%*\% b1 + D \%*\% b2}): a
 product becomes a view only when it is first read, on top of the

@@ -25,7 +25,7 @@ Remote examples need the DBI and duckdb packages.
   [Columns], [`design_column(D, "y")`, arithmetic, comparisons, `exp()`, `log()`, `round()`, `lgamma()`, `is.na()`, ...],
   [Combining columns], [`col_ifelse()`, `col_pmin()`, `col_pmax()`],
   [Summaries], [`sum()`, `mean()`, `min()`, `max()`, `range()`, `any()`, `all()`, `col_sums()` (several sums, one query)],
-  [Values], [`as.vector()`, `as.matrix()`, `as.data.frame(keep = )`, `compute()` (a temporary table)],
+  [Values], [`as.vector()`, `as.matrix()`, `as.data.frame(keep = )`, `col_compute()` (a temporary table, or a permanent one with `name =`)],
   [Groupings], [`design_groups()`, `group_sums()`, `group_crosstab()`, `group_lookup()`, `group_nested()`],
   [Compression], [`design_patterns()`],
 )
@@ -97,12 +97,12 @@ all.equal(unname(fit_db[, "std.error"]), unname(sqrt(diag(V))))
 
 = A one-step robust estimator
 
-One step of iteratively reweighted least squares for Huber's M-estimator, from the least squares fit: the residuals are scaled, the rows with large residuals are downweighted with `col_pmin()`, and a weighted least squares step gives the new coefficients. `compute()` stores the residuals in a temporary table, since they are used several times (in memory it returns the vector). `col_sums()` reads several sums in one query.
+One step of iteratively reweighted least squares for Huber's M-estimator, from the least squares fit: the residuals are scaled, the rows with large residuals are downweighted with `col_pmin()`, and a weighted least squares step gives the new coefficients. `col_compute()` stores the residuals in a temporary table, since they are used several times (in memory it returns the vector). `col_sums()` reads several sums in one query.
 
 ```r
 huber_step <- function(D, b, k = 1.345) {
     y <- design_column(D, "y")
-    e <- compute(y - drop(D %*% b))
+    e <- col_compute(y - drop(D %*% b))
     s <- sqrt(sum(e^2) / (nrow(D) - ncol(D)))
     u <- abs(e) / s
     w <- col_pmin(1, k / u)                 # Huber weights

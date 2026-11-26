@@ -282,7 +282,7 @@ ols_cluster <- function(D, cl) {
 }
 huber_step <- function(D, b, k = 1.345) {
     y <- design_column(D, "y")
-    e <- compute(y - drop(D %*% b))
+    e <- col_compute(y - drop(D %*% b))
     s <- sqrt(sum(e^2) / (nrow(D) - ncol(D)))
     u <- abs(e) / s
     w <- col_pmin(1, k / u)

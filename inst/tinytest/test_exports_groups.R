@@ -238,7 +238,7 @@ expect_true(all(is.na(group_sums("yn", gr)[bad_g, 1])))
 ## a product of the design (pending), and a column computed first
 b <- c(0.5, -1)
 expect_true(same(group_sums(R %*% b, gr), group_sums(drop(M %*% b), g)))
-expect_true(same(group_sums(compute(design_column(R, "y") - R %*% b), gr),
+expect_true(same(group_sums(col_compute(design_column(R, "y") - R %*% b), gr),
                  group_sums(d$y - drop(M %*% b), g)))
 
 ## group_lookup

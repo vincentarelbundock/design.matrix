@@ -119,7 +119,7 @@ When the rows have few distinct design patterns (factors and discrete numeric va
 
 = Columns and predictions
 
-`D %*% beta`, `rowSums(D)` and `quadratic_diagonal(D, V)` return a remote column, a `design_column`: a SQL expression over the rows of the design, which nothing evaluates until its values are asked for. `design_column(D, "y")` makes one from a column of the data (or from a `DBI::SQL()` expression), and arithmetic on columns (`+`, `*`, `exp()`, `log()`, comparisons, `is.na()`) builds new ones. `as.vector()` and `as.matrix()` read the values into R, `as.data.frame()` reads them as a data frame, with columns of the data given by `keep`, and `compute()` stores a column in a temporary table, so that later queries read it instead of recomputing it. Printing a column shows its SQL and its connection, and reads no row.
+`D %*% beta`, `rowSums(D)` and `quadratic_diagonal(D, V)` return a remote column, a `design_column`: a SQL expression over the rows of the design, which nothing evaluates until its values are asked for. `design_column(D, "y")` makes one from a column of the data (or from a `DBI::SQL()` expression), and arithmetic on columns (`+`, `*`, `exp()`, `log()`, comparisons, `is.na()`) builds new ones. `as.vector()` and `as.matrix()` read the values into R, `as.data.frame()` reads them as a data frame, with columns of the data given by `keep`, and `col_compute()` stores a column in a temporary table, so that later queries read it instead of recomputing it; with `name = "preds"`, in a permanent table of the connection, for use outside the package (join it to other data on a key column such as `id`). Printing a column shows its SQL and its connection, and reads no row.
 
 ```r
 beta <- solve(crossprod(D), crossprod(D, "y"))
@@ -127,11 +127,14 @@ p <- D %*% beta
 p
 r <- design_column(D, "y") - p
 head(as.data.frame(r, keep = "id", nm = "resid"))
-r2 <- compute(r^2)
+r2 <- col_compute(r^2)
 sum(r2)
+## a permanent table, for use outside the package
+rt <- col_compute(r, name = "resid", nm = "resid")
+head(DBI::dbGetQuery(con, "SELECT id, resid FROM resid ORDER BY id"))
 ```
 
-A column is valid while its connection is open: the views and temporary tables it reads belong to the session of the connection. To keep values, read them with `as.data.frame()` and write them where they belong.
+A column is valid while its connection is open: the views and temporary tables it reads belong to the session of the connection. To keep values, store them in a permanent table with `col_compute(r, name = )`, or read them with `as.data.frame()` and write them where they belong.
 
 = Linear models
 

@@ -11,7 +11,7 @@
 ##                              of a frame (see below; made by dm_column())
 ##
 ## The remote column class, design_column, is also the public column type
-## (R/column.R: design_column(), as.vector(), as.matrix(), compute(),
+## (R/column.R: design_column(), as.vector(), as.matrix(), col_compute(),
 ## as.data.frame(), print/format, and the methods below for arithmetic). Everything else
 ## here is internal; names start with dmp_ (operations on designs), dmc_
 ## (operations on columns) or dm_.
@@ -69,7 +69,7 @@
 ## new frame (a view, or a join) only at the column's first use: an
 ## operation that reads rows (sums, crossprod, groups, dmp_collect,
 ## as.vector, as.matrix, as.data.frame, output), or that makes a frame or a design from the
-## column (dmc_freeze, compute, scale, subset, materialize). Arithmetic on
+## column (dmc_freeze, col_compute, scale, subset, materialize). Arithmetic on
 ## pending columns stays pending. At first use the pending columns of the
 ## operands are bound on the latest settled frame among them, one on the
 ## other in the order of the arguments, so that they all combine (a frame
@@ -85,8 +85,9 @@
 ##
 ## Getting values into R: dmp_collect(col) returns the values (in memory the
 ## vector itself; remotely a SELECT of all rows: only for small data). The
-## public as.vector() and as.matrix() call it, and compute() calls
-## dmc_freeze(table = TRUE).
+## public as.vector() and as.matrix() call it, and col_compute() calls
+## dmc_freeze(table = TRUE) (with a name, a permanent table of the same
+## rows and columns).
 ##
 ## ---------------------------------------------------------------------------
 ## Operations on designs
@@ -222,8 +223,8 @@
 ##   quadratic_diagonal(D, V)     column (label .quad)              done
 ##   design_column(D, "y"/SQL())  column of the remote data         done
 ##   as.vector, as.matrix,        values in R / data frame (with    done
-##     as.data.frame, compute     `keep` columns) / temporary table
-##     (of a column)
+##     as.data.frame,             `keep` columns) / temporary or
+##     col_compute (of a column)  permanent table
 ##   qr(D)                        dmqr_chol on X'X with lm()'s      done
 ##                                rule, suspects from products
 ##   qr.coef, qr.qty, qr.R, solve numbers (as in memory)            done
@@ -1377,11 +1378,14 @@ dmc_freeze <- function(col, table = FALSE) {
 
 ## The frame of a remote design as a temporary table of its rows used (with
 ## every column of the frame; the design's filter stays valid on them).
-## (`keep`: the columns of the frame to copy, NULL for all)
-dm_remote_to_table <- function(x, keep = NULL) {
-    tn <- dm_qi(x, dm_tmp_name("dm_mat"))
+## (`keep`: the columns of the frame to copy, NULL for all; `name`: a
+## permanent table of that name instead, replaced if `overwrite`, for the
+## public col_compute())
+dm_remote_to_table <- function(x, keep = NULL, name = NULL, overwrite = FALSE) {
+    tn <- dm_qi(x, if (is.null(name)) dm_tmp_name("dm_mat") else name)
+    create <- if (is.null(name)) "CREATE TEMPORARY TABLE" else if (overwrite) "CREATE OR REPLACE TABLE" else "CREATE TABLE"
     sel <- if (is.null(keep)) "*" else paste(dm_qi(x, keep), collapse = ", ")
-    dm_execute(x, sprintf("CREATE TEMPORARY TABLE %s AS SELECT %s FROM (%s) AS s WHERE %s", tn, sel, x$src$select, x$filter))
+    dm_execute(x, sprintf("%s %s AS SELECT %s FROM (%s) AS s WHERE %s", create, tn, sel, x$src$select, x$filter))
     x$src$select <- sprintf("SELECT * FROM %s", tn)
     x$src$base_table <- tn
     if (!is.null(keep) && !is.null(x$src$proto)) {

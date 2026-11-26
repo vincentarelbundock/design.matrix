@@ -105,6 +105,10 @@ two columns, or of a column and a number, as \code{\link[=pmin]{pmin()}} and \co
 \item \code{col_sums(...)}: the sums of several columns (each over all its
 values, as \code{sum()}), in one query remotely: a named double vector, one
 value per argument, named after the argument (\code{col_sums(n = 1 + 0 * r, rss = r^2)}), or after the variable for a bare name.
+\item \code{col_compute(x, name = NULL)} (see \link{design_column}): the column stored
+once in a table, a temporary one or, with a \code{name}, a permanent table
+of the connection, and a column that reads it, for a column that later
+queries read several times. In memory it returns \code{x}.
 }
 
 Arguments can mix remote columns and numbers. Remote columns must come

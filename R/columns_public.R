@@ -152,6 +152,10 @@ dm_summary_aggregates <- function(args, what) {
 #'   values, as `sum()`), in one query remotely: a named double vector, one
 #'   value per argument, named after the argument (`col_sums(n = 1 + 0 *
 #'   r, rss = r^2)`), or after the variable for a bare name.
+#' * `col_compute(x, name = NULL)` (see [design_column]): the column stored
+#'   once in a table, a temporary one or, with a `name`, a permanent table
+#'   of the connection, and a column that reads it, for a column that later
+#'   queries read several times. In memory it returns `x`.
 #'
 #' Arguments can mix remote columns and numbers. Remote columns must come
 #' from the same design (columns of two designs are an error); in memory

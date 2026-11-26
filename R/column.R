@@ -4,8 +4,9 @@
 ## design_column(D, "y"), the products D %*% b, rowSums(D), rowMeans(D) and
 ## quadratic_diagonal(D, V) return it, arithmetic composes it lazily, and
 ## the base generics as.vector(), as.matrix() and as.data.frame() evaluate
-## it (col_compute() stores it). In memory a column is a plain numeric
-## vector (or matrix), and base R applies to it (col_compute() returns it).
+## it; col_compute() stores it in a table (temporary, or permanent with a
+## name). In memory a column is a plain numeric vector (or matrix), base R
+## applies to it, and col_compute() returns it.
 ## Frames, their depth and lineage stay internal.
 
 #' Columns of a design
@@ -70,10 +71,24 @@
 #'   query. Remote rows have no order: to match the values with other data,
 #'   keep a key column. Two calls to `as.vector()` need not return the rows
 #'   in the same order.
-#' * `compute(x)`: the column computed once into a temporary table, and a
-#'   column that reads it (later queries scan the table instead of
-#'   recomputing the expression and the views below it). In memory it
-#'   returns `x`.
+#' * `col_compute(x)`: the column computed once into a temporary table, and
+#'   a column that reads it (later queries scan the table instead of
+#'   recomputing the expression and the views below it).
+#'   `col_compute(x, name = "preds")`: the same, into a permanent table
+#'   `preds` of the connection (`CREATE TABLE ... AS`; an error if the
+#'   table exists, unless `overwrite = TRUE`, which replaces it), for use
+#'   outside the package. The table holds the rows of the design (after its
+#'   filter: `na.action`, subsets), each with every column of the frame the
+#'   values were computed on: the columns of the data, the values (named
+#'   `nm`: by default as `as.data.frame()` names them) and internal columns
+#'   of the package (names starting with `__dm_`, the products and lookups
+#'   under the column), which can be ignored. The column returned reads
+#'   that table and stays aligned with the rows of its design, as with a
+#'   temporary table: the rows keep, next to the values, the columns that
+#'   later columns of the design read, so a product made later is a view
+#'   over the table. To match the values with other data outside the
+#'   package, join on a key column of the data (such as `id`). In memory
+#'   `col_compute()` returns `x` (there is no table).
 #' * `x[, j]`: the columns `j` of a column with several columns (as for the
 #'   matrix in memory), for instance of `D %*% cbind(b1, b2)`. Rows cannot
 #'   be selected: remote rows have no order.
@@ -83,26 +98,25 @@
 #'
 #' @section Lifetime:
 #' A remote column is valid while its connection is open. The views and
-#' temporary tables it reads (from products, and from `compute()`) live in
-#' the session of that connection, and disappear when it is closed; for a
-#' Parquet source, the column keeps its private connection open. To keep
-#' values beyond the session, read them with `as.data.frame()` and write
-#' them where they belong. Columns of one design combine with each other,
+#' temporary tables it reads (from products, and from `col_compute()`)
+#' live in the session of that connection, and disappear when it is
+#' closed; for a Parquet source, the column keeps its private connection
+#' open. To keep values beyond the session, store them in a permanent table
+#' with `col_compute(x, name = )` (on the connection of the design: for a
+#' Parquet source, a private in-memory connection, so read them with
+#' `as.data.frame()` instead), or read them with `as.data.frame()` and
+#' write them where they belong. Columns of one design combine with each other,
 #' including the results of separate products (`D %*% b1 + D %*% b2`, or
 #' `(D %*% b) / sqrt(quadratic_diagonal(D, V))`): a product becomes a view
 #' only when its values are first needed, on top of the other products it
 #' is combined with. Columns of different designs do not combine. Nor do
 #' two products that were each read (by `as.vector()`, `as.data.frame()`,
-#' `compute()` or a sum) before being combined, since their views then
+#' `col_compute()` or a sum) before being combined, since their views then
 #' stand side by side and the database has no key to align their rows:
 #' combine the columns first, compute them in one product (`D %*% cbind(b1,
 #' b2)`, then `[, 1]` and `[, 2]`), or read them with `as.data.frame(keep =
 #' "id")` and match them in R. A column made by `design_column()` combines
 #' with any product of its design.
-#'
-#' `compute()` is a generic of this package. If another package that
-#' defines a function of the same name is attached after design.matrix,
-#' call `design.matrix::compute()`.
 #'
 #' @param x For `design_column()`, a design: a `design_matrix` or a remote
 #'   design. For the other functions, a column.
@@ -111,14 +125,20 @@
 #' @param row.names,optional Not used.
 #' @param keep Names of columns of the remote data to read with the values
 #'   (for instance a key, to match the rows with other data).
-#' @param nm Names of the value columns of the data frame (one per column of
-#'   `x`).
+#' @param nm Names of the value columns (one per column of `x`): of the data
+#'   frame for `as.data.frame()`, of the table for `col_compute()` with a
+#'   `name`.
+#' @param name For `col_compute()`: `NULL` (default) for a temporary table,
+#'   or the name of a permanent table to create on the connection (a
+#'   string, quoted as an identifier).
+#' @param overwrite For `col_compute()` with a `name`: replace a table of
+#'   that name if it exists (otherwise that is an error).
 #' @param mode As in [as.vector()].
 #' @param ... Not used.
 #' @return `design_column()`: a double vector in memory, a `design_column`
 #'   remotely. `as.vector()`: a double vector. `as.matrix()`: a double
-#'   matrix. `as.data.frame()`: a
-#'   data frame. `compute()`: a `design_column` (in memory, `x`).
+#'   matrix. `as.data.frame()`: a data frame. `col_compute()`: a
+#'   `design_column` that reads the table (in memory, `x`).
 #' @examples
 #' d <- data.frame(y = rnorm(100), x = rnorm(100), f = gl(4, 25))
 #' D <- design_matrix(y ~ x * f, d)
@@ -134,8 +154,10 @@
 #'     r <- design_column(Dr, "y") - Dr %*% b
 #'     r
 #'     head(as.data.frame(r, keep = "id", nm = "resid"))
-#'     r2 <- compute(r^2)
-#'     sum(as.vector(r2))
+#'     r2 <- col_compute(r^2)
+#'     sum(r2)
+#'     rt <- col_compute(r, name = "resid", nm = "resid")
+#'     head(DBI::dbGetQuery(con, "SELECT id, resid FROM resid ORDER BY id"))
 #'     DBI::dbDisconnect(con)
 #' }
 #' @name design_column
@@ -210,19 +232,40 @@ as.matrix.design_column <- function(x, ...) {
 
 #' @rdname design_column
 #' @export
-compute <- function(x, ...) UseMethod("compute")
-
-#' @rdname design_column
-#' @export
-compute.default <- function(x, ...) x
-
-#' @rdname design_column
-#' @export
-compute.design_column <- function(x, ...) {
-    dm_column_valid(x)
-    out <- dmc_freeze(x, table = TRUE)
+col_compute <- function(x, name = NULL, overwrite = FALSE, nm = NULL) {
+    ## (in memory a column is the vector itself: nothing to store)
+    if (!dm_is_column(x)) return(x)
+    checkmate::assert_flag(overwrite, .var.name = "overwrite")
+    con <- dm_column_valid(x)
     lab <- unclass(x)$label
-    if (is.null(lab)) out else dm_column_label(out, lab)
+    if (is.null(name)) {
+        out <- dmc_freeze(x, table = TRUE)
+        return(if (is.null(lab)) out else dm_column_label(out, lab))
+    }
+    checkmate::assert_string(name, min.chars = 1L, .var.name = "name")
+    if (!overwrite && DBI::dbExistsTable(con, name))
+        stop(sprintf("A table `%s` already exists on the connection: choose another `name`, or use `overwrite = TRUE`.",
+                     name), call. = FALSE)
+    sql <- unclass(x)$sql
+    k <- length(sql)
+    nm <- nm %||% lab %||% (if (k == 1L) ".value" else paste0(".value", seq_len(k)))
+    checkmate::assert_character(nm, len = k, any.missing = FALSE, min.chars = 1L, unique = TRUE, .var.name = "nm")
+    if (any(startsWith(nm, "__dm_"))) stop("`nm`: names starting with `__dm_` are reserved.", call. = FALSE)
+    ## The table: the rows of the column's frame (the design's filter), with
+    ## every column of that frame and the values, as dmc_freeze(table =
+    ## TRUE) makes the temporary one; so the column returned (on a frame
+    ## one level deeper, in the lineage of the column's) combines with the
+    ## columns of its design.
+    fr <- dm_frame_bind(unclass(x)$frame)
+    taken <- intersect(nm, names(fr$src$types))
+    if (length(taken))
+        stop(sprintf("`nm`: the table already has a column `%s` (from the data); name the values with `nm`.",
+                     taken[1L]), call. = FALSE)
+    tab <- dm_remote_extend(dm_remote_unscaled(fr), stats::setNames(sql, nm), "column")
+    tab <- dm_remote_to_table(tab, name = name, overwrite = overwrite)
+    tab$depth <- dm_frame_depth(fr) + 1L
+    tab <- dm_frame_child(tab, fr)
+    dm_column_label(dm_column(tab, sprintf("s.%s", dm_qi(tab, nm)), notnull = unclass(x)$notnull), nm)
 }
 
 #' @rdname design_column

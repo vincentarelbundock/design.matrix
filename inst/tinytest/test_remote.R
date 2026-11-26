@@ -231,13 +231,13 @@ expect_equal(as.matrix(design_matrix(D, dd[1:5, ])), as.matrix(design_matrix(M, 
 D2 <- design_matrix(D, con, table = "d", na.action = stats::na.omit)
 expect_true(same(crossprod(D2), crossprod(design_matrix(M, dd, na.action = stats::na.omit))))
 
-## predictions: a remote column (design_column), stored by compute(); scaled
+## predictions: a remote column (design_column), stored by col_compute(); scaled
 ## predictions; scaled as.matrix()
 beta <- seq_len(ncol(D))
 col <- D %*% beta
 expect_inherits(col, "design_column")
 expect_equal(length(col), 1L)
-p <- as.data.frame(compute(col), keep = "id")
+p <- as.data.frame(col_compute(col), keep = "id")
 p <- p[order(p$id), ]
 expect_identical(names(p), c("id", ".fitted"))
 expect_true(same(p$.fitted, drop(M %*% beta)))

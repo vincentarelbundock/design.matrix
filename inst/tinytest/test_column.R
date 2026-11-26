@@ -1,6 +1,6 @@
 ## The public column type (Kata design.matrix#bvxy): design_column(),
 ## products of a remote design returning columns, as.vector(), as.matrix(),
-## compute(), as.data.frame(), print/format and x[, j]. The same chain of public calls
+## col_compute(), as.data.frame(), print/format and x[, j]. The same chain of public calls
 ## gives the same values in memory and on DuckDB. Only exported functions.
 source("helpers.R")
 library(design.matrix)
@@ -27,7 +27,8 @@ expect_error(design_column(M, "f"), "not a numeric vector")
 expect_error(design_column(as.matrix(M), "y"), "must be a design")
 v <- design_column(M, "y")
 expect_identical(as.vector(v), v)
-expect_identical(compute(v), v)
+expect_identical(col_compute(v), v)
+expect_identical(col_compute(v, name = "never_made"), v)
 Pm <- M %*% B
 expect_identical(as.matrix(Pm), Pm)
 
@@ -35,7 +36,7 @@ expect_identical(as.matrix(Pm), Pm)
 chain <- function(D) {
     eta <- D %*% b
     r <- design_column(D, "y") - exp(eta / 10)
-    list(eta = eta, r = r, r2 = compute(r * r))
+    list(eta = eta, r = r, r2 = col_compute(r * r))
 }
 chain_cols <- function(D) {
     P <- D %*% B
@@ -155,7 +156,7 @@ expect_true(same(by_id(e), ratio(M)))
 expect_true(same(by_id(e1), M %*% b))
 expect_true(same(by_id(e - e1 / sqrt(e2)), rep(0, n)))
 ## a computed (stored) column combines with a later product
-st <- compute(D %*% b)
+st <- col_compute(D %*% b)
 expect_true(same(by_id(st + D %*% b2), two(M)))
 expect_true(same(by_id(D %*% b2 - st), M %*% b2 - M %*% b))
 ## two products each read before they are combined: refused, with the way out
@@ -169,6 +170,41 @@ expect_error(p1 + p2, "before reading either")
 P12 <- D %*% cbind(b, b2)
 expect_equal(length(as.vector(P12[, 1])), n)
 expect_true(same(by_id(P12[, 1] + P12[, 2]), two(M)))
+
+## ---- col_compute(name =): a permanent table, aligned with the design ----
+r <- design_column(D, "y") - D %*% b
+rt <- col_compute(r, name = "dm_test_resid")
+expect_inherits(rt, "design_column")
+expect_true(DBI::dbExistsTable(con, "dm_test_resid"))
+tab <- DBI::dbReadTable(con, "dm_test_resid")
+expect_equal(nrow(tab), n)
+expect_true(all(c("id", "y", "x", ".value") %in% names(tab)))
+tab <- tab[order(tab$id), ]
+expect_true(same(tab$.value, d$y - drop(M %*% b)))
+expect_true(same(by_id(rt), d$y - drop(M %*% b)))
+## it combines with the columns of its design, and with a later product
+expect_true(same(by_id(rt - r), rep(0, n)))
+expect_true(same(by_id(rt + D %*% b2), d$y - drop(M %*% b) + drop(M %*% b2)))
+## an existing table: an error, unless overwrite = TRUE
+expect_error(col_compute(r, name = "dm_test_resid"), "already exists")
+rt2 <- col_compute(2 * r, name = "dm_test_resid", overwrite = TRUE)
+expect_true(same(by_id(rt2), 2 * (d$y - drop(M %*% b))))
+## value names: the label, `nm`, and a clash with a column of the data
+expect_error(col_compute(design_column(D, "y"), name = "dm_test_y"), "already has a column `y`")
+expect_false(DBI::dbExistsTable(con, "dm_test_y"))
+yt <- col_compute(design_column(D, "y"), name = "dm_test_y", nm = "y_copy")
+expect_true("y_copy" %in% DBI::dbListFields(con, "dm_test_y"))
+expect_identical(names(as.data.frame(yt)), "y_copy")
+pt <- col_compute(D %*% B, name = "dm_test_p")
+expect_true(all(c("b1", "b2") %in% DBI::dbListFields(con, "dm_test_p")))
+expect_true(same(by_id(pt), M %*% B))
+expect_error(col_compute(r, name = "dm_test_r2", nm = c("a", "b")), "nm")
+expect_error(col_compute(r, name = c("a", "b")), "name")
+## a subset design: only its rows
+Dsub <- D[DBI::SQL("x > 0"), ]
+ct <- col_compute(design_column(Dsub, "y") * 2, name = "dm_test_sub")
+expect_equal(nrow(DBI::dbReadTable(con, "dm_test_sub")), sum(d$x > 0))
+for (tn in c("dm_test_resid", "dm_test_y", "dm_test_p", "dm_test_sub")) DBI::dbRemoveTable(con, tn)
 
 ## ---- rows of the design ----
 i <- d$x > 0
@@ -191,5 +227,6 @@ DBI::dbDisconnect(con2)
 expect_true(grepl("(closed)", format(col)[1L], fixed = TRUE))
 expect_error(as.vector(col), "connection of this remote column is closed")
 expect_error(as.matrix(col), "connection of this remote column is closed")
-expect_error(compute(col), "closed")
+expect_error(col_compute(col), "closed")
+expect_error(col_compute(col, name = "t_closed"), "closed")
 expect_error(as.data.frame(col), "closed")
