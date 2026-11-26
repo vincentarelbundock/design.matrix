@@ -21,7 +21,7 @@ BugReports: https://github.com/vincentarelbundock/design.matrix/issues
 Depends: R (>= 4.4.0)
 Imports: checkmate, compiler, Matrix, methods, stats, utils
 Suggests: tinytest, splines, MASS, lme4, nlme, glmmTMB, betareg, ordinal, DBI, duckdb,
-    survival, estimatr, ivreg, pscl, nnet
+    survival, estimatr, ivreg, pscl, nnet, fixest
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 Config/roxygen2/version: 8.1.1
