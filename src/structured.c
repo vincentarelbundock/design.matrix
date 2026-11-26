@@ -173,6 +173,16 @@ typedef struct {
     double *buf;
 } dpart;
 
+/* Number of dense columns (terms with one level), as dense_part() counts
+   them, without allocating its buffer. */
+static int dense_count(const sctx *S)
+{
+    int q = 0;
+    for (int t = 0; t < S->nt; t++)
+	if (S->t[t].L == 1) q += S->t[t].ns;
+    return q;
+}
+
 static dpart dense_part(const sctx *S)
 {
     dpart P;
@@ -899,8 +909,7 @@ SEXP dm_struct_gram(SEXP setup, SEXP vars, SEXP w_, SEXP nthreads_)
 	    memset(acc0[q], 0, sizeof(double) * (size_t) len);
 	    work += (double) A->ns * B->ns + A->ns;
 	}
-    dpart P0 = dense_part(&S);
-    int qd = P0.q;
+    int qd = dense_count(&S);
     R_xlen_t lg = (R_xlen_t) qd * qd;
     int T = 1, req = asInteger(nthreads_);
     if (req > 1)
@@ -1021,8 +1030,7 @@ SEXP dm_struct_xty(SEXP setup, SEXP vars, SEXP Y_, SEXP nthreads_)
 	memset(acc0[t], 0, sizeof(double) * (size_t) len[t]);
 	work += (double) S.t[t].ns * (K + 1);
     }
-    dpart P0 = dense_part(&S);
-    int qd = P0.q;
+    int qd = dense_count(&S);
     R_xlen_t lg = (R_xlen_t) qd * K;
     int T = 1, req = asInteger(nthreads_);
     if (req > 1)
