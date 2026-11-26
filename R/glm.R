@@ -397,8 +397,10 @@ dmglm_mu_eta <- function(cf, eta, mu) {
 ## The response, prior weights, trials and offset as glm()'s initialize sees
 ## them (columns: vectors in memory, SQL remotely): y in [0, 1] and weights
 ## times trials for a two-column binomial response (a successes, b
-## failures), y = 0 where the weight is 0.
-dmglm_cols <- function(y, a, b, w, off, k, cb, weighted = TRUE) {
+## failures), y = 0 where the weight is 0. `weighted`: whether weights
+## were given (w is then theirs, else 1); a two-column response is
+## weighted by its trials.
+dmglm_cols <- function(y, a, b, w, off, k, cb, weighted) {
     y0 <- y
     if (cb) {
         if (!k$binomial)
@@ -421,11 +423,12 @@ dmglm_mem_cols <- function(Y, w, off, k) {
     if (length(dim(Y)) == 1L) dim(Y) <- NULL
     if (is.matrix(Y) && ncol(Y) == 1L) Y <- Y[, 1L]
     n <- NROW(Y)
+    weighted <- !is.null(w)
     w <- if (is.null(w)) rep.int(1, n) else as.double(w)
     off <- if (!is.null(off)) as.double(off)
     if (is.matrix(Y)) {
         if (ncol(Y) != 2L) stop("A two-column response needs two columns (successes and failures).", call. = FALSE)
-        return(dmglm_cols(NULL, as.double(Y[, 1L]), as.double(Y[, 2L]), w, off, k, TRUE))
+        return(dmglm_cols(NULL, as.double(Y[, 1L]), as.double(Y[, 2L]), w, off, k, TRUE, weighted))
     }
     ## a character response is a factor, as remotely
     if (is.character(Y)) Y <- factor(Y)
@@ -436,7 +439,7 @@ dmglm_mem_cols <- function(Y, w, off, k) {
     if (!is.numeric(Y) && !is.logical(Y)) stop("The response must be numeric, logical or a factor.", call. = FALSE)
     y <- as.double(Y)
     attributes(y) <- NULL
-    dmglm_cols(y, NULL, NULL, w, off, k, FALSE)
+    dmglm_cols(y, NULL, NULL, w, off, k, FALSE, weighted)
 }
 
 ## design_glm() on a design matrix x and a response y.

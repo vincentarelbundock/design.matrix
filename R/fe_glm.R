@@ -96,7 +96,6 @@ dm_fe_glm <- function(call, env, formula, family, data, start, control, contrast
     ## response, weights and offset (remote_fit.R)
     base <- design_problem(call, env, pf$main, data, contrasts, dots, family = k, fe = pf, clv = clv)
     gc <- base$cols
-    gc$weighted <- !is.null(base$w) || gc$cbind
     ## the columns of the GLM other than y and w go along with the rows kept
     flags <- gc[c("cbind", "weighted")]
     base$y <- gc$y

@@ -548,3 +548,11 @@ expect_inherits(f$na.action, "exclude")
 expect_identical(f$rows, 39L)
 f <- design_glm(k ~ x | id, poisson, con, table = "d2", weights = w, offset = log(z), na.action = na.exclude)
 expect_inherits(f$na.action, "dm_remote_exclude")
+
+# The compression of a GLM is weighted only when weights are given (or a
+# two-column response gives trials), in memory as remotely
+kp <- design.matrix:::dmglm_kind(poisson())
+kb <- design.matrix:::dmglm_kind(binomial())
+expect_false(design.matrix:::dmglm_mem_cols(c(1, 2, 3), NULL, NULL, kp)$weighted)
+expect_true(design.matrix:::dmglm_mem_cols(c(1, 2, 3), c(1, 1, 2), NULL, kp)$weighted)
+expect_true(design.matrix:::dmglm_mem_cols(cbind(c(1, 2), c(0, 1)), NULL, NULL, kb)$weighted)
