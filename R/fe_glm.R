@@ -82,11 +82,13 @@ dm_fe_bounds <- function(family) {
 ## Entry point from design_glm(): `call` is its matched call, `env` its
 ## parent frame.
 dm_fe_glm <- function(call, env, formula, family, data, start, control, contrasts, compress, model,
-                      vcov, fixef.rm, dots, na_kind) {
+                      vcov, fixef.rm, dots) {
     k <- dmglm_kind(family)
+    ## (the checks of dm_fe_lm(), in the same order)
+    dmfit_check_compress(compress)
     if (isTRUE(compress)) stop("`compress = TRUE` is not supported with fixed effects.", call. = FALSE)
     if (!is.null(start)) stop("`start` is not supported with fixed effects.", call. = FALSE)
-    if (na_kind == "fail") stop("With fixed effects, `na.action` must be na.omit or na.exclude.", call. = FALSE)
+    checkmate::assert_flag(model)
     pf <- dm_fe_parse(formula)
     clv <- dm_fe_vcov_arg(vcov)
     fixef.rm <- dm_fe_rm_arg(fixef.rm, glm = TRUE)
@@ -94,7 +96,6 @@ dm_fe_glm <- function(call, env, formula, family, data, start, control, contrast
     ## response, weights and offset (remote_fit.R)
     base <- design_problem(call, env, pf$main, data, contrasts, dots, family = k, fe = pf, clv = clv)
     gc <- base$cols
-    gc$weighted <- !is.null(base$w) || gc$cbind
     ## the columns of the GLM other than y and w go along with the rows kept
     flags <- gc[c("cbind", "weighted")]
     base$y <- gc$y
@@ -153,7 +154,7 @@ dm_fe_glm <- function(call, env, formula, family, data, start, control, contrast
     fit$xlevels <- base$xlevels
     fit$spec <- dmfit_spec(base$x)
     fit$offset_call <- call$offset
-    fit$env <- env
+    fit$env <- base$env
     fit$rows <- base$nall
     ## (remotely, na.exclude pads the results with every row not used)
     fit$na.action <- if (base$exclude) dm_remote_exclude(prob$x_rows)

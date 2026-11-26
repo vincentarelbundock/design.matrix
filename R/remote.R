@@ -199,11 +199,10 @@ dm_need_duckdb <- function() {
 dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = stats::na.pass,
                       drop_unused = FALSE, subset = NULL, extra = list(), override = list()) {
     dm_need_duckdb()
-    keys <- c("table", "sql", "engine", "chunk_size")
     nms <- names(dots)
     if (is.null(nms)) nms <- rep("", length(dots))
-    ra <- dots[nms %in% keys]
-    rest <- dots[!nms %in% keys]
+    ra <- dots[nms %in% dm_remote_keys]
+    rest <- dots[!nms %in% dm_remote_keys]
     engine <- ra$engine %||% "auto"
     checkmate::assert_choice(engine, c("auto", "sql"), .var.name = "engine")
     chunk_size <- ra$chunk_size %||% getOption("design.matrix.chunk_size", 250000)
@@ -475,7 +474,9 @@ dm_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(),
     for (nm in names(xlev)) xlevels[[nm]] <- xlev[[nm]]
     attr(tt, "predvars") <- as.call(c(list(as.name("list")), predvars))
     for (j in seq_along(predvars)) D$vars[[j]]$expr <- predvars[[j]]
-    if (!nrow(sample)) stop("The remote data has no complete rows.", call. = FALSE)
+    if (!nrow(sample))
+        stop(structure(class = c("dm_no_rows", "error", "condition"),
+                       list(message = "The remote data has no complete rows.", call = NULL)))
     D$plan <- design_plan.formula(tt, sample, contrasts.arg = contrasts.arg,
                                   xlev = if (length(xlevels)) xlevels else NULL)
     D$terms_full <- tt
