@@ -955,14 +955,13 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     fixef.rm <- dm_fe_rm_arg(fixef.rm)
     data <- if (is.null(call$data)) NULL else eval(call$data, env)
     ## the design of the rows with complete model variables, with the
-    ## response and weights as columns (as for fits without FE, the
-    ## construction differs: a model frame, or a remote design)
-    base <- dm_fe_base(pf, data, call, env, contrasts, dots, clv)
-    if (is.matrix(base$z)) stop("Multivariate responses are not supported.", call. = FALSE)
-    if (!is.numeric(base$z) && !dm_is_rcols(base$z)) stop("The response must be numeric.", call. = FALSE)
+    ## response and weights as columns (remote_fit.R)
+    base <- design_problem(call, env, pf$main, data, contrasts, dots, fe = pf, clv = clv)
+    if (is.matrix(base$y)) stop("Multivariate responses are not supported.", call. = FALSE)
+    if (!is.numeric(base$y) && !dm_is_rcols(base$y)) stop("The response must be numeric.", call. = FALSE)
     ## an offset: the fit is that of y - offset
     if (!is.null(base$off)) {
-        base$z <- base$z - base$off
+        base$y <- base$y - base$off
         base$more <- list(off = base$off)
     }
     prob <- dm_fe_prepare(base, pf, clv, fixef.rm)
@@ -979,10 +978,10 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     fit$terms <- base$terms
     fit$contrasts <- base$contrasts
     fit$xlevels <- base$xlevels
-    fit$spec <- base$spec
+    fit$spec <- dmfit_spec(base$x)
     ## (remotely, na.exclude pads the results with every row not used)
-    fit$na.action <- if (isTRUE(base$exclude)) dm_remote_exclude(prob$x_rows)
-                     else dm_fe_na_action(base$na_act, prob$rows, base$nall)
+    fit$na.action <- if (base$exclude) dm_remote_exclude(prob$x_rows)
+                     else dm_fe_na_action(base$na.action, prob$rows, base$nall)
     fit$method <- switch(dm_engine(prob$x), sql = "SQL aggregates", NULL)
     ## (the data of a remote fit stay in the database: always kept)
     if (!is.null(fit$method)) {
@@ -994,94 +993,6 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     }
     fit$call <- call
     fit
-}
-
-## The design of the rows with complete model variables and the response,
-## weights and offset as columns: in memory or remotely (the construction
-## differs, as for fits without FE). `glm`: the response of a GLM (a
-## factor, a two-column response cbind(successes, failures)).
-dm_fe_base <- function(pf, data, call, env, contrasts, dots, clv, glm = FALSE) {
-    if (!is.null(data) && dm_is_remote_source(data))
-        return(dm_fe_base_remote(pf, data, call, env, contrasts, dots, clv, glm))
-    if (length(dots)) stop("Unknown arguments: ", paste(names(dots), collapse = ", "), call. = FALSE)
-    dm_fe_base_memory(pf, call, env, contrasts, clv)
-}
-
-## In memory: the model frame of the main terms plus the FE and cluster
-## variables (so that rows with a missing value in any of them are
-## dropped), the design of the main terms (with the frame's predvars; the
-## design keeps the frame, FE variables included), response (as in the
-## frame: a vector, factor or matrix), weights and offset (offset() terms
-## and the `offset` argument).
-dm_fe_base_memory <- function(pf, call, env, contrasts, clv) {
-    fe_vars <- unique(unlist(pf$fe, use.names = FALSE))
-    aug <- dm_fe_augment(pf$main, unique(c(fe_vars, clv)))
-    environment(aug) <- environment(pf$main)
-    mf <- dmfit_model_frame(call, c("weights", "na.action", "offset"), env, formula = aug)
-    mt_aug <- attr(mf, "terms")
-    labs <- attr(mt_aug, "term.labels")
-    drop <- which(!labs %in% attr(stats::terms(pf$main), "term.labels"))
-    mt <- if (!length(drop)) {
-        mt_aug
-    } else if (length(drop) < length(labs)) {
-        stats::drop.terms(mt_aug, drop, keep.response = TRUE)
-    } else {
-        ## no main term left: a formula with the response, offset() terms
-        ## and the intercept
-        tt <- stats::terms(pf$main)
-        nv <- length(attr(tt, "variables"))
-        attr(tt, "predvars") <- attr(mt_aug, "predvars")[seq_len(nv)]
-        attr(tt, "dataClasses") <- attr(mt_aug, "dataClasses")[seq_len(nv - 1L)]
-        tt
-    }
-    environment(mt) <- environment(pf$main)
-    if (attr(mt_aug, "response") == 0L) stop("The formula has no response.", call. = FALSE)
-    ## (a factor or character response, for a GLM, as it is)
-    y <- mf[[1L]]
-    if (is.numeric(y) || is.logical(y)) y <- dmfit_response(mf)
-    w <- as.vector(stats::model.weights(mf))
-    if (!is.null(w) && !is.numeric(w)) stop("'weights' must be a numeric vector", call. = FALSE)
-    if (!is.null(w)) w <- as.double(w)
-    off <- as.vector(stats::model.offset(mf))
-    if (!is.null(off)) {
-        if (length(off) != NROW(y))
-            stop(gettextf("number of offsets is %d should equal %d (number of observations)",
-                          length(off), NROW(y)), call. = FALSE)
-        off <- as.double(off)
-    }
-    D <- design_matrix(mt, mf, contrasts.arg = contrasts)
-    list(x = D, z = y, w = w, off = off, keys = dm_fe_keys(D, pf, clv, mf),
-         rows = seq_len(nrow(mf)), nall = nrow(mf), na_act = attr(mf, "na.action"),
-         terms = mt, contrasts = D$contrasts, xlevels = stats::.getXlevels(mt, mf), spec = dmfit_spec(D))
-}
-
-## Remotely: the remote design of the right-hand side, and the response,
-## weights and offset resolved as columns (a column name, DBI::SQL(), or an
-## R expression: in SQL when translatable, else evaluated in R), on the
-## rows where the model, FE and cluster variables, the response, weights
-## and offset are present, as the model frame in memory (dm_remote_fit()).
-## `glm`: the response of a GLM (dmglm_remote_response()): `z` is then the
-## response (a factor as 0/1), `resp` the columns of cbind(a, b).
-dm_fe_base_remote <- function(pf, source, call, env, contrasts, dots, clv, glm = FALSE) {
-    na <- if (is.null(call$na.action)) "omit" else dm_na_kind(eval(call$na.action, env), c("omit", "exclude"), "For remote data, ")
-    nms <- names(dots)
-    if (is.null(nms)) nms <- rep("", length(dots))
-    keys <- c("table", "sql", "engine", "chunk_size")
-    if (any(!nms %in% keys))
-        stop("Unknown arguments: ", paste(nms[!nms %in% keys], collapse = ", "), call. = FALSE)
-    dm_need_duckdb()
-    src <- dm_remote_source(source, dots$table, dots$sql)
-    resp <- if (glm) dmglm_remote_response(pf$main[[2L]], src$types, src$holder$con)
-            else list(args = list(y = pf$main[[2L]]), present = character(), cbind = FALSE)
-    r <- dm_remote_fit(pf$main, src, c(resp$args, list(weights = call$weights, offset = call$offset)), env, dots,
-                       contrasts, present = unique(c(unlist(pf$fe, use.names = FALSE), clv, resp$present)))
-    D <- r$x
-    z <- if (length(resp$present)) dmglm_remote_factor(D, resp$present) else r$cols$y
-    list(x = D, z = z, w = r$cols$weights, off = r$off, resp = list(a = r$cols$a, b = r$cols$b, cbind = resp$cbind),
-         keys = dm_fe_keys(D, pf, clv),
-         rows = NULL, nall = D$n,
-         na_act = NULL, exclude = na == "exclude", terms = stats::terms(pf$main), contrasts = D$plan$contrasts, xlevels = D$plan$xlevels,
-         spec = D$plan)
 }
 
 ## The keys of the FE (and of the clusters, when they are not an FE): the
@@ -1105,7 +1016,7 @@ dm_fe_keys <- function(x, pf, clv, data = NULL) {
 ## more, levels, nsingle, nperfect, rows).
 dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "missing or negative weights not allowed") {
     x <- base$x
-    z <- base$z
+    z <- base$y
     w <- base$w
     rows <- base$rows
     more <- base$more

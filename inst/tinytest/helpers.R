@@ -111,3 +111,33 @@ write_fe_source <- function(con, dir, d, name) {
     DBI::dbExecute(con, sprintf("COPY %s TO '%s' (FORMAT PARQUET)", name, path))
     list(table = name, parquet = path)
 }
+
+# Count the SQL statements an expression sends to the database: every call
+# of DBI::dbGetQuery, dbExecute, dbSendQuery, dbSendStatement, dbWriteTable,
+# dbAppendTable and duckdb::duckdb_register, wherever it comes from (unlike
+# the option design.matrix.remote_debug, which only sees dm_query()). A call
+# made while another traced call runs (a DBI method built on another
+# generic) is not counted again. Returns list(value, count); the functions
+# are untraced on exit, even on error.
+count_queries <- function(expr) {
+    state <- new.env()
+    state$count <- 0L
+    state$depth <- 0L
+    enter <- function() {
+        if (state$depth == 0L) state$count <- state$count + 1L
+        state$depth <- state$depth + 1L
+    }
+    leave <- function() state$depth <- state$depth - 1L
+    fns <- list(DBI = c("dbGetQuery", "dbExecute", "dbSendQuery", "dbSendStatement",
+                        "dbWriteTable", "dbAppendTable"),
+                duckdb = "duckdb_register")
+    traced <- list()
+    on.exit(for (t in traced) suppressMessages(untrace(t[[2]], where = asNamespace(t[[1]]))))
+    for (pkg in names(fns)) for (f in fns[[pkg]]) {
+        suppressMessages(trace(f, tracer = as.call(list(enter)), exit = as.call(list(leave)), print = FALSE,
+                               where = asNamespace(pkg)))
+        traced[[length(traced) + 1L]] <- list(pkg, f)
+    }
+    value <- expr
+    list(value = value, count = state$count)
+}

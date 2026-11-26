@@ -79,21 +79,6 @@ dm_fe_bounds <- function(family) {
          one = isTRUE(abs(family$linkinv(100) - 1) < 1e-15))
 }
 
-## The columns of a GLM (dmglm_cols()) from the base of an FE fit: in
-## memory from the response of the model frame, remotely from its columns.
-dm_fe_glm_cols <- function(base, k) {
-    if (!is.null(base$resp)) {
-        w <- base$w
-        return(dmglm_cols(base$z, base$resp$a, base$resp$b, if (is.null(w)) dmc_const(base$x, 1) else w,
-                          base$off, k, base$resp$cbind, weighted = !is.null(w)))
-    }
-    Y <- base$z
-    if (is.matrix(Y) && ncol(Y) == 1L) Y <- Y[, 1L]
-    cols <- dmglm_mem_cols(Y, base$w, base$off, k)
-    cols$weighted <- !is.null(base$w) || cols$cbind
-    cols
-}
-
 ## Entry point from design_glm(): `call` is its matched call, `env` its
 ## parent frame.
 dm_fe_glm <- function(call, env, formula, family, data, start, control, contrasts, compress, model,
@@ -105,13 +90,14 @@ dm_fe_glm <- function(call, env, formula, family, data, start, control, contrast
     pf <- dm_fe_parse(formula)
     clv <- dm_fe_vcov_arg(vcov)
     fixef.rm <- dm_fe_rm_arg(fixef.rm, glm = TRUE)
-    ## the design of the rows with complete variables, response, weights
-    ## and offset (in memory: a model frame; remotely: a remote design)
-    base <- dm_fe_base(pf, data, call, env, contrasts, dots, clv, glm = TRUE)
-    gc <- dm_fe_glm_cols(base, k)
+    ## the design of the rows with complete variables, and the columns of the
+    ## response, weights and offset (remote_fit.R)
+    base <- design_problem(call, env, pf$main, data, contrasts, dots, family = k, fe = pf, clv = clv)
+    gc <- base$cols
+    gc$weighted <- !is.null(base$w) || gc$cbind
     ## the columns of the GLM other than y and w go along with the rows kept
     flags <- gc[c("cbind", "weighted")]
-    base$z <- gc$y
+    base$y <- gc$y
     base$w <- gc$w
     base$more <- Filter(Negate(is.null), gc[c("n", "off", "a", "b", "y0")])
     prob <- dm_fe_prepare(base, pf, clv, fixef.rm, dm_fe_bounds(family), wmsg = "negative weights not allowed")
@@ -165,13 +151,13 @@ dm_fe_glm <- function(call, env, formula, family, data, start, control, contrast
     fit$formula <- formula
     fit$contrasts <- base$contrasts
     fit$xlevels <- base$xlevels
-    fit$spec <- base$spec
+    fit$spec <- dmfit_spec(base$x)
     fit$offset_call <- call$offset
     fit$env <- env
     fit$rows <- base$nall
     ## (remotely, na.exclude pads the results with every row not used)
-    fit$na.action <- if (isTRUE(base$exclude)) dm_remote_exclude(prob$x_rows)
-                     else dm_fe_na_action(base$na_act, prob$rows, base$nall)
+    fit$na.action <- if (base$exclude) dm_remote_exclude(prob$x_rows)
+                     else dm_fe_na_action(base$na.action, prob$rows, base$nall)
     fit$method <- switch(dm_engine(x), sql = "SQL iterations", NULL)
     ## (the data of a remote fit stay in the database: always kept)
     if (!model && is.null(fit$method)) fit$data <- NULL
