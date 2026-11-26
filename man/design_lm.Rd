@@ -205,8 +205,10 @@ remote fits without FE.
 \item Offsets (the \code{offset} argument and \code{offset()} terms) are subtracted
 from the response, as in \code{\link[fixest:feols]{fixest::feols()}}; \code{fitted()} and \code{predict()}
 include them.
-\item Not supported with FE: \code{subset}, \code{compress = TRUE}, \code{se.fit}
-and intervals in \code{predict()}, clustering by more than one variable.
+\item Not supported with FE: \code{subset}, \code{compress = TRUE}, \code{na.action}
+other than \code{na.omit} and \code{na.exclude} (in memory and remotely),
+\code{.} in the formula, \code{se.fit} and intervals in \code{predict()}, clustering
+by more than one variable.
 For remote data, the response and \code{weights} are column names,
 \code{DBI::SQL()} or R expressions, as without FE (expressions with no SQL
 translation are evaluated in R, in batches).

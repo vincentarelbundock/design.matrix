@@ -1,17 +1,15 @@
 # The input stage of the formula fits (design_lm(), design_glm(), fixed
 # effects; in memory and on a DuckDB table): every error and warning
 # message, exactly (fixed = TRUE), and the error reported when a call has
-# two problems (validation order). These pin current behaviour, including
-# differences between paths that are not decided yet:
+# two problems (validation order). The behaviour is the same in memory and
+# remotely; where lm() and glm() differ, the model kind decides, as in base R:
 # * offsets: lm() says "is %d, should equal", glm() and FE "is %d should equal";
 # * weights: LM "missing or negative weights not allowed", GLM "negative
-#   weights not allowed";
-# * a formula with no response fits in memory (LM), errors remotely; with FE
-#   remotely the right-hand side is taken as the response;
-# * a factor response with a non-binomial family errors in memory, fits remotely;
-# * a two-column response, a matrix offset, a subset leaving no rows: other
-#   errors remotely than in memory;
-# * na.action = na.pass with FE: fits in memory, refused remotely.
+#   weights not allowed".
+# Differences left between the modes: non-numeric weights, offsets and
+# responses (remotely, "has no SQL translation"), and the na.action
+# functions that remote data cannot apply (other than na.omit, na.exclude,
+# na.fail, na.pass) in linear models without FE.
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
 library(design.matrix)
@@ -43,7 +41,7 @@ expect_error(design_lm(y ~ x, d, weights = wzero),
 expect_error(design_lm(y ~ x, d, offset = 1:3),
              "variable lengths differ (found for '(offset)')", fixed = TRUE)
 expect_error(design_lm(~ x, d, offset = z),
-             "number of offsets is 40, should equal 0 (number of observations)", fixed = TRUE)
+             "The formula has no response.", fixed = TRUE)
 expect_error(design_lm(yna ~ x, d, na.action = na.pass),
              "NA/NaN/Inf in 'y'", fixed = TRUE)
 expect_error(design_lm(yna ~ x, d, na.action = na.fail),
@@ -52,7 +50,8 @@ expect_error(design_lm(ch ~ x, d),
              "The response must be numeric.", fixed = TRUE)
 expect_error(design_lm(cbind(y, x) ~ z, d),
              "Multivariate responses are not supported.", fixed = TRUE)
-expect_inherits(design_lm(~ x, d), "design_lm")
+expect_error(design_lm(~ x, d),
+             "The formula has no response.", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, subset = x > 100),
              "0 (non-NA) cases", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, subset = nosuch > 0),
@@ -71,6 +70,8 @@ expect_error(design_lm(y ~ x, d, y = 1, compress = "no"),
              "`y` applies only when the first argument is a design matrix.", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, compress = "no", tol = -1),
              "`compress` must be \"auto\", TRUE or FALSE.", fixed = TRUE)
+expect_error(design_lm(y ~ x, d, foo = nosuch),
+             "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, weights = wneg, subset = x > 100),
              "0 (non-NA) cases", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, na.action = function(x) stop("custom na")),
@@ -94,11 +95,17 @@ expect_error(design_lm(yna ~ x, con, table = "d", na.action = na.fail),
 expect_error(design_lm(ch ~ x, con, table = "d"),
              "`response` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
 expect_error(design_lm(cbind(y, x) ~ z, con, table = "d"),
-             "`cbind(y, x)` gives 80 values for 40 rows.", fixed = TRUE)
+             "Multivariate responses are not supported.", fixed = TRUE)
+expect_error(design_lm(cbind(y, x) ~ z, con, table = "d", weights = ch),
+             "Multivariate responses are not supported.", fixed = TRUE)
+expect_error(suppressMessages(design_lm(as.matrix(data.frame(y, x)) ~ z, con, table = "d")),
+             "Multivariate responses are not supported.", fixed = TRUE)
+expect_error(design_lm(as.matrix(data.frame(y, x)) ~ z, d),
+             "Multivariate responses are not supported.", fixed = TRUE)
 expect_error(design_lm(~ x, con, table = "d"),
              "The formula has no response.", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", subset = x > 100),
-             "The remote data has no complete rows.", fixed = TRUE)
+             "0 (non-NA) cases", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", subset = nosuch > 0),
              "object 'nosuch' not found", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", foo = 1),
@@ -112,9 +119,15 @@ expect_error(design_lm(y ~ x, con, table = "d", na.action = function(x) x, foo =
 expect_error(design_lm(~ x, con, table = "d", foo = 1),
              "The formula has no response.", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", weights = wneg, subset = x > 100),
-             "The remote data has no complete rows.", fixed = TRUE)
+             "0 (non-NA) cases", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", vcov = "hc1", compress = "no"),
              "`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", fixed = TRUE)
+expect_error(design_lm(y ~ x, con, table = "d", foo = nosuch),
+             "Unknown arguments: foo", fixed = TRUE)
+expect_error(design_glm(y ~ x, gaussian, con, table = "d", vcov = "hc1", compress = "no"),
+             "`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", fixed = TRUE)
+expect_error(design_glm(y ~ x, gaussian, con, table = "d", y = 1, compress = "no"),
+             "`y` applies only when the first argument is a design matrix.", fixed = TRUE)
 
 # GLM memory
 expect_error(design_glm(b1 ~ x, binomial, d, weights = wneg),
@@ -139,6 +152,8 @@ expect_error(design_glm(yna ~ x, gaussian, d, na.action = na.fail),
              "missing values in object", fixed = TRUE)
 expect_error(design_glm(f ~ x, poisson, d),
              "A factor response needs a binomial family.", fixed = TRUE)
+expect_error(design_glm(design_matrix(~ x, d), poisson, y = d$f),
+             "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(ch ~ x, poisson, d),
              "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(cbind(b1, fails, k) ~ x, binomial, d),
@@ -148,7 +163,7 @@ expect_error(design_glm(cbind(b1, fails) ~ x, poisson, d),
 expect_error(design_glm(as.Date(k) ~ x, gaussian, d),
              "The response must be numeric, logical or a factor.", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, d, subset = x > 0),
-             "object 'x' not found", fixed = TRUE)
+             "Unknown arguments: subset", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, d, foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, d, foo = 1, weights = wneg),
@@ -158,7 +173,13 @@ expect_error(design_glm(cbind(b1, fails, k) ~ x, binomial, d, weights = ch),
 expect_error(design_glm(f ~ x, poisson, d, weights = wneg),
              "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, d, vcov = "hc1", compress = "no"),
+             "`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", fixed = TRUE)
+expect_error(design_glm(y ~ x, gaussian, d, y = 1, compress = "no"),
+             "`y` applies only when the first argument is a design matrix.", fixed = TRUE)
+expect_error(design_glm(y ~ x, gaussian, d, compress = "no", model = NA),
              "`compress` must be \"auto\", TRUE or FALSE.", fixed = TRUE)
+expect_error(design_glm(y ~ x, gaussian, d, subset = x > 0, foo = nosuch),
+             "Unknown arguments: subset, foo", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, d, y = 1, na.action = na.pass),
              "`y` applies only when the first argument is a design matrix.", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, d, na.action = na.pass, foo = 1),
@@ -187,14 +208,19 @@ expect_error(design_glm(yna ~ x, gaussian, con, table = "d", na.action = na.pass
              "`na.action` must be na.omit, na.exclude, na.fail.", fixed = TRUE)
 expect_error(design_glm(yna ~ x, gaussian, con, table = "d", na.action = na.fail),
              "missing values in object", fixed = TRUE)
-expect_inherits(design_glm(f ~ x, poisson, con, table = "d"), "design_glm")
-expect_inherits(design_glm(ch ~ x, poisson, con, table = "d"), "design_glm")
+expect_error(design_glm(f ~ x, poisson, con, table = "d"),
+             "A factor response needs a binomial family.", fixed = TRUE)
+expect_error(design_glm(ch ~ x, poisson, con, table = "d"),
+             "A factor response needs a binomial family.", fixed = TRUE)
+expect_inherits(design_glm(f ~ x, binomial, con, table = "d"), "design_glm")
+expect_error(design_glm(design_matrix(~ x, con, table = "d"), poisson, y = "f"),
+             "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(cbind(b1, fails, k) ~ x, binomial, con, table = "d"),
              "A two-column response needs two columns (successes and failures).", fixed = TRUE)
 expect_error(design_glm(cbind(b1, fails) ~ x, poisson, con, table = "d"),
              "A two-column response (successes and failures) needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, con, table = "d", subset = x > 0),
-             "object 'x' not found", fixed = TRUE)
+             "Unknown arguments: subset", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, con, table = "d", foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, con, table = "d", foo = 1, weights = wneg),
@@ -202,7 +228,7 @@ expect_error(design_glm(y ~ x, gaussian, con, table = "d", foo = 1, weights = wn
 expect_error(design_glm(cbind(b1, fails, k) ~ x, binomial, con, table = "d", weights = ch),
              "A two-column response needs two columns (successes and failures).", fixed = TRUE)
 expect_error(design_glm(f ~ x, poisson, con, table = "d", weights = wneg),
-             "negative weights not allowed", fixed = TRUE)
+             "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, con, table = "d", na.action = na.pass, foo = 1),
              "`na.action` must be na.omit, na.exclude, na.fail.", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, con, table = "d", start = 1),
@@ -224,12 +250,32 @@ expect_error(design_lm(ch ~ x | id, d),
 expect_error(design_lm(cbind(y, x) ~ z | id, d),
              "Multivariate responses are not supported.", fixed = TRUE)
 expect_error(design_lm(yna ~ x | id, d, na.action = na.fail),
-             "missing values in object", fixed = TRUE)
-expect_inherits(design_lm(yna ~ x | id, d, na.action = na.pass), "design_lm")
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, d, na.action = na.fail),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_lm(yna ~ x | id, d, na.action = na.pass),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, d, na.action = function(x) x),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, d, na.action = na.fail, foo = 1),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_inherits(design_lm(yna ~ x | id, d, na.action = "na.exclude"), "design_lm")
 expect_error(design_lm(y ~ x | id, d, subset = x > 0),
              "`subset` is not supported with fixed effects.", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, d, compress = TRUE),
              "`compress = TRUE` is not supported with fixed effects.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, d, compress = "no"),
+             "`compress` must be \"auto\", TRUE or FALSE.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, con, table = "d", compress = "no"),
+             "`compress` must be \"auto\", TRUE or FALSE.", fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, d, compress = "no"),
+             "`compress` must be \"auto\", TRUE or FALSE.", fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, con, table = "d", compress = "no"),
+             "`compress` must be \"auto\", TRUE or FALSE.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, d, na.action = na.pass, compress = "no"),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, d, na.action = na.pass, compress = "no"),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, d, foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, d, foo = 1, weights = wneg),
@@ -250,19 +296,29 @@ expect_error(design_lm(y ~ x | id, con, table = "d", weights = wneg),
              "missing or negative weights not allowed", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", weights = ch),
              "`weights` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
-expect_inherits(design_lm(~ x | id, con, table = "d"), "design_lm")
+expect_error(design_lm(~ x | id, con, table = "d"),
+             "The formula has no response.", fixed = TRUE)
 expect_error(design_lm(ch ~ x | id, con, table = "d"),
              "`response` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
 expect_error(design_lm(yna ~ x | id, con, table = "d", na.action = na.fail),
-             "For remote data, `na.action` must be na.omit, na.exclude.", fixed = TRUE)
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, con, table = "d", na.action = na.fail),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_lm(yna ~ x | id, con, table = "d", na.action = na.pass),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, con, table = "d", na.action = function(x) x),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", na.action = na.fail, foo = 1),
-             "For remote data, `na.action` must be na.omit, na.exclude.", fixed = TRUE)
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_inherits(design_lm(yna ~ x | id, con, table = "d", na.action = "na.exclude"), "design_lm")
 expect_error(design_lm(y ~ x | id, con, table = "d", foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", foo = 1, weights = wneg),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", subset = x > 0),
              "`subset` is not supported with fixed effects.", fixed = TRUE)
+expect_error(design_lm(cbind(y, x) ~ z | id, con, table = "d"),
+             "Multivariate responses are not supported.", fixed = TRUE)
 expect_error(design_lm(y ~ x | nosuch, con, table = "d"),
              "No column `nosuch` in the remote data.", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", vcov = ~nosuch),
@@ -284,13 +340,15 @@ expect_error(design_glm(cbind(b1, fails, k) ~ x | id, binomial, d),
 expect_error(design_glm(k ~ x | id, poisson, d, na.action = na.fail),
              "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, na.action = na.pass),
-             "`na.action` must be na.omit, na.exclude, na.fail.", fixed = TRUE)
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, d, na.action = function(x) x),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, start = 1),
              "`start` is not supported with fixed effects.", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, subset = x > 0),
-             "object 'x' not found", fixed = TRUE)
+             "Unknown arguments: subset", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, compress = TRUE),
              "`compress = TRUE` is not supported with fixed effects.", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, foo = 1, weights = wneg),
@@ -304,20 +362,41 @@ expect_error(design_glm(b1 ~ x | id, binomial, con, table = "d", weights = wneg)
 expect_error(design_glm(k ~ x | id, poisson, con, table = "d", weights = ch),
              "`weights` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
 expect_error(design_glm(~ x | id, poisson, con, table = "d"),
-             "negative values not allowed for the 'Poisson' family", fixed = TRUE)
-expect_inherits(design_glm(f ~ x | id, poisson, con, table = "d"), "design_glm")
+             "The formula has no response.", fixed = TRUE)
+expect_error(design_glm(f ~ x | id, poisson, con, table = "d"),
+             "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(cbind(b1, fails, k) ~ x | id, binomial, con, table = "d"),
              "A two-column response needs two columns (successes and failures).", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, con, table = "d", na.action = na.fail),
              "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, con, table = "d", na.action = na.pass),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, con, table = "d", na.action = function(x) x),
+             "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, con, table = "d", foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, con, table = "d", subset = x > 0),
-             "object 'x' not found", fixed = TRUE)
+             "Unknown arguments: subset", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, con, table = "d", foo = 1, weights = wneg),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(f ~ x | id, poisson, con, table = "d", weights = ch),
              "`weights` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
+# Negative weights on a design matrix: the wording of lm() or glm()
+Dm <- design_matrix(~ x, d)
+Dr <- design_matrix(~ x, con, table = "d")
+expect_error(design_lm(Dm, y = d$y, weights = d$wneg),
+             "missing or negative weights not allowed", fixed = TRUE)
+expect_error(design_lm(Dr, y = "y", weights = wneg),
+             "missing or negative weights not allowed", fixed = TRUE)
+expect_error(design_glm(Dm, binomial, y = d$b1, weights = d$wneg),
+             "negative weights not allowed", fixed = TRUE)
+expect_error(design_glm(Dr, binomial, y = "b1", weights = wneg),
+             "negative weights not allowed", fixed = TRUE)
+expect_false(grepl("missing", tryCatch(design_glm(Dm, binomial, y = d$b1, weights = d$wneg),
+                                       error = conditionMessage)))
+expect_false(grepl("missing", tryCatch(design_glm(Dr, binomial, y = "b1", weights = wneg),
+                                       error = conditionMessage)))
+
 # Offsets of the wrong length (a matrix offset), two problems, na.action,
 # contrasts, non-numeric offsets and subsets, zero weights
 expect_error(design_lm(y ~ x, d, offset = cbind(z, z)),
@@ -329,7 +408,23 @@ expect_error(design_lm(y ~ x | id, d, offset = cbind(z, z)),
 expect_error(design_glm(k ~ x | id, poisson, d, offset = cbind(z, z)),
              "number of offsets is 80 should equal 40 (number of observations)", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", offset = cbind(z, z)),
-             "`cbind(z, z)` gives 80 values for 40 rows.", fixed = TRUE)
+             "number of offsets is 80, should equal 40 (number of observations)", fixed = TRUE)
+expect_error(design_lm(y ~ x + offset(cbind(z, z)), con, table = "d"),
+             "number of offsets is 80, should equal 40 (number of observations)", fixed = TRUE)
+expect_error(design_lm(y ~ x, con, table = "d", subset = x > 0, offset = cbind(z, z)),
+             sprintf("number of offsets is %d, should equal %d (number of observations)",
+                     2L * sum(d$x > 0), sum(d$x > 0)), fixed = TRUE)
+expect_error(design_lm(y ~ x, d, subset = x > 0, offset = cbind(z, z)),
+             sprintf("number of offsets is %d, should equal %d (number of observations)",
+                     2L * sum(d$x > 0), sum(d$x > 0)), fixed = TRUE)
+expect_error(design_glm(y ~ x, gaussian, con, table = "d", offset = cbind(z, z)),
+             "number of offsets is 80 should equal 40 (number of observations)", fixed = TRUE)
+expect_error(design_lm(y ~ x | id, con, table = "d", offset = cbind(z, z)),
+             "number of offsets is 80 should equal 40 (number of observations)", fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, con, table = "d", offset = cbind(z, z)),
+             "number of offsets is 80 should equal 40 (number of observations)", fixed = TRUE)
+expect_error(design_glm(cbind(b1, fails) ~ x, binomial, con, table = "d", offset = cbind(z, z)),
+             "number of offsets is 80 should equal 40 (number of observations)", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, offset = cbind(z, z), weights = ch),
              "'weights' must be a numeric vector", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, d, offset = cbind(z, z), weights = ch),
@@ -376,6 +471,31 @@ expect_error(design_lm(y ~ x | id, d, na.action = na.exclude, foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, weights = wzero),
              "0 (non-NA) cases", fixed = TRUE)
+# `.` with fixed effects: refused in both modes
+dot <- "`.` is not supported in a formula with fixed effects: name the variables."
+expect_error(design_lm(y ~ . | id, d), dot, fixed = TRUE)
+expect_error(design_lm(y ~ . | id, con, table = "d"), dot, fixed = TRUE)
+expect_error(design_glm(k ~ . | id, poisson, d), dot, fixed = TRUE)
+expect_error(design_glm(k ~ . | id, poisson, con, table = "d"), dot, fixed = TRUE)
+# the terms of an FE fit: those of the main formula, in both modes
+fm <- design_lm(y ~ x + f | id, d)
+fr <- design_lm(y ~ x + f | id, con, table = "d")
+expect_identical(attr(fm$terms, "term.labels"), attr(fr$terms, "term.labels"))
+expect_identical(formula(fm$terms), formula(fr$terms))
+expect_identical(environment(fm$terms), environment(fr$terms))
+
+# No complete rows: lm()'s error on every path
+d0 <- d
+d0$allna <- NA_real_
+DBI::dbWriteTable(con, "d0", d0)
+expect_error(design_lm(allna ~ x, d0), "0 (non-NA) cases", fixed = TRUE)
+expect_error(design_lm(allna ~ x, con, table = "d0"), "0 (non-NA) cases", fixed = TRUE)
+expect_error(design_glm(allna ~ x, gaussian, d0), "0 (non-NA) cases", fixed = TRUE)
+expect_error(design_glm(allna ~ x, gaussian, con, table = "d0"), "0 (non-NA) cases", fixed = TRUE)
+expect_error(design_lm(allna ~ x | id, d0), "0 (non-NA) cases", fixed = TRUE)
+expect_error(design_lm(allna ~ x | id, con, table = "d0"), "0 (non-NA) cases", fixed = TRUE)
+expect_error(design_glm(allna ~ x | id, poisson, d0), "0 (non-NA) cases", fixed = TRUE)
+expect_error(design_glm(allna ~ x | id, poisson, con, table = "d0"), "0 (non-NA) cases", fixed = TRUE)
 
 # What a fit keeps from its input, per path (names, not order).
 d2 <- d
@@ -445,3 +565,54 @@ expect_inherits(f$na.action, "exclude")
 expect_identical(f$rows, 39L)
 f <- design_glm(k ~ x | id, poisson, con, table = "d2", weights = w, offset = log(z), na.action = na.exclude)
 expect_inherits(f$na.action, "dm_remote_exclude")
+
+# The compression of a GLM is weighted only when weights are given (or a
+# two-column response gives trials), in memory as remotely
+kp <- design.matrix:::dmglm_kind(poisson())
+kb <- design.matrix:::dmglm_kind(binomial())
+expect_false(design.matrix:::dmglm_mem_cols(c(1, 2, 3), NULL, NULL, kp)$weighted)
+expect_true(design.matrix:::dmglm_mem_cols(c(1, 2, 3), c(1, 1, 2), NULL, kp)$weighted)
+expect_true(design.matrix:::dmglm_mem_cols(cbind(c(1, 2), c(0, 1)), NULL, NULL, kb)$weighted)
+
+# fit$env: the formula's environment on every path; the arguments are
+# evaluated there (and in the data), as model.frame() does
+mkf <- function(fo) {
+    wloc <- d$w
+    force(fo)
+    environment(fo) <- environment()
+    fo
+}
+fo_lm <- mkf(y ~ x)
+fo_fe <- mkf(y ~ x | id)
+fo_glm <- mkf(k ~ x)
+fo_feglm <- mkf(k ~ x | id)
+expect_identical(design_lm(fo_lm, d)$env, environment(fo_lm))
+expect_identical(design_lm(fo_lm, con, table = "d")$env, environment(fo_lm))
+expect_identical(design_glm(fo_glm, poisson, d)$env, environment(fo_glm))
+expect_identical(design_glm(fo_glm, poisson, con, table = "d")$env, environment(fo_glm))
+expect_identical(design_lm(fo_fe, d)$env, environment(fo_fe))
+expect_identical(design_lm(fo_fe, con, table = "d")$env, environment(fo_fe))
+expect_identical(design_glm(fo_feglm, poisson, d)$env, environment(fo_feglm))
+expect_identical(design_glm(fo_feglm, poisson, con, table = "d")$env, environment(fo_feglm))
+fw_m <- design_lm(fo_lm, d, weights = wloc * 2)
+fw_r <- suppressMessages(design_lm(fo_lm, con, table = "d", weights = wloc * 2))
+expect_equal(coef(fw_m), coef(fw_r))
+expect_equal(coef(fw_m), coef(lm(y ~ x, d, weights = w)))
+
+# Designs as first argument: the same checks, in the same order (checks.R),
+# for lm and glm, in memory and remotely
+Dm <- design_matrix(y ~ x, d)
+Dr <- design_matrix(y ~ x, con, table = "d")
+for (D in list(Dm, Dr)) {
+    expect_error(design_lm(D, data = d, compress = "no"),
+                 "With a design matrix, give the response as `y`; `data`, `subset`, `na.action` and `contrasts` do not apply.", fixed = TRUE)
+    expect_error(design_glm(D, gaussian, data = d, compress = "no"),
+                 "With a design matrix, give the response as `y`; `data`, `na.action` and `contrasts` do not apply.", fixed = TRUE)
+    expect_error(design_glm(D, gaussian, foo = nosuch, compress = "no"),
+                 "Unknown arguments: foo", fixed = TRUE)
+    expect_error(design_lm(D, vcov = "hc1", compress = "no"),
+                 "`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", fixed = TRUE)
+    expect_error(design_glm(D, gaussian, vcov = "hc1", compress = "no"),
+                 "`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", fixed = TRUE)
+    expect_error(design_lm(D, y = d$y, tol = -1), "tol")
+}

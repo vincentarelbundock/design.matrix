@@ -117,20 +117,30 @@
 #' When the rows have few distinct *design patterns* (the same factor levels
 #' and the same values of the numeric variables of the design, as with
 #' factors and discrete numeric variables), `crossprod()`, `colSums()`,
-#' `colMeans()`, [design_lm()] and [design_glm()] compress: the one scan of
-#' the rows also groups by the numeric variables, which returns each pattern
-#' with its number of rows and the sums of the weights and responses, and
-#' the result is computed from the design of the patterns, in memory. The
-#' option `design.matrix.remote_compress`
-#' controls it. With `"auto"` (default), a design with a continuous
-#' numeric column (a `DOUBLE` column with many distinct values in a sample
-#' of the rows) is not compressed, at almost no cost; otherwise the number
-#' of patterns is estimated over all the rows (`approx_count_distinct()`),
-#' and the products are compressed when it is at most
-#' `getOption("design.matrix.remote_compress_ratio", 0.1)` times the number
-#' of rows and at most `getOption("design.matrix.remote_compress_max", 1e6)`.
+#' `colMeans()`, [design_lm()] and [design_glm()] can compress: the one scan
+#' of the rows also groups by the numeric variables, which returns each
+#' pattern with its number of rows and the sums of the weights and
+#' responses, and the result is computed from the design of the patterns,
+#' in memory. The option `design.matrix.remote_compress` controls it.
 #' `TRUE` always compresses (unless every row is distinct); `FALSE` never
-#' does. Designs that keep rows with missing values
+#' does. With `"auto"` (default), the choice depends on the operation:
+#' * `colSums()` and `colMeans()` are never compressed (grouping by the
+#'   numeric variables costs more than it saves);
+#' * `crossprod()` is compressed only for designs with many numeric columns
+#'   (currently at least 8 distinct products of numeric variables; the
+#'   threshold is provisional), where compression saves many per-row
+#'   products, and when the patterns are at most 1% of the rows. Other
+#'   designs skip the decision entirely;
+#' * [design_lm()] and [design_glm()] are compressed when the patterns are at
+#'   most `getOption("design.matrix.remote_compress_ratio", 0.1)` times the
+#'   number of rows.
+#'
+#' In every case the number of patterns must also be at most
+#' `getOption("design.matrix.remote_compress_max", 1e6)`. To decide, a design
+#' with a continuous numeric column (a `DOUBLE` column with many distinct
+#' values in a sample of the rows) is not compressed, at almost no cost;
+#' otherwise the number of patterns is estimated over all the rows
+#' (`approx_count_distinct()`). Designs that keep rows with missing values
 #' (`na.action = na.pass`) are not compressed.
 #'
 #' Remote designs keep only the *Algebra* promise of the package: results
@@ -189,11 +199,10 @@ dm_need_duckdb <- function() {
 dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = stats::na.pass,
                       drop_unused = FALSE, subset = NULL, extra = list(), override = list()) {
     dm_need_duckdb()
-    keys <- c("table", "sql", "engine", "chunk_size")
     nms <- names(dots)
     if (is.null(nms)) nms <- rep("", length(dots))
-    ra <- dots[nms %in% keys]
-    rest <- dots[!nms %in% keys]
+    ra <- dots[nms %in% dm_remote_keys]
+    rest <- dots[!nms %in% dm_remote_keys]
     engine <- ra$engine %||% "auto"
     checkmate::assert_choice(engine, c("auto", "sql"), .var.name = "engine")
     chunk_size <- ra$chunk_size %||% getOption("design.matrix.chunk_size", 250000)
@@ -465,7 +474,9 @@ dm_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list(),
     for (nm in names(xlev)) xlevels[[nm]] <- xlev[[nm]]
     attr(tt, "predvars") <- as.call(c(list(as.name("list")), predvars))
     for (j in seq_along(predvars)) D$vars[[j]]$expr <- predvars[[j]]
-    if (!nrow(sample)) stop("The remote data has no complete rows.", call. = FALSE)
+    if (!nrow(sample))
+        stop(structure(class = c("dm_no_rows", "error", "condition"),
+                       list(message = "The remote data has no complete rows.", call = NULL)))
     D$plan <- design_plan.formula(tt, sample, contrasts.arg = contrasts.arg,
                                   xlev = if (length(xlevels)) xlevels else NULL)
     D$terms_full <- tt
@@ -738,7 +749,7 @@ dm_remote_extend <- function(D, exprs, what = "expression") {
 ## `ys`, `w`, `wy`: SQL expressions over the source (dm_remote_cols(),
 ## dm_sql_moments()).
 dm_remote_moments <- function(x, ys = character(), w = NULL, gram = TRUE, wy = NULL, compress = TRUE) {
-    cap <- if (compress && is.null(wy)) dm_compress_cap(x)
+    cap <- if (compress && is.null(wy)) dm_compress_cap(x, op = "products")
     out <- if (!is.null(cap)) dm_sql_moments(x, ys, w, gram, cap = cap)
     if (is.null(out)) out <- dm_sql_moments(x, ys, w, gram, wy = wy)
     out
@@ -915,7 +926,7 @@ dm_remote_colsums <- function(x, group, reorder, mean) {
     }
     w <- x$scale
     x <- dm_remote_unscaled(x)
-    cap <- dm_compress_cap(x, group = g)
+    cap <- dm_compress_cap(x, group = g, op = "colsums")
     out <- if (!is.null(cap)) dm_sql_colsums(x, g, w, mean, cap = cap)
     if (is.null(out)) dm_sql_colsums(x, g, w, mean) else out
 }

@@ -108,8 +108,9 @@
 #'   `fit$fe_iter` holds the iterations of conjugate gradients of each
 #'   step (0 for a direct solve).
 #' * Not supported with FE: `start`, `compress = TRUE` (compression is
-#'   turned off), `na.action = na.fail`, clustering by more than one
-#'   variable, a design matrix as first argument.
+#'   turned off), `na.action` other than `na.omit` and `na.exclude`, `.`
+#'   in the formula, clustering by more than one variable, a design matrix
+#'   as first argument.
 #'
 #' **What is kept.** As in [design_lm()]: the coefficients, the factor `R`
 #' of the last weighted least squares problem (which gives the covariance
@@ -143,7 +144,7 @@
 #' @param family A family object, function or name, as in [stats::glm()].
 #' @param data,weights,na.action,start,offset,contrasts
 #'   As in [stats::glm()] (`na.action`: `na.omit`, `na.exclude` or
-#'   `na.fail`). With a design matrix, `weights` and `offset` are numeric
+#'   `na.fail`; with fixed effects `na.omit` or `na.exclude`). With a design matrix, `weights` and `offset` are numeric
 #'   vectors with one value per row, and `data`, `na.action` and `contrasts`
 #'   do not apply. For remote data, `weights` and `offset` are column
 #'   names, `DBI::SQL()` expressions or R expressions over the columns
@@ -200,17 +201,17 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
     family <- dmglm_family(family, parent.frame())
     dmglm_kind(family)
     control <- do.call(stats::glm.control, as.list(control))
-    dmfit_check_compress(compress)
-    checkmate::assert_flag(model)
     cl <- match.call()
-    fe <- dm_fe_has_bar(formula)
-    if (!fe && !identical(vcov, "iid"))
-        stop("`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", call. = FALSE)
-    if (inherits(formula, c("design_matrix", "dm_remote"))) {
-        if (!missing(data) || !missing(na.action) || !is.null(contrasts))
-            stop("With a design matrix, give the response as `y`; `data`, ",
-                 "`na.action` and `contrasts` do not apply.", call. = FALSE)
-        if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
+    ## argument checks (checks.R)
+    design <- inherits(formula, c("design_matrix", "dm_remote"))
+    fe <- !design && dm_fe_has_bar(formula)
+    dm_check_call(design, c(data = !missing(data), na.action = !missing(na.action), contrasts = !is.null(contrasts)),
+                  y, ...)
+    if (!design && !missing(na.action)) {
+        if (fe) dm_fe_na_kind(na.action) else dm_na_kind(na.action, c("omit", "exclude", "fail"))
+    }
+    dm_check_fit_args(compress, model, vcov = vcov, fe = fe, start = start)
+    if (design) {
         ## (remotely, `weights` and `offset` are columns or expressions)
         fit <- if (inherits(formula, "dm_remote")) {
             dm_remote_glm_design(formula, y, if (missing(weights)) NULL else substitute(weights),
@@ -223,15 +224,13 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
         fit$call <- cl
         return(fit)
     }
-    if (!is.null(y)) stop("`y` applies only when the first argument is a design matrix.", call. = FALSE)
-    na_kind <- if (missing(na.action)) "omit" else dm_na_kind(na.action, c("omit", "exclude", "fail"))
     ## fixed effects (fe_glm.R)
     if (fe) {
         return(dm_fe_glm(cl, parent.frame(), formula, family, if (missing(data)) NULL else data, start, control,
-                         contrasts, compress, model, vcov, fixef.rm, list(...), na_kind))
+                         contrasts, compress, model, vcov, fixef.rm, dm_dots(...)))
     }
     ## the design and columns of a data frame or remote data (remote_fit.R)
-    P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, list(...),
+    P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, dm_dots(...),
                         family = dmglm_kind(family))
     fit <- dmglm_fit(P$x, P$cols, family, start, control, attr(P$terms, "intercept") > 0L, compress,
                      wmsg = "negative weights not allowed")
@@ -384,8 +383,10 @@ dmglm_mu_eta <- function(cf, eta, mu) {
 ## The response, prior weights, trials and offset as glm()'s initialize sees
 ## them (columns: vectors in memory, SQL remotely): y in [0, 1] and weights
 ## times trials for a two-column binomial response (a successes, b
-## failures), y = 0 where the weight is 0.
-dmglm_cols <- function(y, a, b, w, off, k, cb, weighted = TRUE) {
+## failures), y = 0 where the weight is 0. `weighted`: whether weights
+## were given (w is then theirs, else 1); a two-column response is
+## weighted by its trials.
+dmglm_cols <- function(y, a, b, w, off, k, cb, weighted) {
     y0 <- y
     if (cb) {
         if (!k$binomial)
@@ -408,11 +409,12 @@ dmglm_mem_cols <- function(Y, w, off, k) {
     if (length(dim(Y)) == 1L) dim(Y) <- NULL
     if (is.matrix(Y) && ncol(Y) == 1L) Y <- Y[, 1L]
     n <- NROW(Y)
+    weighted <- !is.null(w)
     w <- if (is.null(w)) rep.int(1, n) else as.double(w)
     off <- if (!is.null(off)) as.double(off)
     if (is.matrix(Y)) {
         if (ncol(Y) != 2L) stop("A two-column response needs two columns (successes and failures).", call. = FALSE)
-        return(dmglm_cols(NULL, as.double(Y[, 1L]), as.double(Y[, 2L]), w, off, k, TRUE))
+        return(dmglm_cols(NULL, as.double(Y[, 1L]), as.double(Y[, 2L]), w, off, k, TRUE, weighted))
     }
     ## a character response is a factor, as remotely
     if (is.character(Y)) Y <- factor(Y)
@@ -423,7 +425,7 @@ dmglm_mem_cols <- function(Y, w, off, k) {
     if (!is.numeric(Y) && !is.logical(Y)) stop("The response must be numeric, logical or a factor.", call. = FALSE)
     y <- as.double(Y)
     attributes(y) <- NULL
-    dmglm_cols(y, NULL, NULL, w, off, k, FALSE)
+    dmglm_cols(y, NULL, NULL, w, off, k, FALSE, weighted)
 }
 
 ## design_glm() on a design matrix x and a response y.
@@ -438,7 +440,7 @@ dmglm_design <- function(x, y, weights, offset, start, family, control, compress
     intercept <- if (!is.null(tt)) attr(tt, "intercept") > 0L else "(Intercept)" %in% colnames(x)
     cols <- dmglm_mem_cols(y, weights, offset, dmglm_kind(family))
     dmglm_check_design(cols)
-    dmglm_fit(x, cols, family, start, control, intercept, compress, wmsg = "missing or negative weights not allowed")
+    dmglm_fit(x, cols, family, start, control, intercept, compress, wmsg = "negative weights not allowed")
 }
 
 ## The checks of a fit on a design (no rows dropped): no missing response
