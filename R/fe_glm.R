@@ -155,15 +155,13 @@ dm_fe_glm_estimate <- function(x, cols, codes, cl, family, control) {
         fit <- dmglm_fit(xx, cc, family, NULL, control, TRUE, FALSE, wmsg = "negative weights not allowed",
                          solver = solver)
         est <- fit$solver_fit$est
-        if (!is.null(cl2)) {
-            est$we <- solver$we(est)
-            est <- dm_fe_cluster(xx, est, cd, cl2)
-        }
+        ## (the scores from the absorption operator of the last step)
+        if (!is.null(cl2)) est <- dm_fe_cluster(est, cl2, solver$we(est))
         th <- fit$coefficients
         px <- length(solver$xcols)
         est$b <- th[seq_len(px)]
         est$fe <- lapply(seq_along(solver$G), function(j) th[px + solver$offs[j] + seq_len(solver$G[j])])
-        est$we <- est$A <- NULL
+        est$we <- est$absorb <- NULL
         list(fit = fit, est = est, fe_iter = solver$warm$iter)
     }
     if (!is.null(ctr)) {

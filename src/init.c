@@ -27,7 +27,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"dm_jac_entries_mean", (DL_FUNC) &dm_jac_entries_mean, 7},
     {"dm_jac_finite", (DL_FUNC) &dm_jac_finite, 7},
     {"dm_jac_gram", (DL_FUNC) &dm_jac_gram, 15},
-    {"dm_chol_pivot", (DL_FUNC) &dm_chol_pivot, 5},
+    {"dm_chol_pivot", (DL_FUNC) &dm_chol_pivot, 8},
     {"dm_struct_ok", (DL_FUNC) &dm_struct_ok, 3},
     {"dm_struct_info", (DL_FUNC) &dm_struct_info, 2},
     {"dm_struct_gram", (DL_FUNC) &dm_struct_gram, 4},

@@ -276,7 +276,7 @@ dmqr_centered <- function(ch, G, Tm, xs, mc, Y = NULL) {
     ## to the end. Anything else would be a bug, not a design to fall back
     ## on silently.
     if (is.unsorted(keep)) stop("internal error: the kept columns are not in order", call. = FALSE)
-    if (length(al) && any(Tm[al, keep] != 0)) return(ch)
+    if (!dm_uncenter_ok(Tm, keep, al)) return(ch)
     Rt <- tryCatch(chol(unname(mc$xtx[keep, keep, drop = FALSE])), error = function(e) NULL)
     if (is.null(Rt)) return(ch)
     R11 <- Rt %*% backsolve(Tm[keep, keep, drop = FALSE], diag(k))
@@ -290,6 +290,15 @@ dmqr_centered <- function(ch, G, Tm, xs, mc, Y = NULL) {
                         xty_of = if (!is.null(mc$xty)) unclass(Y)$sql)
     ch
 }
+
+## Can a fit on the centered design X~ = X T be mapped back to X (qr():
+## dmqr_centered(); FE: dm_fe_uncenter())? Not when a kept column of X~
+## uses an aliased column of X (T[aliased, kept] not zero).
+dm_uncenter_ok <- function(Tm, keep, al) !(length(al) && length(keep) && any(Tm[al, keep] != 0))
+
+## A covariance (or bread) of the coefficients of X~ = X T mapped back to
+## those of X: T V T' (Tk: T on the kept columns).
+dm_uncenter_cov <- function(Tk, V) Tk %*% V %*% t(Tk)
 
 ## The remote design with numeric variables shifted (their SQL).
 dm_shifted <- function(x, shift) {
@@ -395,12 +404,49 @@ dmqr_dense <- function(x, tol) {
               class = "design_qr")
 }
 
-## Pivoted Cholesky factor of G = X'X (see dm_chol_pivot() in kernels.c).
+## Pivoted Cholesky factor of a symmetric matrix G with limited pivoting,
+## the one kernel of qr() and of fits with fixed effects (dm_chol_pivot()
+## in kernels.c): columns in order, column j taken when its squared
+## residual norm d after the columns taken before it is above tol *
+## scale[j] (ties = "keep": d >= tol * scale[j], lm()'s rule; "drop":
+## d > tol * scale[j], fixest's), otherwise moved to the end; columns are
+## tested until `lup` are taken. `band`: NULL, or list(lo, hi): columns with
+## lo <= d <= hi cannot be judged from G (d is accurate to rounding only)
+## and are suspects, judged by recheck(ch, cols), which returns list(dres
+## = their squared residual norms computed from the data, taken = which of
+## them pass the rule) or NULL to give up (dm_pivchol() then returns NULL);
+## the factorization is repeated until every suspect was judged against
+## the columns actually taken before it. `dres`: squared residual norms
+## known in advance (NA: not known). Returns list(R, rank, pivot,
+## suspects), as the kernel.
+dm_pivchol <- function(G, scale, tol, ties = c("keep", "drop"), band = NULL, recheck = NULL,
+                       lup = ncol(G), dres = rep(NA_real_, ncol(G))) {
+    ties <- match.arg(ties)
+    p <- ncol(G)
+    lo <- if (is.null(band)) double(0) else as.double(band$lo)
+    hi <- if (is.null(band)) double(0) else as.double(band$hi)
+    repeat {
+        ch <- .Call(C_dm_chol_pivot, G, as.double(scale), as.double(tol), ties == "keep", lo, hi,
+                    as.integer(lup), as.double(dres))
+        names(ch) <- c("R", "rank", "pivot", "suspects")
+        new <- ch$suspects[is.na(dres[ch$suspects])]
+        if (length(new) == 0L) return(ch)
+        v <- recheck(ch, new)
+        if (is.null(v)) return(NULL)
+        dres[new] <- v$dres
+        taken <- new[v$taken]
+        if (length(taken) == 0L) return(ch)
+        ## a suspect turned out to be independent: every later column,
+        ## suspects included, was judged without it
+        dres[seq_len(p) > min(taken)] <- NA_real_
+    }
+}
+
+## Pivoted Cholesky factor of G = X'X with lm()'s rule (dm_pivchol()).
 ## Columns whose residual norm is too small to judge from G, or whose norm
 ## in G is zero, are suspects: their residual norms are computed from the
-## data, and the factorization is repeated until every suspect was judged
-## against the columns actually taken before it. Returns NULL when a column
-## with a zero norm in G is not zero in the data (its square underflowed).
+## data (dmqr_resid2()). Returns NULL when a column with a zero norm in G is
+## not zero in the data (its square underflowed).
 dmqr_chol <- function(x, G, tol) {
     p <- ncol(G)
     ## columns taken from G alone are clearly above tol
@@ -412,23 +458,19 @@ dmqr_chol <- function(x, G, tol) {
     ## design's smallest possible non-zero entry rules that out, zero
     ## columns need no check against the data.
     if (any(dg == 0) && dmp_min_nonzero(x)^2 > 1e-300) dres[dg == 0] <- 0
-    repeat {
-        ch <- .Call(C_dm_chol_pivot, G, tol, susp, as.double(nrow(x)), dres)
-        names(ch) <- c("R", "rank", "pivot", "suspects")
-        new <- ch$suspects[is.na(dres[ch$suspects])]
-        if (length(new) == 0L) return(ch)
+    recheck <- function(ch, new) {
         v <- dmqr_resid2(x, G, ch, new)
         if (any(v$nonzero & !(dg[new] > 0))) return(NULL)
-        ## the C code takes a column when dres >= tol^2 * G[j, j], that is,
-        ## when its residual norm is at least tol times its norm
-        dres[new] <- ifelse(v$nonzero, v$ratio^2 * dg[new], 0)
-        ## as dqrdc2, a tie with tol keeps the column
-        taken <- new[v$nonzero & v$ratio > 0 & v$ratio >= tol]
-        if (length(taken) == 0L) return(ch)
-        ## a suspect turned out to be independent: every later column,
-        ## suspects included, was judged without it
-        dres[seq_len(p) > min(taken)] <- NA_real_
+        ## the kernel takes a column when dres >= tol^2 * G[j, j], that is,
+        ## when its residual norm is at least tol times its norm (as
+        ## dqrdc2, a tie with tol keeps the column)
+        list(dres = ifelse(v$nonzero, v$ratio^2 * dg[new], 0),
+             taken = v$nonzero & v$ratio > 0 & v$ratio >= tol)
     }
+    ## (every column with d <= susp * G[j, j], or a zero norm in G, is a
+    ## suspect)
+    dm_pivchol(G, dg, tol^2, "keep", band = list(lo = rep(-Inf, p), hi = susp * dg), recheck = recheck,
+               lup = min(nrow(x), p), dres = dres)
 }
 
 ## For columns `cols` of x: the norm of the residual after projection on
@@ -573,8 +615,28 @@ dmqr_coef <- function(qr, Y, steps = 3L) {
     b
 }
 
+## Iterative refinement, the one driver of qr() (dmqr_refine()) and of
+## fits with fixed effects (dm_fe_refine()): up to `steps` times, the
+## residual of the current solution (`residual(sol)`: a pass over the rows,
+## or the moments already computed) and the corrected solution
+## (`correct(sol, r)`, list(sol, ...): `sol` and what the stopping rule
+## needs); stops after a step when stop(step, r, it) is TRUE (each caller's
+## rule). Returns list(sol, r = the residual the last step started from
+## (NULL without steps), stopped).
+dm_refine <- function(sol, residual, correct, steps, stop = function(step, r, it) FALSE) {
+    r <- NULL
+    for (it in seq_len(steps)) {
+        r <- residual(sol)
+        step <- correct(sol, r)
+        sol <- step$sol
+        if (stop(step, r, it)) return(list(sol = sol, r = r, stopped = TRUE))
+    }
+    list(sol = sol, r = r, stopped = FALSE)
+}
+
 ## Iterative refinement of b, the solution of R11'R11 b = X'Y for the
-## columns `keep` of the design D (R11 their factor).
+## columns `keep` of the design D (R11 their factor). Stops once the
+## correction is at the level of rounding, or stops shrinking.
 dmqr_refine <- function(D, R11, keep, b, Y, G = NULL, h = NULL, steps = 3L) {
     p <- ncol(D)
     full <- function(b) {
@@ -582,20 +644,24 @@ dmqr_refine <- function(D, R11, keep, b, Y, G = NULL, h = NULL, steps = 3L) {
         out[keep, ] <- b
         out
     }
-    last <- Inf
-    for (s in seq_len(steps)) {
-        ## X'(Y - X b): from the data in memory; for a remote design, from
-        ## the moments already computed (X'Y - X'X b), which refines the
-        ## solution of the normal equations without another pass
-        g <- if (!is.null(G)) h - G %*% full(b)
-             else dmp_crossprod(D, Y - dmp_mult(D, full(b), along = list(Y)))
-        db <- dmqr_bs(R11, dmqr_bs(R11, g[keep, , drop = FALSE], transpose = TRUE))
-        b <- b + db
-        size <- max(abs(db)) / max(abs(b), .Machine$double.xmin)
-        if (!(size > 64 * .Machine$double.eps) || size > 0.25 * last) break
-        last <- size
+    ## X'(Y - X b): from the data in memory; for a remote design, from the
+    ## moments already computed (X'Y - X'X b), which refines the solution
+    ## of the normal equations without another pass
+    residual <- function(b) {
+        if (!is.null(G)) h - G %*% full(b) else dmp_crossprod(D, Y - dmp_mult(D, full(b), along = list(Y)))
     }
-    b
+    correct <- function(b, g) {
+        db <- dmqr_bs(R11, dmqr_bs(R11, g[keep, , drop = FALSE], transpose = TRUE))
+        list(sol = b + db, db = db)
+    }
+    last <- Inf
+    stop <- function(step, g, it) {
+        size <- max(abs(step$db)) / max(abs(step$sol), .Machine$double.xmin)
+        if (!(size > 64 * .Machine$double.eps) || size > 0.25 * last) return(TRUE)
+        last <<- size
+        FALSE
+    }
+    dm_refine(b, residual, correct, steps, stop)$sol
 }
 
 ## The result as a vector or a matrix like `y`, with row names `rows` and
