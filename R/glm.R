@@ -108,9 +108,9 @@
 #'   `fit$fe_iter` holds the iterations of conjugate gradients of each
 #'   step (0 for a direct solve).
 #' * Not supported with FE: `start`, `compress = TRUE` (compression is
-#'   turned off), `na.action` other than `na.omit` and `na.exclude`,
-#'   clustering by more than one variable, a design matrix as first
-#'   argument.
+#'   turned off), `na.action` other than `na.omit` and `na.exclude`, `.`
+#'   in the formula, clustering by more than one variable, a design matrix
+#'   as first argument.
 #'
 #' **What is kept.** As in [design_lm()]: the coefficients, the factor `R`
 #' of the last weighted least squares problem (which gives the covariance

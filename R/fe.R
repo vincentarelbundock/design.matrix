@@ -101,6 +101,10 @@ dm_fe_parse <- function(formula) {
     rhs <- formula[[length(formula)]]
     if (!dm_fe_has_bar(formula))
         stop("The formula must have a fixed-effect part: y ~ x | fe.", call. = FALSE)
+    ## (which variables `.` stands for is not defined with FE, in memory or
+    ## remotely)
+    if ("." %in% all.vars(formula))
+        stop("`.` is not supported in a formula with fixed effects: name the variables.", call. = FALSE)
     main <- formula
     main[[length(formula)]] <- rhs[[2L]]
     split_plus <- function(e) {
@@ -909,8 +913,8 @@ dm_fe_center <- function(mt, mf, contrasts) {
 #'   include them.
 #' * Not supported with FE: `subset`, `compress = TRUE`, `na.action`
 #'   other than `na.omit` and `na.exclude` (in memory and remotely),
-#'   `se.fit` and intervals in `predict()`, clustering by more than one
-#'   variable.
+#'   `.` in the formula, `se.fit` and intervals in `predict()`, clustering
+#'   by more than one variable.
 #'   For remote data, the response and `weights` are column names,
 #'   `DBI::SQL()` or R expressions, as without FE (expressions with no SQL
 #'   translation are evaluated in R, in batches).

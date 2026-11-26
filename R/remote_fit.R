@@ -252,15 +252,10 @@ dm_problem_remote <- function(call, env, formula, source, contrasts, dots, famil
     }
     dm_need_duckdb()
     src <- dm_remote_source(source, dots$table, dots$sql)
-    if (is.null(fe)) {
-        tt <- stats::terms(formula, data = src$proto)
-        if (attr(tt, "response") == 0L) stop("The formula has no response.", call. = FALSE)
-        lhs <- attr(tt, "variables")[[attr(tt, "response") + 1L]]
-    } else {
-        formula <- fe$main
-        if (length(formula) < 3L) stop("The formula has no response.", call. = FALSE)
-        lhs <- formula[[2L]]
-    }
+    if (!is.null(fe)) formula <- fe$main
+    tt <- stats::terms(formula, data = src$proto)
+    if (attr(tt, "response") == 0L) stop("The formula has no response.", call. = FALSE)
+    lhs <- attr(tt, "variables")[[attr(tt, "response") + 1L]]
     resp <- if (!is.null(family)) dmglm_remote_response(lhs, src$types, src$holder$con)
             else list(args = list(y = lhs), present = character(), cbind = FALSE)
     ## a linear model has one response, as in memory (a matrix response
@@ -279,7 +274,7 @@ dm_problem_remote <- function(call, env, formula, source, contrasts, dots, famil
     y <- if (length(resp$present)) dmglm_remote_factor(D, resp$present) else r$cols$y
     list(x = D, y = y, w = r$cols$weights, off = r$off, resp = list(a = r$cols$a, b = r$cols$b, cbind = resp$cbind),
          na.action = if (na == "exclude") dm_remote_exclude(D), exclude = na == "exclude", rows = NULL, nall = D$n,
-         terms = if (is.null(fe)) tt else stats::terms(formula), formula = formula, contrasts = D$plan$contrasts,
+         terms = tt, formula = formula, contrasts = D$plan$contrasts,
          xlevels = D$plan$xlevels, env = env)
 }
 

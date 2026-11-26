@@ -467,6 +467,19 @@ expect_error(design_lm(y ~ x | id, d, na.action = na.exclude, foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, d, weights = wzero),
              "0 (non-NA) cases", fixed = TRUE)
+# `.` with fixed effects: refused in both modes
+dot <- "`.` is not supported in a formula with fixed effects: name the variables."
+expect_error(design_lm(y ~ . | id, d), dot, fixed = TRUE)
+expect_error(design_lm(y ~ . | id, con, table = "d"), dot, fixed = TRUE)
+expect_error(design_glm(k ~ . | id, poisson, d), dot, fixed = TRUE)
+expect_error(design_glm(k ~ . | id, poisson, con, table = "d"), dot, fixed = TRUE)
+# the terms of an FE fit: those of the main formula, in both modes
+fm <- design_lm(y ~ x + f | id, d)
+fr <- design_lm(y ~ x + f | id, con, table = "d")
+expect_identical(attr(fm$terms, "term.labels"), attr(fr$terms, "term.labels"))
+expect_identical(formula(fm$terms), formula(fr$terms))
+expect_identical(environment(fm$terms), environment(fr$terms))
+
 # No complete rows: lm()'s error on every path
 d0 <- d
 d0$allna <- NA_real_
