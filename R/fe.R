@@ -27,16 +27,38 @@
 ## normalization, since shifting FE_k and FE_1 in opposite directions within
 ## such a component leaves the fit unchanged). Each diagonal block of R is a
 ## weighted graph Laplacian (its rows sum to zero before the reference
-## levels are removed), so the reduced system is a symmetric M-matrix. It is
-## solved densely when small (at most 3000 levels), otherwise by conjugate
-## gradients preconditioned by the diagonal of R (Jacobi, default) or, on
-## request, by the incomplete Cholesky factor IC(0) of R (two FE) or of its
-## block diagonal (three or more: block Jacobi over the FEs, each block a
-## Laplacian). On worker x firm graphs (1e5 firms), IC(0) halves the
-## iterations (29 to 14) but each costs about twice as much, so Jacobi is
-## as fast or faster. Sparse Cholesky (CHOLMOD) is used only on
-## request (option design.matrix.fe_solver = "chol"): on worker x firm
-## graphs its fill is close to dense.
+## levels are removed), so the reduced system is a symmetric M-matrix. With
+## three or more FE, R can be singular even so (FE collinear beyond the
+## pairwise graphs, such as firms assigned round robin over years); the
+## solver then drops a further level (dm_fe_solve()).
+##
+## R is solved densely when small (at most 1000 levels: beyond, the dense
+## factorization costs more than conjugate gradients), otherwise by
+## conjugate gradients, on R formed or applied without forming it:
+##
+## * Formed (dm_fe_schur() in src/fe.c, the lower triangle by Gustavson's
+##   product): when R is sparse (low mobility between the levels of the
+##   other FE, as on worker x firm panels where workers rarely change
+##   firms), preconditioned by the incomplete Cholesky factor IC(0) of R
+##   (two FE) or of its block diagonal (three or more: block Jacobi over
+##   the FEs, each block a Laplacian). On such panels Jacobi needs hundreds
+##   of iterations where IC(0) needs about ten.
+## * Matrix-free: when forming R would cost more than applying it (high
+##   mobility: R near dense), R v = A v - N_1' D_1^-1 (N_1 v), two passes
+##   over the sparse crosstab N_1 per product, preconditioned by the
+##   diagonal of R (computed without forming R); there it converges in
+##   about 15 iterations. Forming gives up as soon as R has more nonzeros
+##   than N_1 or the cost of IC(0) (the sum of the squared column counts
+##   of R) exceeds form_max (option design.matrix.fe_form_max, default 25,
+##   calibrated on worker x firm panels: the two paths take the same time
+##   near 20 to 40) times nnz(N_1); a probe of 64 columns estimates both
+##   first, so that giving up is cheap.
+##
+## The stopping rule is a normwise backward error below 1e-12 (see
+## dm_fe_pcg() in src/fe.c), and a warm start (Z0) is accepted, for
+## sequences of nearby systems (the steps of a GLM). Sparse Cholesky
+## (CHOLMOD) is used only on request (option design.matrix.fe_solver =
+## "chol"): on worker x firm graphs its fill is close to dense.
 ##
 ## A = K^- B gives the FE coefficients without another solve: a = A_y - A_x b.
 ## The coefficients are refined from the residuals (computed row by row):
@@ -124,20 +146,26 @@ dm_fe_augment <- function(main, vars) {
 }
 
 ## Options of the solver: design.matrix.fe_solver ("auto", "dense", "chol"
-## or "pcg"), design.matrix.fe_precond ("jacobi", default, or "ichol") and
+## or "pcg"), design.matrix.fe_precond ("auto", default: IC(0) when the
+## reduced system is formed, Jacobi when it is applied matrix-free;
+## "jacobi"; or "ichol", which forms it), design.matrix.fe_form_max (when
+## to form the reduced system, see dm_fe_system()) and
 ## design.matrix.fe_refine (steps of iterative refinement, default 1).
 dm_fe_opts <- function() {
     solver <- getOption("design.matrix.fe_solver", "auto")
     if (!checkmate::test_choice(solver, c("auto", "dense", "chol", "pcg")))
         stop("Option `design.matrix.fe_solver` must be \"auto\", \"dense\", \"chol\" or \"pcg\".", call. = FALSE)
-    precond <- getOption("design.matrix.fe_precond", "jacobi")
-    if (!checkmate::test_choice(precond, c("ichol", "jacobi")))
-        stop("Option `design.matrix.fe_precond` must be \"ichol\" or \"jacobi\".", call. = FALSE)
+    precond <- getOption("design.matrix.fe_precond", "auto")
+    if (!checkmate::test_choice(precond, c("auto", "ichol", "jacobi")))
+        stop("Option `design.matrix.fe_precond` must be \"auto\", \"ichol\" or \"jacobi\".", call. = FALSE)
+    form_max <- getOption("design.matrix.fe_form_max", 25)
+    if (!checkmate::test_number(form_max, lower = 0))
+        stop("Option `design.matrix.fe_form_max` must be a non-negative number.", call. = FALSE)
     refine <- getOption("design.matrix.fe_refine", 1L)
     if (!checkmate::test_count(refine))
         stop("Option `design.matrix.fe_refine` must be a count.", call. = FALSE)
     list(solver = solver, precond = precond, pcg_tol = 1e-12, pcg_maxit = 10000L,
-         refine = as.integer(refine))
+         refine = as.integer(refine), form_max = form_max, dense_max = 1000L)
 }
 
 ## ---------------------------------------------------------------------------
@@ -212,46 +240,80 @@ dm_fe_components <- function(Nt) {
 
 ## Conjugate gradients for R Z = B, preconditioned by IC(0) of the block
 ## diagonal of R (blocks: the FEs; the whole of R with two FE), or by its
-## diagonal when IC(0) breaks down or with precond = "jacobi".
-dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.env()) {
+## diagonal when IC(0) breaks down or with precond = "jacobi". R: a sparse
+## symmetric matrix (formed), or a "dm_fe_op" (R = A - N diag(d) N',
+## applied without being formed, the rows of N mapped to those of R by
+## `map`: Jacobi only). Z0: a starting value (a warm
+## start) or NULL. The preconditioner is built once per `cache`.
+dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.env(), Z0 = NULL) {
     if (is.null(cache$A)) {
-        cache$A <- methods::as(methods::as(R, "generalMatrix"), "CsparseMatrix")
-        cache$precond <- precond
+        if (inherits(R, "dm_fe_op")) {
+            cache$A <- R$A
+            cache$N <- R$N
+            cache$map <- R$map
+            cache$d <- R$d
+            precond <- "jacobi"
+        } else {
+            cache$A <- dm_fe_lower(R)
+        }
+        cache$precond <- if (precond == "ichol") "ichol" else "jacobi"
         if (precond == "ichol") {
-            P <- Matrix::tril(cache$A)
+            A <- cache$A
+            P <- list(p = A@p, i = A@i, x = A@x)
             if (length(unique(block)) > 1L) {
-                Ts <- Matrix::summary(P)
-                same <- block[Ts$i] == block[Ts$j]
-                P <- Matrix::sparseMatrix(i = Ts$i[same], j = Ts$j[same], x = Ts$x[same],
-                                          dims = dim(P), repr = "C")
+                ## block diagonal: the entries within an FE
+                j <- rep.int(seq_len(ncol(A)), diff(A@p))
+                same <- block[A@i + 1L] == block[j]
+                P <- list(p = c(0L, cumsum(tabulate(j[same], ncol(A)))), i = A@i[same], x = A@x[same])
             }
-            P <- methods::as(methods::as(P, "generalMatrix"), "CsparseMatrix")
             ## plain IC(0): the modified factor (MIC, omega > 0) took 2.5 to 5
             ## times as many iterations on worker x firm graphs
-            Lx <- .Call(C_dm_fe_ichol, P@p, P@i, P@x, nrow(P), 0)
+            Lx <- .Call(C_dm_fe_ichol, P$p, P$i, P$x, ncol(A), 0)
             if (!is.null(Lx)) {
-                cache$L <- list(p = P@p, i = P@i, x = Lx)
+                cache$L <- list(p = P$p, i = P$i, x = Lx)
             } else {
                 cache$precond <- "jacobi"
             }
         }
     }
     A <- cache$A
+    N <- cache$N
     L <- cache$L
     storage.mode(B) <- "double"
-    r <- .Call(C_dm_fe_pcg, A@p, A@i, A@x, L$p, L$i, L$x, B, as.double(tol), as.integer(maxit))
+    if (!is.null(Z0)) {
+        Z0 <- as.matrix(Z0)
+        storage.mode(Z0) <- "double"
+        if (!identical(dim(Z0), dim(B))) Z0 <- NULL
+    }
+    r <- .Call(C_dm_fe_pcg, A@p, A@i, A@x, if (!is.null(N)) N@p, if (!is.null(N)) N@i,
+               if (!is.null(N)) N@x, cache$map, cache$d, L$p, L$i, L$x, B, Z0,
+               as.double(tol), as.integer(maxit))
+    ## (nullv: on a breakdown, a direction close to a null vector of R)
     list(x = r[[1L]], iter = r[[2L]], resid = r[[3L]], converged = r[[3L]] <= tol,
-         precond = cache$precond)
+         nullv = r[[4L]], precond = cache$precond)
+}
+
+## The lower triangle of a symmetric sparse matrix, as a dgCMatrix.
+dm_fe_lower <- function(R) {
+    if (methods::is(R, "symmetricMatrix") && R@uplo == "U") R <- Matrix::t(R)
+    R <- methods::as(methods::as(R, "generalMatrix"), "CsparseMatrix")
+    if (!methods::is(R, "dsparseMatrix")) R <- methods::as(R, "dMatrix")
+    Matrix::tril(R)
 }
 
 ## Solve the reduced system R Z = B (R symmetric positive definite after the
 ## reference levels are removed, or semidefinite with a consistent
-## right-hand side). Returns Z and solver details.
-dm_fe_solve <- function(R, B, opts, block, cache = new.env(), dense_max = 3000L) {
-    m <- nrow(R)
+## right-hand side). R: a sparse matrix, or a "dm_fe_op" (not formed: by
+## conjugate gradients with the Jacobi preconditioner). Z0: a starting
+## value for conjugate gradients (a warm start: the solution of a nearby
+## system), or NULL. Returns Z and solver details.
+dm_fe_solve <- function(R, B, opts, block, cache = new.env(), dense_max = opts$dense_max %||% 1000L,
+                        Z0 = NULL) {
+    m <- if (inherits(R, "dm_fe_op")) R$m else nrow(R)
     if (m == 0L) return(list(z = B, solver = "none"))
     solver <- opts$solver
     if (solver == "auto") solver <- if (m <= dense_max) "dense" else "pcg"
+    if (inherits(R, "dm_fe_op")) solver <- "pcg"
     if (solver == "dense") {
         ch <- tryCatch(chol(as.matrix(R)), error = function(e) NULL)
         if (!is.null(ch)) {
@@ -270,15 +332,61 @@ dm_fe_solve <- function(R, B, opts, block, cache = new.env(), dense_max = 3000L)
         }
         solver <- "pcg"
     }
-    sol <- dm_fe_pcg(R, B, opts$pcg_tol, opts$pcg_maxit, block, opts$precond, cache)
+    precond <- opts$precond
+    if (precond == "auto") precond <- if (inherits(R, "dm_fe_op")) "jacobi" else "ichol"
+    ## R singular (FE collinear beyond the references removed: with three
+    ## or more FE, the components of the pairwise graphs do not find every
+    ## redundant level): conjugate gradients break down once rounding
+    ## excites the null direction. The level with the largest entry of the
+    ## direction of the breakdown (close to a null vector) is then set to
+    ## zero too, a valid normalization, and the system solved again; the
+    ## levels dropped are kept in the cache for later solves.
+    drop <- cache$drop
+    repeat {
+        if (is.null(cache$pc)) cache$pc <- new.env(parent = emptyenv())
+        use <- if (length(drop)) seq_len(m)[-drop] else seq_len(m)
+        sol <- dm_fe_pcg(dm_fe_sub(R, use), B[use, , drop = FALSE], opts$pcg_tol, opts$pcg_maxit,
+                         block[use], precond, cache$pc,
+                         Z0 = if (!is.null(Z0) && nrow(Z0) == m) Z0[use, , drop = FALSE])
+        if (sol$converged || is.null(sol$nullv) || length(drop) >= 20L) break
+        drop <- sort(c(drop, use[which.max(abs(sol$nullv))]))
+        cache$drop <- drop
+        cache$pc <- NULL
+    }
     if (!sol$converged)
         warning(sprintf("Conjugate gradients did not converge in %d iterations (relative residual %.2g).",
                         sol$iter, sol$resid), call. = FALSE)
-    list(z = sol$x, solver = "pcg", precond = sol$precond, iter = sol$iter, resid = sol$resid)
+    z <- matrix(0, m, ncol(B))
+    z[use, ] <- sol$x
+    list(z = z, solver = "pcg", precond = sol$precond, iter = sol$iter, resid = sol$resid,
+         ndrop = length(drop))
+}
+
+## The rows and columns `use` of the reduced system (a sparse matrix or a
+## "dm_fe_op").
+dm_fe_sub <- function(R, use) {
+    m <- if (inherits(R, "dm_fe_op")) R$m else nrow(R)
+    if (length(use) == m) return(R)
+    if (!inherits(R, "dm_fe_op")) return(R[use, use, drop = FALSE])
+    R$A <- R$A[use, use, drop = FALSE]
+    mp <- match(R$map + 1L, use) - 1L
+    mp[is.na(mp)] <- -1L
+    R$map <- mp
+    R$m <- length(use)
+    R
 }
 
 ## The FE system K = F'WF, reduced by eliminating the largest FE.
 ## G: levels per FE; nk: weighted counts per level; crosstab(a, b): t(N_ab).
+##
+## R = A - N_1' D_1^-1 N_1 with A = blockdiag(n_k) + offdiag(N_kl) is formed
+## (dm_fe_schur(), lower triangle) unless forming it would cost more than
+## applying it: forming gives up as soon as R has more nonzeros than N_1
+## (min(form_max, 1) times), or the cost of its IC(0) factor (the sum of
+## its squared column counts) exceeds form_max times nnz(N_1). R is then
+## applied matrix-free (a "dm_fe_op"), two passes over N_1 per product.
+## R is always formed for the dense solver (m <= dense_max), for "chol"
+## and for precond = "ichol".
 dm_fe_system <- function(G, nk, crosstab, opts) {
     nfe <- length(G)
     o <- order(G, decreasing = TRUE)
@@ -298,33 +406,49 @@ dm_fe_system <- function(G, nk, crosstab, opts) {
         ref <- c(ref, off[r] + which(!duplicated(comp)))
     }
     sys$Ntr <- if (length(Nt) == 1L) Nt[[1L]] else do.call(rbind, Nt)
-    ## R = blockdiag(n_k) + offdiag(N_kl) - N_1' D_1^-1 N_1
-    R <- Matrix::Diagonal(x = unlist(nk[rest], use.names = FALSE))
+    keep <- setdiff(seq_len(m), ref)
+    mk <- length(keep)
+    ## A = blockdiag(n_k) + offdiag(N_kl), lower triangle, on the levels kept
+    ii <- jj <- seq_len(m)
+    xx <- unlist(nk[rest], use.names = FALSE)
     if (length(rest) > 1L) {
-        blocks <- list()
         for (r in seq_along(rest)[-length(rest)]) for (s in (r + 1L):length(rest)) {
-            Nrs <- crosstab(rest[r], rest[s]) # G_s x G_r
-            Ts <- Matrix::summary(Nrs)
-            blocks[[length(blocks) + 1L]] <- data.frame(i = Ts$i + off[s], j = Ts$j + off[r], x = Ts$x)
+            Ts <- Matrix::summary(crosstab(rest[r], rest[s])) # G_s x G_r
+            ii <- c(ii, Ts$i + off[s])
+            jj <- c(jj, Ts$j + off[r])
+            xx <- c(xx, Ts$x)
         }
-        bl <- do.call(rbind, blocks)
-        Off <- Matrix::sparseMatrix(i = bl$i, j = bl$j, x = bl$x, dims = c(m, m))
-        R <- R + Off + Matrix::t(Off)
     }
-    R <- R - Matrix::tcrossprod(sys$Ntr %*% Matrix::Diagonal(x = 1 / sqrt(sys$D1)))
-    R <- Matrix::forceSymmetric(methods::as(R, "CsparseMatrix"), uplo = "U")
-    sys$keep <- setdiff(seq_len(m), ref)
+    A <- Matrix::sparseMatrix(i = ii, j = jj, x = xx, dims = c(m, m), repr = "C")[keep, keep, drop = FALSE]
+    ## N_1' (rows: the levels of the other FE), its rows mapped to those of R
+    N <- methods::as(methods::as(sys$Ntr, "generalMatrix"), "CsparseMatrix")
+    map <- rep(-1L, m)
+    map[keep] <- seq_len(mk) - 1L
+    nnzN <- max(length(N@x), mk)
+    form <- opts$solver %in% c("dense", "chol") || opts$precond == "ichol" ||
+        (opts$solver == "auto" && mk <= (opts$dense_max %||% 1000L))
+    fm <- if (form) Inf else opts$form_max %||% 25
+    S <- .Call(C_dm_fe_schur, A@p, A@i, A@x, N@p, N@i, N@x, map, 1 / sys$D1,
+               as.double(if (is.finite(fm)) min(fm, 1) * nnzN else Inf), as.double(fm * nnzN))
+    if (!is.null(S)) {
+        sys$R <- methods::new("dsCMatrix", Dim = c(mk, mk), uplo = "L", p = S[[1L]], i = S[[2L]], x = S[[3L]])
+    } else {
+        sys$R <- structure(list(A = A, N = N, map = map, d = 1 / sys$D1, m = mk), class = "dm_fe_op")
+    }
+    sys$keep <- keep
     sys$cache <- new.env(parent = emptyenv()) # the preconditioner, built once
-    sys$R <- R[sys$keep, sys$keep]
-    sys$block <- rep(seq_along(rest), sys$Gr)[sys$keep]
+    sys$block <- rep(seq_along(rest), sys$Gr)[keep]
     sys$m <- m
-    sys$info <- list(m = length(sys$keep), nnz_R = length(R@x), ncomp = ncomp)
+    sys$info <- list(m = mk, nnz_R = if (is.null(S)) NA_integer_ else length(S[[3L]]),
+                     nnz_N = length(N@x), formed = !is.null(S), ncomp = ncomp)
     sys
 }
 
 ## A = K^- B (split by FE) and Q = B' K^- B, for B a list of G_k x q
-## matrices (grouped sums by FE).
-dm_fe_apply <- function(sys, B) {
+## matrices (grouped sums by FE). `Z0`: a starting value of the solution of
+## the reduced system (`Z`, returned, of an earlier call: a warm start), or
+## NULL.
+dm_fe_apply <- function(sys, B, Z0 = NULL) {
     f1 <- sys$f1
     A1p <- B[[f1]] / sys$D1
     Q <- crossprod(B[[f1]], A1p)
@@ -335,14 +459,15 @@ dm_fe_apply <- function(sys, B) {
     }
     rest <- sys$rest
     Brr <- do.call(rbind, B[rest]) - as.matrix(sys$Ntr %*% A1p)
-    sol <- dm_fe_solve(sys$R, Brr[sys$keep, , drop = FALSE], sys$opts, sys$block, sys$cache)
+    sol <- dm_fe_solve(sys$R, Brr[sys$keep, , drop = FALSE], sys$opts, sys$block, sys$cache, Z0 = Z0)
     Z <- matrix(0, sys$m, ncol(Brr))
     Z[sys$keep, ] <- sol$z
+    Zk <- sol$z
     sol$z <- NULL
     Q <- Q + crossprod(Brr, Z)
     A[[f1]] <- (B[[f1]] - as.matrix(Matrix::crossprod(sys$Ntr, Z))) / sys$D1
     for (r in seq_along(rest)) A[[rest[r]]] <- Z[sys$off[r] + seq_len(sys$Gr[r]), , drop = FALSE]
-    list(Q = Q, A = A, info = c(sol, sys$info))
+    list(Q = Q, A = A, info = c(sol, sys$info), Z = Zk)
 }
 
 ## Sequential pivoted Cholesky of a p x p matrix M in column order: a column
@@ -584,8 +709,11 @@ dm_fe_center <- function(mt, mf, contrasts) {
 #' dummies or demeans the rows: it solves the normal equations from sums
 #' over rows (the design's products, sums within FE levels and crosstabs of
 #' the FE), eliminating the largest FE exactly and solving for the others
-#' densely (up to 3000 levels) or by conjugate gradients with an incomplete
-#' Cholesky preconditioner. The same code fits data in memory and remote
+#' densely (up to 1000 levels) or by conjugate gradients: on the reduced
+#' system formed, with an incomplete Cholesky preconditioner, when it is
+#' sparse (low mobility, such as workers who rarely change firms), and
+#' without forming it, with a Jacobi preconditioner, when it would be near
+#' dense (high mobility). The same code fits data in memory and remote
 #' data (DuckDB tables or queries, Parquet), with identical results up to
 #' rounding.
 #'
@@ -626,8 +754,10 @@ dm_fe_center <- function(mt, mf, contrasts) {
 #'   translation are evaluated in R, in batches).
 #' * Options: `design.matrix.fe_solver` (`"auto"`, `"dense"`, `"pcg"`, or
 #'   `"chol"` for a sparse Cholesky factor), `design.matrix.fe_precond`
-#'   (`"jacobi"`, default, or `"ichol"` for an incomplete Cholesky factor),
-#'   `design.matrix.fe_refine` (refinement steps,
+#'   (`"auto"`, default: incomplete Cholesky when the reduced system is
+#'   formed, Jacobi otherwise; `"jacobi"`; or `"ichol"`, which always forms
+#'   it), `design.matrix.fe_form_max` (when to form the reduced system:
+#'   default 25, `0` never, `Inf` always), `design.matrix.fe_refine` (refinement steps,
 #'   default 1) and `design.matrix.fe_center` (default `TRUE`).
 #' @param vcov With fixed effects: `"iid"` or a one-sided formula naming a
 #'   cluster variable (`~firm`). Without fixed effects only `"iid"`.

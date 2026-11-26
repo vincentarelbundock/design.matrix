@@ -165,8 +165,11 @@ numeric column) or an interaction \code{a^b}. The fit never builds the FE
 dummies or demeans the rows: it solves the normal equations from sums
 over rows (the design's products, sums within FE levels and crosstabs of
 the FE), eliminating the largest FE exactly and solving for the others
-densely (up to 3000 levels) or by conjugate gradients with an incomplete
-Cholesky preconditioner. The same code fits data in memory and remote
+densely (up to 1000 levels) or by conjugate gradients: on the reduced
+system formed, with an incomplete Cholesky preconditioner, when it is
+sparse (low mobility, such as workers who rarely change firms), and
+without forming it, with a Jacobi preconditioner, when it would be near
+dense (high mobility). The same code fits data in memory and remote
 data (DuckDB tables or queries, Parquet), with identical results up to
 rounding.
 \itemize{
@@ -205,8 +208,10 @@ For remote data, the response and \code{weights} are column names,
 translation are evaluated in R, in batches).
 \item Options: \code{design.matrix.fe_solver} (\code{"auto"}, \code{"dense"}, \code{"pcg"}, or
 \code{"chol"} for a sparse Cholesky factor), \code{design.matrix.fe_precond}
-(\code{"jacobi"}, default, or \code{"ichol"} for an incomplete Cholesky factor),
-\code{design.matrix.fe_refine} (refinement steps,
+(\code{"auto"}, default: incomplete Cholesky when the reduced system is
+formed, Jacobi otherwise; \code{"jacobi"}; or \code{"ichol"}, which always forms
+it), \code{design.matrix.fe_form_max} (when to form the reduced system:
+default 25, \code{0} never, \code{Inf} always), \code{design.matrix.fe_refine} (refinement steps,
 default 1) and \code{design.matrix.fe_center} (default \code{TRUE}).
 }
 }

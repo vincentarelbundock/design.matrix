@@ -10,8 +10,10 @@
  *  dm_fe_struct_gsum(): grouped sums of the design's structured moments,
  *                      the weights and other columns, for every FE at once;
  *  dm_fe_code_int():   integer codes of an integer-valued vector;
+ *  dm_fe_schur():      the reduced system, formed (lower triangle);
  *  dm_fe_ichol(), dm_fe_pcg(): IC(0) and preconditioned conjugate
- *                      gradients for the reduced system.
+ *                      gradients for the reduced system, formed or
+ *                      applied matrix-free.
  *
  *  Copyright (C) 2026 Vincent Arel-Bundock.  GPL (>= 2).
  */
@@ -380,11 +382,35 @@ SEXP dm_fe_code_int(SEXP v, SEXP maxrange_)
    Returns the factor's values (same pattern), or NULL on a breakdown
    (a non-positive pivot).
 
-   dm_fe_pcg(): conjugate gradients for A X = B, A symmetric positive
-   (semi)definite given in full compressed columns, one recursion per
-   column of B, preconditioned by L L' (IC(0) factor) or by the diagonal of
-   A when L is NULL.  Stops when every column's relative residual is below
-   tol.  Returns list(X, iterations, max relative residual).
+   dm_fe_schur(): the reduced system R = A - N diag(d) N' as its lower
+   triangle in compressed columns (rows sorted, diagonal first), A
+   symmetric given by its lower triangle (the same layout), N a sparse
+   matrix in compressed columns (rows sorted) whose rows map to the rows of
+   R by `map` (0-based, increasing, -1 for a row dropped).  Gustavson's product
+   by output column: column i of the lower triangle of N diag(d) N' sums
+   over the columns j of N with a nonzero in row i the entries of column j
+   at rows k >= i, which costs sum_j c_j (c_j + 1) / 2 for c_j the nonzeros
+   of column j.  Gives up (returns NULL) as soon as the lower triangle has
+   more than cap_nnz nonzeros or the sum of the squared column counts (the
+   cost of IC(0) of R) exceeds cap_work: R is then applied without being
+   formed (dm_fe_pcg() with N).
+
+   dm_fe_pcg(): conjugate gradients for R X = B, one recursion per column
+   of B (all columns advance together and share each product with R), R
+   symmetric positive (semi)definite: R = A (lower triangle in compressed
+   columns) or, when N is given, R = A - N diag(d) N' applied without
+   forming it (two passes over N per product; map: the 0-based index in R
+   of each row of N, or -1 for a row dropped).  Preconditioned by L L'
+   (IC(0) factor of R or of a block diagonal of it) or by the diagonal of R
+   when L is NULL.  X0: a starting value (n x m) or NULL (zero).  Stops
+   when every column's normwise backward error ||B - R X|| / (||R|| ||X||
+   + ||B||) is below tol, with max(diag R) for ||R||: the relative
+   residual ||B - R X|| / ||B|| cannot go below rounding times ||R|| ||X||
+   / ||B||, large when R is ill conditioned (on such systems the recursion
+   then drifts and stalls).  Returns list(X, iterations (the largest over
+   columns), max backward error, and NULL or, when the recursion of a
+   column broke down (p'Rp <= 0: R singular, the FE collinear beyond the
+   references removed), its direction p, close to a null vector of R).
    ------------------------------------------------------------------------ */
 
 SEXP dm_fe_ichol(SEXP p_, SEXP i_, SEXP x_, SEXP n_, SEXP omega_)
@@ -426,100 +452,412 @@ SEXP dm_fe_ichol(SEXP p_, SEXP i_, SEXP x_, SEXP n_, SEXP omega_)
     return out;
 }
 
-/* Solve L L' z = r in place (L lower, compressed columns, diagonal first). */
-static void ic_solve(int n, const int *cp, const int *ri, const double *L, double *z)
+/* Solve L L' z = r in place for the nc interleaved columns of z
+   (z[k * nc + c]); L lower, compressed columns, diagonal first. */
+static void ic_solve(int n, int nc, const int *cp, const int *ri, const double *L, double *z)
 {
     for (int k = 0; k < n; k++) {
 	int d = cp[k];
-	z[k] /= L[d];
-	double zk = z[k];
-	for (int q = d + 1; q < cp[k + 1]; q++) z[ri[q]] -= L[q] * zk;
+	double *zk = z + (size_t) k * nc;
+	for (int c = 0; c < nc; c++) zk[c] /= L[d];
+	for (int q = d + 1; q < cp[k + 1]; q++) {
+	    double *zr = z + (size_t) ri[q] * nc, l = L[q];
+	    for (int c = 0; c < nc; c++) zr[c] -= l * zk[c];
+	}
     }
     for (int k = n - 1; k >= 0; k--) {
 	int d = cp[k];
-	double s = z[k];
-	for (int q = d + 1; q < cp[k + 1]; q++) s -= L[q] * z[ri[q]];
-	z[k] = s / L[d];
+	double *zk = z + (size_t) k * nc;
+	for (int q = d + 1; q < cp[k + 1]; q++) {
+	    const double *zr = z + (size_t) ri[q] * nc;
+	    double l = L[q];
+	    for (int c = 0; c < nc; c++) zk[c] -= l * zr[c];
+	}
+	for (int c = 0; c < nc; c++) zk[c] /= L[d];
     }
 }
 
-SEXP dm_fe_pcg(SEXP ap_, SEXP ai_, SEXP ax_, SEXP lp_, SEXP li_, SEXP lx_, SEXP B_,
-	       SEXP tol_, SEXP maxit_)
+static int int_cmp(const void *u, const void *v)
 {
-    int n = nrows(B_), m = ncols(B_);
+    int a = *(const int *) u, b = *(const int *) v;
+    return (a > b) - (a < b);
+}
+
+SEXP dm_fe_schur(SEXP ap_, SEXP ai_, SEXP ax_, SEXP np_, SEXP ni_, SEXP nx_, SEXP map_,
+		 SEXP d_, SEXP cap_nnz_, SEXP cap_work_)
+{
+    int m = length(ap_) - 1, G = length(np_) - 1;
+    const int *ap = INTEGER(ap_), *ai = INTEGER(ai_), *np = INTEGER(np_), *ni = INTEGER(ni_);
+    const int *map = INTEGER(map_);
+    const double *ax = REAL(ax_), *nx = REAL(nx_), *d = REAL(d_);
+    double cap_nnz = asReal(cap_nnz_), cap_work = asReal(cap_work_);
+    int nnzN = np[G];
+    /* the rows of N kept: for each entry, its column and its position in N
+       (malloc: no pressure on R's garbage collector) */
+    int *rp = (int *) R_alloc((size_t) m + 1, sizeof(int));
+    int *fill = (int *) R_alloc((size_t) m + 1, sizeof(int));
+    int *rj = (int *) malloc(((size_t) nnzN + 1) * sizeof(int));
+    int *rq = (int *) malloc(((size_t) nnzN + 1) * sizeof(int));
+    if (!rj || !rq) { free(rj); free(rq); error("cannot allocate the reduced system"); }
+    for (int k = 0; k <= m; k++) rp[k] = 0;
+    for (int q = 0; q < nnzN; q++) if (map[ni[q]] >= 0) rp[map[ni[q]] + 1]++;
+    for (int k = 0; k < m; k++) rp[k + 1] += rp[k];
+    memcpy(fill, rp, sizeof(int) * (size_t) m);
+    for (int j = 0; j < G; j++)
+	for (int q = np[j]; q < np[j + 1]; q++) {
+	    int k = map[ni[q]];
+	    if (k < 0) continue;
+	    int t = fill[k]++;
+	    rj[t] = j;
+	    rq[t] = q;
+	}
+    int *mark = (int *) R_alloc((size_t) m + 1, sizeof(int));
+    int *list = (int *) R_alloc((size_t) m + 1, sizeof(int));
+    double *acc = (double *) R_alloc((size_t) m + 1, sizeof(double));
+    for (int k = 0; k < m; k++) mark[k] = -1;
+    double work = 0.0;
+    int ok = 1;
+    /* a probe first: the counts of 64 evenly spaced columns estimate the
+       nonzeros and the work; give up at once when either is four times
+       its cap (the exact checks below stay) */
+    int ns = m < 64 ? m : 64;
+    if (R_FINITE(cap_work) || R_FINITE(cap_nnz)) {
+	double ew = 0.0, en = 0.0;
+	for (int t = 0; t < ns; t++) {
+	    int i = (int) (((double) t + 0.5) * m / ns), tag = -2 - t, cnt = 0;
+	    for (int q = ap[i]; q < ap[i + 1]; q++)
+		if (mark[ai[q]] != tag) { mark[ai[q]] = tag; cnt++; }
+	    if (mark[i] != tag) { mark[i] = tag; cnt++; }
+	    for (int e = rp[i]; e < rp[i + 1]; e++) {
+		int j = rj[e];
+		for (int q = rq[e]; q < np[j + 1]; q++) {
+		    int k = map[ni[q]];
+		    if (k >= 0 && mark[k] != tag) { mark[k] = tag; cnt++; }
+		}
+	    }
+	    ew += (double) cnt * cnt;
+	    en += cnt;
+	}
+	ew *= (double) m / ns;
+	en *= (double) m / ns;
+	if (ew > 4.0 * cap_work || en > 4.0 * cap_nnz) ok = 0;
+	for (int k = 0; k < m; k++) mark[k] = -1;
+    }
+    size_t cap = (size_t) ap[m] + (size_t) m + 16, nnz = 0;
+    int *oi = ok ? (int *) malloc(cap * sizeof(int)) : NULL;
+    double *ox = ok ? (double *) malloc(cap * sizeof(double)) : NULL;
+    if (ok && (!oi || !ox)) {
+	free(oi); free(ox); free(rj); free(rq);
+	error("cannot allocate the reduced system");
+    }
+    SEXP p_ = PROTECT(allocVector(INTSXP, m + 1));
+    int *op = INTEGER(p_);
+    op[0] = 0;
+    for (int i = 0; i < m && ok; i++) {
+	int cnt = 0;
+	for (int q = ap[i]; q < ap[i + 1]; q++) {
+	    int k = ai[q];
+	    if (mark[k] != i) { mark[k] = i; acc[k] = 0.0; list[cnt++] = k; }
+	    acc[k] += ax[q];
+	}
+	if (mark[i] != i) { mark[i] = i; acc[i] = 0.0; list[cnt++] = i; }
+	for (int e = rp[i]; e < rp[i + 1]; e++) {
+	    int j = rj[e], q0 = rq[e];
+	    double wj = nx[q0] * d[j];
+	    for (int q = q0; q < np[j + 1]; q++) {
+		int k = map[ni[q]];
+		if (k < 0) continue;
+		if (mark[k] != i) { mark[k] = i; acc[k] = 0.0; list[cnt++] = k; }
+		acc[k] -= wj * nx[q];
+	    }
+	}
+	work += (double) cnt * cnt;
+	if ((double) (nnz + cnt) > cap_nnz || work > cap_work) { ok = 0; break; }
+	/* sorted rows: by a scan of the marks when the column is dense */
+	if ((double) cnt * 16.0 > (double) (m - i)) {
+	    int t = 0;
+	    for (int k = i; k < m; k++) if (mark[k] == i) list[t++] = k;
+	} else {
+	    qsort(list, (size_t) cnt, sizeof(int), int_cmp);
+	}
+	if (nnz + cnt > cap) {
+	    while (nnz + cnt > cap) cap *= 2;
+	    int *oi2 = (int *) realloc(oi, cap * sizeof(int));
+	    if (oi2) oi = oi2;
+	    double *ox2 = (double *) realloc(ox, cap * sizeof(double));
+	    if (ox2) ox = ox2;
+	    if (!oi2 || !ox2) {
+		free(oi); free(ox); free(rj); free(rq);
+		error("cannot allocate the reduced system");
+	    }
+	}
+	for (int t = 0; t < cnt; t++) {
+	    oi[nnz] = list[t];
+	    ox[nnz++] = acc[list[t]];
+	}
+	op[i + 1] = (int) nnz;
+    }
+    free(rj);
+    free(rq);
+    if (!ok) {
+	free(oi);
+	free(ox);
+	UNPROTECT(1);
+	return R_NilValue;
+    }
+    SEXP i_ = PROTECT(allocVector(INTSXP, nnz)), x_ = PROTECT(allocVector(REALSXP, nnz));
+    memcpy(INTEGER(i_), oi, sizeof(int) * nnz);
+    memcpy(REAL(x_), ox, sizeof(double) * nnz);
+    free(oi);
+    free(ox);
+    SEXP out = PROTECT(allocVector(VECSXP, 4));
+    SET_VECTOR_ELT(out, 0, p_);
+    SET_VECTOR_ELT(out, 1, i_);
+    SET_VECTOR_ELT(out, 2, x_);
+    SET_VECTOR_ELT(out, 3, ScalarReal(work));
+    UNPROTECT(4);
+    return out;
+}
+
+/* y = R x for nc interleaved columns: R = A (lower triangle) - N diag(d) N',
+   the rows of N mapped by mp to 0..n-1, or to n (a row dropped: x has a
+   zero row n, and row n of y is ignored).
+   (Instances for one to four columns, where nc is a constant the compiler
+   unrolls, and a generic one.) */
+#define FE_OP_BODY(NC)							\
+    memset(y, 0, sizeof(double) * ((size_t) n + 1) * (NC));		\
+    for (int j = 0; j < n; j++) {					\
+	const double *xj = x + (size_t) j * (NC);			\
+	double *yj = y + (size_t) j * (NC);				\
+	for (int q = ap[j]; q < ap[j + 1]; q++) {			\
+	    int k = ai[q];						\
+	    double a = ax[q];						\
+	    double *yk = y + (size_t) k * (NC);				\
+	    for (int c = 0; c < (NC); c++) yk[c] += a * xj[c];		\
+	    if (k != j) {						\
+		const double *xk = x + (size_t) k * (NC);		\
+		for (int c = 0; c < (NC); c++) yj[c] += a * xk[c];	\
+	    }								\
+	}								\
+    }									\
+    if (np == NULL) return;						\
+    for (int j = 0; j < G; j++) {					\
+	double sj[4];							\
+	double *sv = (NC) <= 4 ? sj : s;				\
+	for (int c = 0; c < (NC); c++) sv[c] = 0.0;			\
+	int q1 = np[j + 1];						\
+	for (int q = np[j]; q < q1; q++) {				\
+	    const double *xk = x + (size_t) mp[ni[q]] * (NC);		\
+	    double v = nx[q];						\
+	    for (int c = 0; c < (NC); c++) sv[c] += v * xk[c];		\
+	}								\
+	for (int c = 0; c < (NC); c++) sv[c] *= d[j];			\
+	for (int q = np[j]; q < q1; q++) {				\
+	    double *yk = y + (size_t) mp[ni[q]] * (NC);			\
+	    double v = nx[q];						\
+	    for (int c = 0; c < (NC); c++) yk[c] -= v * sv[c];		\
+	}								\
+    }
+
+#define FE_OP_ARGS int n, const int *restrict ap, const int *restrict ai, \
+	const double *restrict ax, int G, const int *restrict np,	\
+	const int *restrict ni, const int *restrict mp,			\
+	const double *restrict nx,						\
+	const double *restrict d, const double *restrict x,		\
+	double *restrict y, double *restrict s
+static void fe_op1(FE_OP_ARGS) { FE_OP_BODY(1) }
+static void fe_op2(FE_OP_ARGS) { FE_OP_BODY(2) }
+static void fe_op3(FE_OP_ARGS) { FE_OP_BODY(3) }
+static void fe_op4(FE_OP_ARGS) { FE_OP_BODY(4) }
+static void fe_opn(int nc, FE_OP_ARGS) { FE_OP_BODY(nc) }
+
+static void fe_op(int n, int nc, const int *ap, const int *ai, const double *ax,
+		  int G, const int *np, const int *ni, const int *mp, const double *nx,
+		  const double *d, const double *x, double *y, double *s)
+{
+    switch (nc) {
+    case 1: fe_op1(n, ap, ai, ax, G, np, ni, mp, nx, d, x, y, s); break;
+    case 2: fe_op2(n, ap, ai, ax, G, np, ni, mp, nx, d, x, y, s); break;
+    case 3: fe_op3(n, ap, ai, ax, G, np, ni, mp, nx, d, x, y, s); break;
+    case 4: fe_op4(n, ap, ai, ax, G, np, ni, mp, nx, d, x, y, s); break;
+    default: fe_opn(nc, n, ap, ai, ax, G, np, ni, mp, nx, d, x, y, s);
+    }
+}
+
+SEXP dm_fe_pcg(SEXP ap_, SEXP ai_, SEXP ax_, SEXP np_, SEXP ni_, SEXP nx_, SEXP map_, SEXP d_,
+	       SEXP lp_, SEXP li_, SEXP lx_, SEXP B_, SEXP X0_, SEXP tol_, SEXP maxit_)
+{
+    int n = nrows(B_), nc = ncols(B_);
     const int *ap = INTEGER(ap_), *ai = INTEGER(ai_);
     const double *ax = REAL(ax_);
+    int mf = !isNull(np_);
+    int G = mf ? length(np_) - 1 : 0;
+    const int *np = mf ? INTEGER(np_) : NULL, *ni = mf ? INTEGER(ni_) : NULL;
+    const double *nx = mf ? REAL(nx_) : NULL, *d = mf ? REAL(d_) : NULL;
     int use_ic = !isNull(lx_);
     const int *lp = use_ic ? INTEGER(lp_) : NULL, *li = use_ic ? INTEGER(li_) : NULL;
     const double *lx = use_ic ? REAL(lx_) : NULL;
     double tol = asReal(tol_);
     int maxit = asInteger(maxit_);
     const double *B = REAL(B_);
-    SEXP X_ = PROTECT(allocMatrix(REALSXP, n, m));
+    SEXP X_ = PROTECT(allocMatrix(REALSXP, n, nc)), nullv_ = R_NilValue;
+    int nprot = 1;
     double *X = REAL(X_);
-    memset(X, 0, sizeof(double) * (size_t) n * m);
-    double *dinv = (double *) R_alloc((size_t) n + 1, sizeof(double));
-    if (!use_ic) {
-	for (int j = 0; j < n; j++) {
-	    double d = 0.0;
-	    for (int q = ap[j]; q < ap[j + 1]; q++) if (ai[q] == j) d += ax[q];
-	    dinv[j] = d > 0.0 ? 1.0 / d : 1.0;
-	}
+    /* the rows of N: their index among the n levels, or n (dropped) */
+    int *mp = NULL;
+    if (mf) {
+	int nr = length(map_);
+	mp = (int *) R_alloc((size_t) nr + 1, sizeof(int));
+	for (int k = 0; k < nr; k++) mp[k] = INTEGER(map_)[k] < 0 ? n : INTEGER(map_)[k];
     }
-    double *r = (double *) R_alloc((size_t) n + 1, sizeof(double));
-    double *z = (double *) R_alloc((size_t) n + 1, sizeof(double));
-    double *pv = (double *) R_alloc((size_t) n + 1, sizeof(double));
-    double *Ap = (double *) R_alloc((size_t) n + 1, sizeof(double));
+    /* vectors of n + 1 rows: row n (zero) stands for the rows dropped */
+    size_t nn = (size_t) n * nc, len = ((size_t) n + 1) * nc;
+    double *x = (double *) R_alloc(len, sizeof(double));
+    double *r = (double *) R_alloc(len, sizeof(double));
+    double *z = (double *) R_alloc(len, sizeof(double));
+    double *pv = (double *) R_alloc(len, sizeof(double));
+    double *Ap = (double *) R_alloc(len, sizeof(double));
+    memset(x, 0, sizeof(double) * len);
+    memset(r, 0, sizeof(double) * len);
+    memset(z, 0, sizeof(double) * len);
+    memset(pv, 0, sizeof(double) * len);
+    double *s = (double *) R_alloc((size_t) nc + 1, sizeof(double));
+    double *bn = (double *) R_alloc((size_t) nc + 1, sizeof(double));
+    double *rz = (double *) R_alloc((size_t) nc + 1, sizeof(double));
+    double *res = (double *) R_alloc((size_t) nc + 1, sizeof(double));
+    double *alpha = (double *) R_alloc((size_t) nc + 1, sizeof(double));
+    double *beta = (double *) R_alloc((size_t) nc + 1, sizeof(double));
+    int *done = (int *) R_alloc((size_t) nc + 1, sizeof(int));
+    int *its = (int *) R_alloc((size_t) nc + 1, sizeof(int));
+    /* the diagonal of R, for the Jacobi preconditioner */
+    double *dinv = (double *) R_alloc((size_t) n + 1, sizeof(double));
+    double dmax = 0.0;
+    for (int j = 0; j < n; j++) {
+	dinv[j] = 0.0;
+	for (int q = ap[j]; q < ap[j + 1]; q++) if (ai[q] == j) dinv[j] += ax[q];
+    }
+    if (mf)
+	for (int j = 0; j < G; j++)
+	    for (int q = np[j]; q < np[j + 1]; q++) dinv[mp[ni[q]]] -= nx[q] * nx[q] * d[j];
+    for (int j = 0; j < n; j++) {
+	if (dinv[j] > dmax) dmax = dinv[j];
+	dinv[j] = dinv[j] > 0.0 ? 1.0 / dinv[j] : 1.0;
+    }
+    /* interleaved copies: x[k * nc + c] */
+    for (int c = 0; c < nc; c++) {
+	const double *b = B + (size_t) n * c;
+	double t = 0.0;
+	for (int k = 0; k < n; k++) t += b[k] * b[k];
+	bn[c] = sqrt(t);
+	for (int k = 0; k < n; k++) {
+	    x[(size_t) k * nc + c] = isNull(X0_) ? 0.0 : REAL(X0_)[(size_t) n * c + k];
+	    r[(size_t) k * nc + c] = b[k];
+	}
+	its[c] = 0;
+    }
+    if (!isNull(X0_)) {
+	fe_op(n, nc, ap, ai, ax, G, np, ni, mp, nx, d, x, Ap, s);
+	for (size_t t = 0; t < nn; t++) r[t] -= Ap[t];
+    }
+    /* normwise backward error of column c: ||r|| / (max(diag R) ||x|| +
+       ||b||), max(diag R) standing for ||R|| (a lower bound) */
+    #define BACKERR(c) do { \
+	double rr_ = 0.0, xx_ = 0.0; \
+	for (int k = 0; k < n; k++) { \
+	    double rk_ = r[(size_t) k * nc + (c)], xk_ = x[(size_t) k * nc + (c)]; \
+	    rr_ += rk_ * rk_; xx_ += xk_ * xk_; \
+	} \
+	res[c] = sqrt(rr_) / (dmax * sqrt(xx_) + bn[c]); \
+    } while (0)
+    for (int c = 0; c < nc; c++) {
+	if (bn[c] == 0.0) {
+	    /* zero right-hand side: zero solution */
+	    for (int k = 0; k < n; k++) x[(size_t) k * nc + c] = 0.0;
+	    res[c] = 0.0;
+	} else {
+	    BACKERR(c);
+	}
+	done[c] = res[c] <= tol;
+    }
+    #define PRECOND() do { \
+	if (use_ic) { memcpy(z, r, sizeof(double) * nn); ic_solve(n, nc, lp, li, lx, z); } \
+	else for (int k = 0; k < n; k++) for (int c = 0; c < nc; c++) \
+	    z[(size_t) k * nc + c] = dinv[k] * r[(size_t) k * nc + c]; \
+    } while (0)
+    PRECOND();
+    memcpy(pv, z, sizeof(double) * nn);
+    for (int c = 0; c < nc; c++) {
+	rz[c] = 0.0;
+	for (int k = 0; k < n; k++) rz[c] += r[(size_t) k * nc + c] * z[(size_t) k * nc + c];
+    }
+    int it = 0;
+    for (;;) {
+	int active = 0;
+	for (int c = 0; c < nc; c++) active += !done[c];
+	if (!active || it >= maxit) break;
+	it++;
+	fe_op(n, nc, ap, ai, ax, G, np, ni, mp, nx, d, pv, Ap, s);
+	for (int c = 0; c < nc; c++) {
+	    alpha[c] = 0.0;
+	    if (done[c]) continue;
+	    double pap = 0.0;
+	    for (int k = 0; k < n; k++) pap += pv[(size_t) k * nc + c] * Ap[(size_t) k * nc + c];
+	    if (!(pap > 0.0)) {
+		/* p'Rp <= 0: R is singular (rounding makes it slightly
+		   indefinite) and p is close to a null vector */
+		done[c] = 1;
+		if (isNull(nullv_)) {
+		    nullv_ = PROTECT(allocVector(REALSXP, n));
+		    nprot++;
+		    for (int k = 0; k < n; k++) REAL(nullv_)[k] = pv[(size_t) k * nc + c];
+		}
+		continue;
+	    }
+	    alpha[c] = rz[c] / pap;
+	    its[c] = it;
+	}
+	for (int k = 0; k < n; k++)
+	    for (int c = 0; c < nc; c++) {
+		size_t t = (size_t) k * nc + c;
+		x[t] += alpha[c] * pv[t];
+		r[t] -= alpha[c] * Ap[t];
+	    }
+	for (int c = 0; c < nc; c++) {
+	    if (done[c]) continue;
+	    BACKERR(c);
+	    if (res[c] <= tol) done[c] = 1;
+	}
+	PRECOND();
+	for (int c = 0; c < nc; c++) {
+	    beta[c] = 0.0;
+	    if (done[c]) continue;
+	    double t = 0.0;
+	    for (int k = 0; k < n; k++) t += r[(size_t) k * nc + c] * z[(size_t) k * nc + c];
+	    beta[c] = t / rz[c];
+	    rz[c] = t;
+	}
+	for (int k = 0; k < n; k++)
+	    for (int c = 0; c < nc; c++) {
+		size_t t = (size_t) k * nc + c;
+		pv[t] = done[c] ? 0.0 : z[t] + beta[c] * pv[t];
+	    }
+	if ((it & 63) == 0) R_CheckUserInterrupt();
+    }
+    #undef PRECOND
+    #undef BACKERR
     int itmax = 0;
     double resmax = 0.0;
-    for (int c = 0; c < m; c++) {
-	const double *b = B + (size_t) n * c;
-	double *x = X + (size_t) n * c;
-	double bn = 0.0;
-	for (int j = 0; j < n; j++) { r[j] = b[j]; bn += b[j] * b[j]; }
-	bn = sqrt(bn);
-	if (bn == 0.0) continue;
-	if (use_ic) { memcpy(z, r, sizeof(double) * n); ic_solve(n, lp, li, lx, z); }
-	else for (int j = 0; j < n; j++) z[j] = dinv[j] * r[j];
-	memcpy(pv, z, sizeof(double) * n);
-	double rz = 0.0;
-	for (int j = 0; j < n; j++) rz += r[j] * z[j];
-	int it = 0;
-	double res = 1.0;
-	while (it < maxit) {
-	    it++;
-	    for (int j = 0; j < n; j++) Ap[j] = 0.0;
-	    for (int j = 0; j < n; j++) {
-		double pj = pv[j];
-		for (int q = ap[j]; q < ap[j + 1]; q++) Ap[ai[q]] += ax[q] * pj;
-	    }
-	    double pap = 0.0;
-	    for (int j = 0; j < n; j++) pap += pv[j] * Ap[j];
-	    if (!(pap > 0.0)) break;
-	    double alpha = rz / pap, rn = 0.0;
-	    for (int j = 0; j < n; j++) {
-		x[j] += alpha * pv[j];
-		r[j] -= alpha * Ap[j];
-		rn += r[j] * r[j];
-	    }
-	    res = sqrt(rn) / bn;
-	    if (res <= tol) break;
-	    if (use_ic) { memcpy(z, r, sizeof(double) * n); ic_solve(n, lp, li, lx, z); }
-	    else for (int j = 0; j < n; j++) z[j] = dinv[j] * r[j];
-	    double rz2 = 0.0;
-	    for (int j = 0; j < n; j++) rz2 += r[j] * z[j];
-	    double beta = rz2 / rz;
-	    rz = rz2;
-	    for (int j = 0; j < n; j++) pv[j] = z[j] + beta * pv[j];
-	    if ((it & 63) == 0) R_CheckUserInterrupt();
-	}
-	if (it > itmax) itmax = it;
-	if (res > resmax) resmax = res;
+    for (int c = 0; c < nc; c++) {
+	for (int k = 0; k < n; k++) X[(size_t) n * c + k] = x[(size_t) k * nc + c];
+	if (its[c] > itmax) itmax = its[c];
+	if (res[c] > resmax) resmax = res[c];
     }
-    SEXP out = PROTECT(allocVector(VECSXP, 3));
+    SEXP out = PROTECT(allocVector(VECSXP, 4));
     SET_VECTOR_ELT(out, 0, X_);
     SET_VECTOR_ELT(out, 1, ScalarInteger(itmax));
     SET_VECTOR_ELT(out, 2, ScalarReal(resmax));
-    UNPROTECT(2);
+    SET_VECTOR_ELT(out, 3, nullv_);
+    UNPROTECT(nprot + 1);
     return out;
 }
+

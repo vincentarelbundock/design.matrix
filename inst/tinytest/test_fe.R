@@ -129,9 +129,10 @@ for (s in c("dense", "chol", "pcg")) {
     expect_equal(plain(vcov(a)), plain(vcov(b, cluster = ~b)), tolerance = TOL, info = s)
     options(op)
 }
-# conjugate gradients: Jacobi by default, IC(0) (block IC(0) for 3+ FE) on
-# request; the same fit either way
-op <- options(design.matrix.fe_solver = "pcg")
+# conjugate gradients: on a reduced system that is formed, IC(0) (block
+# IC(0) for 3+ FE) by default, Jacobi on request; the same fit either way
+# (more in test_fe_solver.R)
+op <- options(design.matrix.fe_solver = "pcg", design.matrix.fe_precond = "jacobi")
 a <- design_lm(y ~ x1 + x2 | a + b, d)
 expect_equal(a$fe_info$precond, "jacobi")
 expect_equal(unname(coef(a)), unname(coef(fx_fit(y ~ x1 + x2 | a + b, d))), tolerance = TOL)
