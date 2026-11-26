@@ -1,9 +1,10 @@
 ## Parity of the matrix operations of a design in memory and remote: every
 ## operation on the same data, in memory and on a DuckDB table and a
-## Parquet file. Two formulas: one that SQL computes, and one with a term
+## Parquet file (full tier). Two formulas: one that SQL computes, and one with a term
 ## evaluated in R into columns (also in small batches).
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
+source("helpers.R")
 library(design.matrix)
 
 con <- DBI::dbConnect(duckdb::duckdb())
@@ -30,6 +31,7 @@ sources <- list(
     table = function(f) design_matrix(f, con, table = "d", engine = "auto"),
     batches = function(f) design_matrix(f, con, table = "d", chunk_size = 97),
     parquet = function(f) design_matrix(f, pq))
+if (!full_tests) sources$parquet <- NULL
 for (fname in names(formulas)) for (src in names(sources)) {
     fo <- formulas[[fname]]
     M <- design_matrix(fo, d)

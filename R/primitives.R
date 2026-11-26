@@ -806,12 +806,10 @@ dmp_colsums_groups <- function(x, groups, extra = NULL) {
                     S[, Tt$cols[1L, 1L]] <- m[1L, ]
                     next
                 }
-                L <- nrow(Tt$C)
+                L <- Tt$L
                 ns <- nrow(Tt$cols)
-                for (u in seq_len(ns)) {
-                    rows <- q + (u - 1L) * L + seq_len(L)
-                    S[, Tt$cols[u, ]] <- crossprod(m[rows, , drop = FALSE], Tt$C)
-                }
+                rows <- q + seq_len(L * ns)
+                S[, Tt$cols] <- t(dm_struct_contract(m[rows, , drop = FALSE], Tt, G[k]))
                 q <- q + L * ns
             }
             list(S = S, n = m[1L, ], extra = if (is.null(Y)) NULL else t(m[q + seq_len(NCOL(Y)), , drop = FALSE]))
@@ -832,7 +830,7 @@ dm_colsums_struct_ok <- function(D, G) {
     if (!isTRUE(getOption("design.matrix.structured", TRUE))) return(FALSE)
     if (!dm_struct_ok(D)) return(FALSE)
     info <- dm_struct_info(D)
-    Q <- 2 + sum(vapply(info, function(Tt) nrow(Tt$C) * nrow(Tt$cols), 0))
+    Q <- 2 + sum(vapply(info, function(Tt) Tt$L * nrow(Tt$cols), 0))
     all(Q * as.double(G) <= 2^25)
 }
 

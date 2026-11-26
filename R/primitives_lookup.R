@@ -89,7 +89,7 @@ dmc_lookup <- function(values, key, levels = NULL, along = list()) {
     }
     for (j in seq_along(vcols)) tab[[vcols[j]]] <- vm[, j]
     tn <- dm_tmp_name("dm_lookup")
-    DBI::dbWriteTable(con, tn, tab, temporary = TRUE)
+    dm_write_temp(con, tn, tab)
     col <- paste0("__dm_lk", substr(tn, 11L, 18L), if (mat) paste0("_", seq_along(vcols)))
     fr <- dm_remote_unscaled(frame)
     fr$src$select <- sprintf("SELECT s.*, %s FROM (%s) AS s LEFT JOIN %s AS l ON %s",
@@ -100,6 +100,18 @@ dmc_lookup <- function(values, key, levels = NULL, along = list()) {
     fr$src$types <- vapply(fr$src$proto, dm_col_type, "")
     fr$depth <- dm_frame_depth(frame) + 1L
     dm_rcols(fr, sprintf("s.%s", q(col)))
+}
+
+## A data frame written to the temporary table `name`: registered with
+## DuckDB and copied by one statement (DBI::dbWriteTable() first probes
+## for the table, which costs much more than the copy of a lookup table).
+dm_write_temp <- function(con, name, df) {
+    reg <- paste0(name, "_r")
+    duckdb::duckdb_register(con, reg, df)
+    on.exit(duckdb::duckdb_unregister(con, reg))
+    DBI::dbExecute(con, sprintf("CREATE TEMPORARY TABLE %s AS SELECT * FROM %s",
+                                DBI::dbQuoteIdentifier(con, name), DBI::dbQuoteIdentifier(con, reg)))
+    invisible(name)
 }
 
 ## One string per row of a data frame of key values (doubles to 17 digits).
