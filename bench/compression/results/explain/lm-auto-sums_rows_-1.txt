@@ -1,0 +1,33 @@
+SELECT SUM(CAST(((CASE WHEN (COALESCE(isfinite(CAST((CAST(s.y AS DOUBLE)) AS DOUBLE)), FALSE)) THEN 0 ELSE 1 END)) AS DOUBLE)) AS s1, SUM(CAST((CAST('0' AS DOUBLE)) AS DOUBLE)) AS s2, SUM(CAST((CAST('0' AS DOUBLE)) AS DOUBLE)) AS s3, SUM(CAST((CAST('1' AS DOUBLE)) AS DOUBLE)) AS s4 FROM (SELECT * FROM d) AS s WHERE ((s.f1 IS NOT NULL)) AND ((s.f2 IS NOT NULL)) AND (((CAST(s.xd1 AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.xd1 AS DOUBLE)))) AND (((CAST(s.xd2 AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.xd2 AS DOUBLE)))) AND (((CAST(s.y AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.y AS DOUBLE))))
+
+╭─ Summary ───────────╮
+│ Total Time: 0.0021s │
+╰─────────────────────╯
+╭─ Execute ──────────────────────────────────────────────────────────────────────╮
+│ 0 rows                                                                     0µs │
+╰────────────────────────────────────────┬───────────────────────────────────────╯
+╭─ Explain Analyze ──────────────────────┴───────────────────────────────────────╮
+│ 0 rows                                                                     0µs │
+╰────────────────────────────────────────┬───────────────────────────────────────╯
+╭─ Projection ───────────────────────────┴───────────────────────────────────────╮
+│ Projections: s1, s2, s3, s4                                                    │
+│ 1 row                                                                      0µs │
+╰────────────────────────────────────────┬───────────────────────────────────────╯
+╭─ Ungrouped Aggregate ──────────────────┴───────────────────────────────────────╮
+│ Aggregates: sum(#0), sum(#1), sum(#2)                                          │
+│ 1 row                                                                      0µs │
+╰────────────────────────────────────────┒┎──────────────────────────────────────╯
+╭─ Projection ───────────────────────────┚┖──────────────────────────────────────╮
+│ Projections:                                                                   │
+│ CAST(CASE  WHEN (COALESCE(isfinite(y), false)) THEN (0) ELSE 1 END AS DOUBLE), │
+│ 0.0, 1.0                                                                       │
+│ 1,000,000 rows                                                          10.0ms │
+╰────────────────────────────────────────┒┎──────────────────────────────────────╯
+╭─ Table Scan ───────────────────────────┚┖──────────────────────────────────────╮
+│ Table: memory.main.d                                                           │
+│ Type: Sequential Scan                                                          │
+│ Projections: y                                                                 │
+│ Row Groups Scanned: 9 / 9                                                      │
+│ 1,000,000 rows                                                             0µs │
+╰────────────────────────────────────────────────────────────────────────────────╯
+

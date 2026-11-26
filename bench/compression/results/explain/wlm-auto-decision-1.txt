@@ -1,0 +1,33 @@
+SELECT COUNT(*) AS n, approx_count_distinct(s.xd1) AS d1, approx_count_distinct(s.xd2) AS d2 FROM d AS s TABLESAMPLE 10000 ROWS WHERE ((s.f1 IS NOT NULL)) AND ((s.f2 IS NOT NULL)) AND (((CAST(s.xd1 AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.xd1 AS DOUBLE)))) AND (((CAST(s.xd2 AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.xd2 AS DOUBLE)))) AND (((CAST(s.y AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.y AS DOUBLE)))) AND (((CAST(s.w AS DOUBLE)) IS NOT NULL AND NOT isnan(CAST(s.w AS DOUBLE))))
+
+╭─ Summary ───────────╮
+│ Total Time: 0.0081s │
+╰─────────────────────╯
+╭─ Execute ──────────────────────────────╮
+│ 0 rows                             0µs │
+╰────────────────────┬───────────────────╯
+╭─ Explain Analyze ──┴───────────────────╮
+│ 0 rows                             0µs │
+╰────────────────────┬───────────────────╯
+╭─ Ungrouped Aggregate ──────────────────╮
+│ Aggregates: count_star(),              │
+│             approx_count_distinct(#0), │
+│             approx_count_distinct(#1)  │
+│ 1 row                              0µs │
+╰────────────────────┬───────────────────╯
+╭─ Projection ───────┴───────────────────╮
+│ Projections: xd1, xd2                  │
+│ 10,000 rows                        0µs │
+╰────────────────────┬───────────────────╯
+╭─ Reservoir Sample ─┴───────────────────╮
+│ Sample Size: 10000 rows                │
+│ 10,000 rows                     50.0ms │
+╰────────────────────┒┎──────────────────╯
+╭─ Table Scan ───────┚┖──────────────────╮
+│ Table: memory.main.d                   │
+│ Type: Sequential Scan                  │
+│ Projections: xd1, xd2                  │
+│ Row Groups Scanned: 9 / 9              │
+│ 1,000,000 rows                     0µs │
+╰────────────────────────────────────────╯
+
