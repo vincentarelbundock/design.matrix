@@ -81,6 +81,12 @@ dm_terms <- function(x) {
     out
 }
 
+## The error for a scale (or the weights of a fit, design_problem()) that
+## is not one value per row of a design of n rows.
+dm_scale_length_msg <- function(n) {
+    sprintf("A design matrix can only be scaled by a number or a numeric vector of length %d (one value per row).", n)
+}
+
 ## scale * s, where a NULL scale is 1 and s is a number or a vector of length n
 dm_times <- function(scale, s) {
     s <- as.double(s)
@@ -90,8 +96,7 @@ dm_times <- function(scale, s) {
 dm_scale <- function(x, s) {
     n <- nrow(x)
     if (!is.numeric(s) || !(length(s) %in% c(1L, n)) || !is.null(dim(s)))
-        stop(sprintf("A design matrix can only be scaled by a number or a numeric vector of length %d (one value per row).", n),
-             call. = FALSE)
+        stop(dm_scale_length_msg(n), call. = FALSE)
     terms <- lapply(dm_terms(x), function(t) { t$scale <- dm_times(t$scale, s); t })
     dm_from_terms(terms)
 }

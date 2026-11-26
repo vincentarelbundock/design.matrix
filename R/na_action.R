@@ -5,15 +5,15 @@
 ## on tables, with the methods of dm_remote_exclude).
 
 ## na.action of a fit, as one of `allowed` ("omit", "exclude", "fail",
-## "pass"): na.omit and the others, as functions or names.
-dm_na_kind <- function(na.action, allowed = c("omit", "exclude", "fail", "pass"), what = "") {
+## "pass"): na.omit and the others, as functions or names. Other functions
+## are refused, in memory as remotely (remote data can apply only these).
+dm_na_kind <- function(na.action, allowed = c("omit", "exclude", "fail", "pass")) {
     if (is.null(na.action)) return("omit")
     for (nm in allowed) {
         f <- get(paste0("na.", nm), envir = asNamespace("stats"))
         if (identical(na.action, f) || identical(na.action, paste0("na.", nm))) return(nm)
     }
-    stop(sprintf("%s`na.action` must be %s.", what,
-                 paste(paste0("na.", allowed), collapse = ", ")), call. = FALSE)
+    stop(sprintf("`na.action` must be %s.", paste(paste0("na.", allowed), collapse = ", ")), call. = FALSE)
 }
 
 ## na.action of a fit with fixed effects: na.omit or na.exclude, in memory

@@ -6,10 +6,21 @@
 # * offsets: lm() says "is %d, should equal", glm() and FE "is %d should equal";
 # * weights: LM "missing or negative weights not allowed", GLM "negative
 #   weights not allowed".
-# Differences left between the modes: non-numeric weights, offsets and
-# responses (remotely, "has no SQL translation"), and the na.action
-# functions that remote data cannot apply (other than na.omit, na.exclude,
-# na.fail, na.pass) in linear models without FE.
+# Where base R has no message of its own, one is chosen for both modes:
+# * weights with several columns (a matrix): the in-memory error of a design
+#   scaled by a vector that is not one value per row;
+# * missing weights on a GLM design matrix: "NA/NaN/Inf in 'weights'", the
+#   GLM's error for weights that are not finite (glm() has none; lm()'s
+#   "missing or negative" would contradict the GLM's "negative weights").
+# na.action: only the functions remote data can apply (na.omit, na.exclude,
+# na.fail and, for a linear model, na.pass; with fixed effects na.omit or
+# na.exclude), in memory too. Columns of the wrong type (bare names) are
+# checked before their SQL translation, with the in-memory messages.
+# Left between the modes: an expression (not a bare column) of the wrong
+# type as the response (remotely "`...` is not numeric."); with two
+# problems, matrix weights and a non-numeric offset (remotely the offset
+# first); errors of the model frame (an unknown object in `subset`) against
+# column types (remotely the types first).
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
 library(design.matrix)
@@ -74,8 +85,19 @@ expect_error(design_lm(y ~ x, d, foo = nosuch),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, weights = wneg, subset = x > 100),
              "0 (non-NA) cases", fixed = TRUE)
-expect_error(design_lm(y ~ x, d, na.action = function(x) stop("custom na")),
-             "custom na", fixed = TRUE)
+# na.action functions that remote data cannot apply: refused in memory too,
+# before the options of the fit (checks.R, step 2)
+nalm <- "`na.action` must be na.omit, na.exclude, na.fail, na.pass."
+expect_error(design_lm(y ~ x, d, na.action = function(x) stop("custom na")), nalm, fixed = TRUE)
+expect_error(design_lm(y ~ x, d, na.action = function(x) x, foo = 1), nalm, fixed = TRUE)
+expect_error(design_lm(y ~ x, d, na.action = function(x) x, compress = "no"), nalm, fixed = TRUE)
+expect_error(design_lm(y ~ x, d, na.action = "na.nosuch"), nalm, fixed = TRUE)
+expect_inherits(design_lm(y ~ x, d, na.action = na.pass), "design_lm")
+expect_inherits(design_lm(y ~ x, d, na.action = "na.fail"), "design_lm")
+expect_error(design_lm(~ x, d, foo = 1),
+             "Unknown arguments: foo", fixed = TRUE)
+expect_error(design_lm(y ~ x, d, foo = 1, weights = ch),
+             "Unknown arguments: foo", fixed = TRUE)
 
 # LM remote
 expect_error(design_lm(y ~ x, con, table = "d", weights = wneg),
@@ -83,7 +105,7 @@ expect_error(design_lm(y ~ x, con, table = "d", weights = wneg),
 expect_error(design_lm(y ~ x, con, table = "d", weights = wna, na.action = na.pass),
              "missing or negative weights not allowed", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", weights = ch),
-             "`weights` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
+             "'weights' must be a numeric vector", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", weights = wzero),
              "0 (non-NA) cases", fixed = TRUE)
 expect_error(design_lm(~ x, con, table = "d", offset = z),
@@ -93,7 +115,9 @@ expect_error(design_lm(yna ~ x, con, table = "d", na.action = na.pass),
 expect_error(design_lm(yna ~ x, con, table = "d", na.action = na.fail),
              "missing values in object", fixed = TRUE)
 expect_error(design_lm(ch ~ x, con, table = "d"),
-             "`response` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
+             "The response must be numeric.", fixed = TRUE)
+expect_error(design_lm(ch ~ x, con, table = "d", weights = wneg),
+             "The response must be numeric.", fixed = TRUE)
 expect_error(design_lm(cbind(y, x) ~ z, con, table = "d"),
              "Multivariate responses are not supported.", fixed = TRUE)
 expect_error(design_lm(cbind(y, x) ~ z, con, table = "d", weights = ch),
@@ -112,12 +136,17 @@ expect_error(design_lm(y ~ x, con, table = "d", foo = 1),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", foo = 1, weights = wneg),
              "Unknown arguments: foo", fixed = TRUE)
-expect_error(design_lm(y ~ x, con, table = "d", na.action = function(x) x),
-             "For remote data, `na.action` must be na.omit, na.exclude, na.fail, na.pass.", fixed = TRUE)
-expect_error(design_lm(y ~ x, con, table = "d", na.action = function(x) x, foo = 1),
-             "For remote data, `na.action` must be na.omit, na.exclude, na.fail, na.pass.", fixed = TRUE)
+expect_error(design_lm(y ~ x, con, table = "d", na.action = function(x) x), nalm, fixed = TRUE)
+expect_error(design_lm(y ~ x, con, table = "d", na.action = function(x) x, foo = 1), nalm, fixed = TRUE)
+expect_error(design_lm(y ~ x, con, table = "d", na.action = function(x) x, compress = "no"), nalm, fixed = TRUE)
+expect_error(design_lm(y ~ x, con, table = "d", na.action = "na.nosuch"), nalm, fixed = TRUE)
+expect_inherits(design_lm(y ~ x, con, table = "d", na.action = na.pass), "design_lm")
+expect_inherits(design_lm(y ~ x, con, table = "d", na.action = "na.fail"), "design_lm")
+# (unknown arguments first, as in memory)
 expect_error(design_lm(~ x, con, table = "d", foo = 1),
-             "The formula has no response.", fixed = TRUE)
+             "Unknown arguments: foo", fixed = TRUE)
+expect_error(design_lm(y ~ x, con, table = "d", foo = 1, weights = ch),
+             "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", weights = wneg, subset = x > 100),
              "0 (non-NA) cases", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", vcov = "hc1", compress = "no"),
@@ -195,7 +224,7 @@ expect_error(design_glm(b1 ~ x, binomial, con, table = "d", weights = wneg),
 expect_error(design_glm(y ~ x, gaussian, con, table = "d", weights = wna, na.action = na.fail),
              "missing values in object", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, con, table = "d", weights = ch),
-             "`weights` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
+             "'weights' must be a numeric vector", fixed = TRUE)
 expect_error(suppressWarnings(design_glm(y ~ x, gaussian, con, table = "d", weights = wzero)),
              "The fit failed: no valid coefficients were found.", fixed = TRUE)
 expect_warning(design_glm(y ~ x, gaussian, con, table = "d", weights = wzero),
@@ -226,7 +255,7 @@ expect_error(design_glm(y ~ x, gaussian, con, table = "d", foo = 1),
 expect_error(design_glm(y ~ x, gaussian, con, table = "d", foo = 1, weights = wneg),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(cbind(b1, fails, k) ~ x, binomial, con, table = "d", weights = ch),
-             "A two-column response needs two columns (successes and failures).", fixed = TRUE)
+             "'weights' must be a numeric vector", fixed = TRUE)
 expect_error(design_glm(f ~ x, poisson, con, table = "d", weights = wneg),
              "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, con, table = "d", na.action = na.pass, foo = 1),
@@ -295,11 +324,15 @@ expect_error(design_lm(y ~ x | id, d, wzero),
 expect_error(design_lm(y ~ x | id, con, table = "d", weights = wneg),
              "missing or negative weights not allowed", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", weights = ch),
-             "`weights` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
+             "'weights' must be a numeric vector", fixed = TRUE)
 expect_error(design_lm(~ x | id, con, table = "d"),
              "The formula has no response.", fixed = TRUE)
 expect_error(design_lm(ch ~ x | id, con, table = "d"),
-             "`response` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
+             "The response must be numeric.", fixed = TRUE)
+expect_error(design_lm(ch ~ x | id, con, table = "d", weights = wneg),
+             "The response must be numeric.", fixed = TRUE)
+expect_error(design_lm(ch ~ x | id, con, table = "d", weights = ch),
+             "'weights' must be a numeric vector", fixed = TRUE)
 expect_error(design_lm(yna ~ x | id, con, table = "d", na.action = na.fail),
              "With fixed effects, `na.action` must be na.omit or na.exclude.", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", na.action = na.fail),
@@ -360,7 +393,7 @@ expect_error(design_glm(f ~ x | id, poisson, d, weights = ch),
 expect_error(design_glm(b1 ~ x | id, binomial, con, table = "d", weights = wneg),
              "negative weights not allowed", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, con, table = "d", weights = ch),
-             "`weights` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
+             "'weights' must be a numeric vector", fixed = TRUE)
 expect_error(design_glm(~ x | id, poisson, con, table = "d"),
              "The formula has no response.", fixed = TRUE)
 expect_error(design_glm(f ~ x | id, poisson, con, table = "d"),
@@ -380,7 +413,7 @@ expect_error(design_glm(k ~ x | id, poisson, con, table = "d", subset = x > 0),
 expect_error(design_glm(k ~ x | id, poisson, con, table = "d", foo = 1, weights = wneg),
              "Unknown arguments: foo", fixed = TRUE)
 expect_error(design_glm(f ~ x | id, poisson, con, table = "d", weights = ch),
-             "`weights` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
+             "'weights' must be a numeric vector", fixed = TRUE)
 # Negative weights on a design matrix: the wording of lm() or glm()
 Dm <- design_matrix(~ x, d)
 Dr <- design_matrix(~ x, con, table = "d")
@@ -462,7 +495,9 @@ expect_error(design_lm(y ~ x, d, offset = ch),
 expect_error(design_glm(y ~ x, gaussian, d, offset = ch),
              "'offset' must be numeric", fixed = TRUE)
 expect_error(design_lm(y ~ x, con, table = "d", offset = ch),
-             "`offset` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
+             "'offset' must be numeric", fixed = TRUE)
+expect_error(design_glm(y ~ x, gaussian, con, table = "d", offset = ch),
+             "'offset' must be numeric", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, d, weights = wzero),
              "0 (non-NA) cases", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", weights = wzero),
@@ -483,6 +518,72 @@ fr <- design_lm(y ~ x + f | id, con, table = "d")
 expect_identical(attr(fm$terms, "term.labels"), attr(fr$terms, "term.labels"))
 expect_identical(formula(fm$terms), formula(fr$terms))
 expect_identical(environment(fm$terms), environment(fr$terms))
+
+# Weights with several columns: one error in both modes, with the number
+# of rows used, before the other checks of the weights
+wmat <- function(n) sprintf("A design matrix can only be scaled by a number or a numeric vector of length %d (one value per row).", n)
+expect_error(design_lm(y ~ x, d, weights = cbind(w, w)), wmat(40), fixed = TRUE)
+expect_error(suppressMessages(design_lm(y ~ x, con, table = "d", weights = cbind(w, w))), wmat(40), fixed = TRUE)
+expect_error(design_lm(y ~ f, d, weights = cbind(w, w)), wmat(40), fixed = TRUE)
+expect_error(suppressMessages(design_lm(y ~ f, con, table = "d", weights = cbind(w, w))), wmat(40), fixed = TRUE)
+expect_error(design_lm(y ~ x, d, weights = cbind(wneg, wneg)), wmat(40), fixed = TRUE)
+expect_error(suppressMessages(design_lm(y ~ x, con, table = "d", weights = cbind(wneg, wneg))), wmat(40), fixed = TRUE)
+expect_error(design_lm(y ~ x, d, subset = x > 0, weights = cbind(w, w)), wmat(sum(d$x > 0)), fixed = TRUE)
+expect_error(suppressMessages(design_lm(y ~ x, con, table = "d", subset = x > 0, weights = cbind(w, w))),
+             wmat(sum(d$x > 0)), fixed = TRUE)
+expect_error(design_lm(yna ~ x, d, weights = cbind(w, w)), wmat(39), fixed = TRUE)
+expect_error(suppressMessages(design_lm(yna ~ x, con, table = "d", weights = cbind(w, w))), wmat(39), fixed = TRUE)
+expect_error(design_glm(y ~ x, gaussian, d, weights = cbind(w, w)), wmat(40), fixed = TRUE)
+expect_error(suppressMessages(design_glm(y ~ x, gaussian, con, table = "d", weights = cbind(w, w))), wmat(40), fixed = TRUE)
+expect_error(design_lm(y ~ x | id, d, weights = cbind(w, w)), wmat(40), fixed = TRUE)
+expect_error(suppressMessages(design_lm(y ~ x | id, con, table = "d", weights = cbind(w, w))), wmat(40), fixed = TRUE)
+expect_error(design_glm(k ~ x | id, poisson, d, weights = cbind(w, w)), wmat(40), fixed = TRUE)
+expect_error(suppressMessages(design_glm(k ~ x | id, poisson, con, table = "d", weights = cbind(w, w))), wmat(40),
+             fixed = TRUE)
+expect_error(design_lm(y ~ x, d, weights = cbind(w, w), offset = cbind(z, z)), wmat(40), fixed = TRUE)
+expect_error(suppressMessages(design_lm(y ~ x, con, table = "d", weights = cbind(w, w), offset = cbind(z, z))),
+             wmat(40), fixed = TRUE)
+# (a one-column matrix is its column, in both modes)
+expect_equal(coef(design_lm(y ~ x, d, weights = cbind(w))), coef(lm(y ~ x, d, weights = w)))
+expect_equal(coef(suppressMessages(design_lm(y ~ x, con, table = "d", weights = cbind(w)))),
+             coef(lm(y ~ x, d, weights = w)))
+
+# Columns of the wrong type, by name: the in-memory messages remotely
+d3 <- d
+d3$lg <- d$b1 == 1
+d3$dt <- as.Date("2020-01-01") + seq_len(n)
+DBI::dbWriteTable(con, "d3", d3)
+for (src in list(list(d3), list(con, table = "d3"))) {
+    fit <- function(f, ...) do.call(f, c(list(...), src))
+    expect_error(fit(design_lm, y ~ x, weights = quote(lg)), "'weights' must be a numeric vector", fixed = TRUE)
+    expect_error(fit(design_lm, y ~ x, offset = quote(lg)), "'offset' must be numeric", fixed = TRUE)
+    expect_error(fit(design_lm, y ~ x, offset = quote(dt)), "'offset' must be numeric", fixed = TRUE)
+    expect_error(fit(design_lm, y ~ x + offset(ch)), "non-numeric argument to binary operator", fixed = TRUE)
+    expect_error(fit(design_lm, dt ~ x), "The response must be numeric.", fixed = TRUE)
+    expect_error(fit(design_lm, dt ~ x | id), "The response must be numeric.", fixed = TRUE)
+    expect_error(fit(design_glm, dt ~ x, gaussian), "The response must be numeric, logical or a factor.", fixed = TRUE)
+    expect_error(fit(design_glm, k ~ x, poisson, weights = quote(lg)), "'weights' must be a numeric vector", fixed = TRUE)
+    expect_error(fit(design_glm, k ~ x | id, poisson, offset = quote(ch)), "'offset' must be numeric", fixed = TRUE)
+    ## (the response of an FE fit or a GLM after the length of the offset)
+    expect_error(suppressMessages(fit(design_lm, ch ~ x | id, offset = quote(cbind(z, z)))),
+                 "number of offsets is 80 should equal 40 (number of observations)", fixed = TRUE)
+    expect_error(suppressMessages(fit(design_glm, cbind(b1, fails, k) ~ x, binomial, offset = quote(cbind(z, z)))),
+                 "number of offsets is 80 should equal 40 (number of observations)", fixed = TRUE)
+}
+expect_inherits(design_lm(lg ~ x, d3), "design_lm")
+expect_inherits(design_lm(lg ~ x, con, table = "d3"), "design_lm")
+# cbind() of one column is that column, in both modes
+expect_equal(coef(design_glm(cbind(b1) ~ x, binomial, con, table = "d")), coef(design_glm(cbind(b1) ~ x, binomial, d)))
+expect_equal(coef(design_glm(cbind(b1) ~ x, binomial, d)), coef(glm(b1 ~ x, binomial, d)))
+
+# Missing weights on a GLM design: one message in both modes (glm() has
+# none: the GLM's error for weights that are not finite)
+Dm <- design_matrix(~ x, d)
+Dr <- design_matrix(~ x, con, table = "d")
+expect_error(design_glm(Dm, gaussian, y = d$y, weights = d$wna), "NA/NaN/Inf in 'weights'", fixed = TRUE)
+expect_error(design_glm(Dr, gaussian, y = "y", weights = wna), "NA/NaN/Inf in 'weights'", fixed = TRUE)
+expect_error(design_glm(Dm, gaussian, y = d$y, weights = replace(d$w, 5, Inf)), "NA/NaN/Inf in 'weights'",
+             fixed = TRUE)
 
 # No complete rows: lm()'s error on every path
 d0 <- d

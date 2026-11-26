@@ -207,9 +207,7 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
     fe <- !design && dm_fe_has_bar(formula)
     dm_check_call(design, c(data = !missing(data), na.action = !missing(na.action), contrasts = !is.null(contrasts)),
                   y, ...)
-    if (!design && !missing(na.action)) {
-        if (fe) dm_fe_na_kind(na.action) else dm_na_kind(na.action, c("omit", "exclude", "fail"))
-    }
+    if (!design && !missing(na.action)) dm_check_na(na.action, fe, glm = TRUE)
     dm_check_fit_args(compress, model, vcov = vcov, fe = fe, start = start)
     ## fixed effects (fe_glm.R)
     if (fe) {
@@ -417,7 +415,11 @@ dmglm_mem_cols <- function(Y, w, off, k) {
 }
 
 ## The checks of a fit on a design (no rows dropped): no missing response
-## or weight, a finite offset.
+## or weight, a finite offset. A missing weight has the error of a weight
+## that is not finite ("NA/NaN/Inf in 'weights'", dmglm_checks()), in
+## memory as remotely: glm() has no error of its own for it, and lm()'s
+## "missing or negative weights not allowed" would contradict the GLM's
+## "negative weights not allowed" for negative weights.
 dmglm_check_design <- function(cols) {
     y <- if (cols$cbind) cols$a + cols$b else cols$y0
     s <- dmc_sums(dmc_count(dmc_notnan(y), negate = TRUE),
@@ -425,7 +427,7 @@ dmglm_check_design <- function(cols) {
                   if (!is.null(cols$off)) dmc_count(dmc_is_finite(cols$off), negate = TRUE) else 0)
     bad <- is.na(s) | s > 0
     if (bad[1L]) stop("NA/NaN/Inf in 'y'", call. = FALSE)
-    if (bad[2L]) stop("missing or negative weights not allowed", call. = FALSE)
+    if (bad[2L]) stop("NA/NaN/Inf in 'weights'", call. = FALSE)
     if (bad[3L]) stop("NA/NaN/Inf in 'offset'", call. = FALSE)
 }
 

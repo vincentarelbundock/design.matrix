@@ -5,8 +5,7 @@
 ##  1. how the fit is called: with a design, no `data`, `subset`,
 ##     `na.action`, `contrasts` or unknown arguments; with a formula, no
 ##     `y` (dm_check_call());
-##  2. with fixed effects, `na.action` (by the caller: design_glm() checks
-##     it on a formula without FE too);
+##  2. with a formula, `na.action` (dm_check_na());
 ##  3. the options of the fit (dm_check_fit_args()): `vcov`, `compress`,
 ##     what FE do not support, `tol`, `model`.
 ##
@@ -33,6 +32,15 @@ dm_check_call <- function(design, given, y, ...) {
 dm_and <- function(x) {
     if (length(x) < 2L) return(x)
     paste(paste(x[-length(x)], collapse = ", "), "and", x[length(x)])
+}
+
+## Step 2. `na.action`, given with a formula: the na.action functions that
+## remote data can apply, refused otherwise in memory too (na_action.R):
+## with fixed effects, na.omit or na.exclude; otherwise na.omit, na.exclude,
+## na.fail and, for a linear model (`glm = FALSE`), na.pass.
+dm_check_na <- function(na.action, fe, glm = FALSE) {
+    if (fe) dm_fe_na_kind(na.action) else dm_na_kind(na.action, c("omit", "exclude", "fail", if (!glm) "pass"))
+    invisible()
 }
 
 ## Step 3. `tol`: NULL for a GLM (its tolerance comes from `control`);

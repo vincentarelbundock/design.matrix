@@ -38,8 +38,10 @@ design_lm(
 \item{formula}{A model formula, as in \code{\link[stats:lm]{stats::lm()}}, or a
 \code{\link[=design_matrix]{design_matrix()}} (then give the response as \code{y}).}
 
-\item{data, subset, weights, na.action, offset, contrasts}{As in \code{\link[stats:lm]{stats::lm()}}.
-With a design matrix, \code{weights} and \code{offset} are numeric vectors with one
+\item{data, subset, weights, na.action, offset, contrasts}{As in \code{\link[stats:lm]{stats::lm()}}
+(\code{na.action}: \code{na.omit}, \code{na.exclude}, \code{na.fail} or \code{na.pass}, those
+remote data can apply, in memory too; with fixed effects \code{na.omit} or
+\code{na.exclude}). With a design matrix, \code{weights} and \code{offset} are numeric vectors with one
 value per row, and \code{data}, \code{subset}, \code{na.action} and \code{contrasts} do not
 apply. \code{data} can also be remote (a DuckDB connection with \code{table} or
 \code{sql}, or Parquet paths; see \link{design_remote}); \code{weights}, \code{offset} and

@@ -79,8 +79,10 @@
 #'
 #' @param formula A model formula, as in [stats::lm()], or a
 #'   [design_matrix()] (then give the response as `y`).
-#' @param data,subset,weights,na.action,offset,contrasts As in [stats::lm()].
-#'   With a design matrix, `weights` and `offset` are numeric vectors with one
+#' @param data,subset,weights,na.action,offset,contrasts As in [stats::lm()]
+#'   (`na.action`: `na.omit`, `na.exclude`, `na.fail` or `na.pass`, those
+#'   remote data can apply, in memory too; with fixed effects `na.omit` or
+#'   `na.exclude`). With a design matrix, `weights` and `offset` are numeric vectors with one
 #'   value per row, and `data`, `subset`, `na.action` and `contrasts` do not
 #'   apply. `data` can also be remote (a DuckDB connection with `table` or
 #'   `sql`, or Parquet paths; see [design_remote]); `weights`, `offset` and
@@ -132,7 +134,7 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
     fe <- !design && dm_fe_has_bar(formula)
     dm_check_call(design, c(data = !missing(data), subset = !missing(subset), na.action = !missing(na.action),
                             contrasts = !is.null(contrasts)), y, ...)
-    if (fe && !missing(na.action)) dm_fe_na_kind(na.action)
+    if (!design && !missing(na.action)) dm_check_na(na.action, fe)
     dm_check_fit_args(compress, model, tol, vcov, fe = fe, subset = !missing(subset))
     ## fixed effects (fe.R)
     if (fe)
