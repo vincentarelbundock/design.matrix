@@ -674,7 +674,7 @@ bench::mark(
 
 ### Out-of-core data
 
-When the data are too large for memory, pass a DuckDB connection and a table (or a `sql` query), or the path of Parquet files, instead of a data frame. The rows stay in the database. `crossprod()`, `colSums()` and `colMeans()` (with `group =` a column) run there as `GROUP BY` aggregates over factor codes and products of numeric variables, followed by small products with the contrast matrices in R. `D %*% beta` writes the predictions to a temporary view and returns its name. Factor levels are pinned in R, with R's sorting rules, and rows with missing values are dropped, as `na.omit()` drops them.
+When the data are too large for memory, pass a DuckDB connection and a table (or a `sql` query), or the path of Parquet files, instead of a data frame. The rows stay in the database. `crossprod()`, `colSums()` and `colMeans()` (with `group =` a column) run there as `GROUP BY` aggregates over factor codes and products of numeric variables, followed by small products with the contrast matrices in R. `D %*% beta` writes the predictions to a temporary view and returns its name. Factor levels are pinned in R, with R's sorting rules. As in memory, a formula drops the rows with missing values, as `na.omit()` drops them, while a specification scoring new rows keeps them, with `NULL` predictions.
 
 ```{r}
 library(design.matrix)

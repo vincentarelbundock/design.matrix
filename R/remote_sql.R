@@ -136,7 +136,9 @@ dm_sql_base <- function(D, extra = character()) {
                                       vals, j, dm_qi(D, v$col), j))
             items <- c(items, sprintf("dm_l%d.code AS __dm_c%d", j, j))
         } else if (v$kind == "logical") {
-            items <- c(items, sprintf("CASE WHEN s.%s THEN 2 ELSE 1 END AS __dm_c%d", dm_qi(D, v$col), j))
+            q <- dm_qi(D, v$col)
+            items <- c(items, sprintf("CASE WHEN s.%s IS NULL THEN NULL WHEN s.%s THEN 2 ELSE 1 END AS __dm_c%d",
+                                      q, q, j))
         } else if (v$kind == "numeric") {
             items <- c(items, sprintf("%s AS __dm_v%d", v$sql, j))
         }
@@ -206,6 +208,33 @@ dm_sql_count_na <- function(D, cols) {
     out
 }
 
+## With na.pass, rows with a missing variable are kept: the columns of a
+## term with a missing value in some row are NA in every product, as in the
+## dense computation. SQL condition "no variable of term k is missing".
+dm_sql_term_ok <- function(D, k) {
+    vars <- D$terms[[k]]$vars
+    if (!length(vars)) return("TRUE")
+    paste(sprintf("(%s)", vapply(D$vars[vars], function(v) dm_remote_var_ok(D, v), "")), collapse = " AND ")
+}
+
+## Which terms have a missing value in a row used? (Cached.)
+dm_sql_na_terms <- function(D) {
+    nt <- length(D$terms)
+    if (!identical(D$na, "pass") || !nt) return(rep(FALSE, nt))
+    if (!is.null(D$cache$na_terms)) return(D$cache$na_terms)
+    items <- sprintf("SUM(CASE WHEN COALESCE(%s, FALSE) THEN 0 ELSE 1 END) AS __dm_bad%d",
+                     vapply(seq_len(nt), function(k) dm_sql_term_ok(D, k), ""), seq_len(nt))
+    res <- dm_query(D, sprintf("SELECT %s FROM (%s) AS s", paste(items, collapse = ", "), D$src$select))
+    out <- vapply(seq_len(nt), function(k) isTRUE(as.numeric(res[[k]]) > 0), NA)
+    D$cache$na_terms <- out
+    out
+}
+
+dm_sql_na_cols <- function(D) {
+    bad <- dm_sql_na_terms(D)
+    unlist(lapply(D$sql_terms[bad], function(t) t$cols))
+}
+
 dm_sql_gram <- function(D, w = NULL) {
     st <- D$sql_terms
     p <- D$p
@@ -214,11 +243,14 @@ dm_sql_gram <- function(D, w = NULL) {
         G[] <- NA_real_
         return(G)
     }
+    bad <- dm_sql_na_terms(D)
     for (g in dm_sql_gram_queries(D, w)) {
+        if (all(vapply(g$pairs, function(pr) bad[pr[1L]] || bad[pr[2L]], NA))) next
         res <- dm_query(D, g$sql)
         for (pr in g$pairs) {
             s <- pr[1L]
             t <- pr[2L]
+            if (bad[s] || bad[t]) next
             m <- as.double(res[[paste0("__dm_m", pr[3L])]])
             m[is.na(m)] <- 0
             Ts <- st[[s]]
@@ -238,6 +270,9 @@ dm_sql_gram <- function(D, w = NULL) {
             }
         }
     }
+    na <- dm_sql_na_cols(D)
+    G[na, ] <- NA_real_
+    G[, na] <- NA_real_
     G
 }
 
@@ -249,7 +284,8 @@ dm_sql_xty_core <- function(D, ycols, extra, w) {
     out <- matrix(0, D$p, K)
     base <- dm_sql_base(D, c(extra, dm_sql_extra_w(D, w)))
     keys <- vapply(st, function(t) paste(t$S, collapse = ","), "")
-    for (key in unique(keys)) {
+    keys[dm_sql_na_terms(D)] <- NA
+    for (key in unique(keys[!is.na(keys)])) {
         ts <- which(keys == key)
         S <- st[[ts[1L]]]$S
         aggs <- character()
@@ -270,6 +306,7 @@ dm_sql_xty_core <- function(D, ycols, extra, w) {
             }
         }
     }
+    out[dm_sql_na_cols(D), ] <- NA_real_
     out
 }
 
@@ -346,9 +383,15 @@ dm_sql_colsums <- function(D, group, w, mean) {
         return(if (mean) out / D$n else out)
     }
     st <- D$sql_terms
-    extra <- c(sprintf("s.%s AS __dm_g", dm_qi(D, group)), dm_sql_extra_w(D, w))
+    bad <- dm_sql_na_terms(D)
+    extra <- c(sprintf("s.%s AS __dm_g", dm_qi(D, group)), dm_sql_extra_w(D, w),
+               if (any(bad)) sprintf("CASE WHEN COALESCE(%s, FALSE) THEN 0 ELSE 1 END AS __dm_bad%d",
+                                     vapply(which(bad), function(k) dm_sql_term_ok(D, k), ""), which(bad)))
     base <- dm_sql_base(D, extra)
-    cnt <- dm_query(D, sprintf("WITH b AS (%s) SELECT __dm_g, COUNT(*) AS __dm_n FROM b GROUP BY ALL", base))
+    cnt <- dm_query(D, sprintf("WITH b AS (%s) SELECT %s FROM b GROUP BY ALL", base,
+                               paste(c("__dm_g", "COUNT(*) AS __dm_n",
+                                       sprintf("SUM(__dm_bad%d) AS __dm_bad%d", which(bad), which(bad))),
+                                     collapse = ", ")))
     ug <- cnt$`__dm_g`
     if (anyNA(ug)) warning("missing values for 'group'", call. = FALSE)
     ug <- sort(ug, na.last = TRUE, method = "quick")
@@ -364,13 +407,19 @@ dm_sql_colsums <- function(D, group, w, mean) {
                                    paste(c(kc, aggs), collapse = ", ")))
         gi <- match(res$`__dm_g`, ug)
         a <- dm_sql_level(res, S, st[[ts[1L]]]$strides)
+        ## (rows with a missing factor: their groups are set to NA below)
+        ok <- !is.na(a)
         for (t in ts) {
             Tt <- st[[t]]
             m <- as.double(res[[paste0("__dm_m", t)]])
             m[is.na(m)] <- 0
-            A <- Matrix::sparseMatrix(i = gi, j = a + 1, x = m, dims = c(G, Tt$Lt))
+            A <- Matrix::sparseMatrix(i = gi[ok], j = a[ok] + 1, x = m[ok], dims = c(G, Tt$Lt))
             out[, Tt$cols] <- as.matrix(A %*% Tt$C)
         }
+    }
+    for (k in which(bad)) {
+        nb <- as.numeric(cnt[[paste0("__dm_bad", k)]])[match(ug, cnt$`__dm_g`)]
+        out[nb > 0, st[[k]]$cols] <- NA_real_
     }
     if (!is.null(w) && dm_sql_count_na(D, w) > 0) out[] <- NA_real_
     if (mean) out <- out / cnt$`__dm_n`[match(ug, cnt$`__dm_g`)]

@@ -14,8 +14,9 @@ variables and, for the SQL engine, the aggregates of \code{crossprod(x)};
 for the chunked engine, the query that reads a batch.}
 }
 \value{
-A data frame with one row per term (\code{term}, \code{sql}, \code{reason}),
-invisibly; it is printed with the engine of the design.
+A data frame of class \code{dm_explain} with one row per term
+(\code{term}, \code{sql}, \code{reason}), printed with the engine of the design (and
+the SQL, with \code{sql = TRUE}).
 }
 \description{
 Lists, for each term of a remote design (see \link{design_remote}), whether

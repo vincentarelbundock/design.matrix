@@ -60,9 +60,12 @@
 #' With a specification (a design, a plan, a fitted model or another remote
 #' design), the levels, contrasts and transformation parameters come from
 #' it, and the remote data is only scored. Levels absent from the
-#' specification raise the error that [stats::model.frame()] raises. Rows
-#' with missing values are dropped as well: the rows of the design are the
-#' complete rows.
+#' specification raise the error that [stats::model.frame()] raises, and
+#' columns of another type than in training (a numeric variable stored as
+#' text, say) the error of [stats::predict.lm()]. As in memory, the rows
+#' with missing values are kept by default (`na.action = na.pass`): their
+#' predictions are `NULL`, and products involving their columns are `NA`.
+#' With `na.action = na.omit`, they are dropped.
 #'
 #' @section Engines:
 #' `engine = "sql"` computes everything in DuckDB. It covers factors,
@@ -144,10 +147,9 @@ dm_need_duckdb <- function() {
     }
 }
 
-`%||%` <- function(a, b) if (is.null(a)) b else a
 
 ## Entry point from design_matrix().
-dm_remote <- function(object, source, contrasts.arg, xlev, dots) {
+dm_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = stats::na.pass) {
     dm_need_duckdb()
     keys <- c("table", "sql", "engine", "chunk_size")
     nms <- names(dots)
@@ -178,10 +180,19 @@ dm_remote <- function(object, source, contrasts.arg, xlev, dots) {
         } else {
             do.call(design_plan, c(list(object), rest))
         }
-        D <- dm_remote_spec(plan, src)
+        D <- dm_remote_spec(plan, src, dm_remote_na(na.action))
     }
     D$chunk_size <- as.integer(chunk_size)
     dm_remote_finish(D, engine)
+}
+
+## na.action of a specification applied to remote data: "pass" (rows with
+## missing values kept, as by default in memory) or "omit".
+dm_remote_na <- function(na.action) {
+    if (identical(na.action, stats::na.pass) || identical(na.action, "na.pass")) return("pass")
+    if (identical(na.action, stats::na.omit) || identical(na.action, "na.omit") ||
+        identical(na.action, stats::na.exclude) || identical(na.action, "na.exclude")) return("omit")
+    stop("For remote data, `na.action` must be na.pass or na.omit.", call. = FALSE)
 }
 
 ## The source: connection (in a holder environment, so that a private
@@ -304,23 +315,29 @@ dm_remote_var <- function(name, expr, types, D, xlevels, formula_case) {
     v
 }
 
-## WHERE clause: the rows with no missing model variable. Exact for
-## variables with a SQL translation; for those evaluated in R, a row is
-## dropped when an input column is missing.
-dm_remote_filter <- function(D) {
-    cond <- character()
+## SQL condition: is variable `v` present (not NULL, not NaN) in a row?
+## Exact for variables with a SQL translation; a variable evaluated in R
+## counts as present when all its input columns are.
+dm_remote_var_ok <- function(D, v) {
     types <- D$src$types
-    for (v in D$vars) {
-        cond <- c(cond, switch(v$kind,
-            factor = , logical = sprintf("s.%s IS NOT NULL", dm_qi(D, v$col)),
-            numeric = sprintf("(%s) IS NOT NULL AND NOT isnan(%s)", v$sql, v$sql),
-            other = vapply(v$inputs, function(col) {
-                q <- dm_qi(D, col)
-                if (types[[col]] == "double") sprintf("s.%s IS NOT NULL AND NOT isnan(s.%s)", q, q)
-                else sprintf("s.%s IS NOT NULL", q)
-            }, "")))
-    }
+    cond <- switch(v$kind,
+        factor = , logical = sprintf("s.%s IS NOT NULL", dm_qi(D, v$col)),
+        numeric = sprintf("(%s) IS NOT NULL AND NOT isnan(%s)", v$sql, v$sql),
+        other = vapply(v$inputs, function(col) {
+            q <- dm_qi(D, col)
+            if (types[[col]] == "double") sprintf("s.%s IS NOT NULL AND NOT isnan(s.%s)", q, q)
+            else sprintf("s.%s IS NOT NULL", q)
+        }, ""))
     cond <- unique(cond)
+    if (!length(cond)) "TRUE" else paste(sprintf("(%s)", cond), collapse = " AND ")
+}
+
+## WHERE clause: the rows used. With na.omit, the rows with no missing model
+## variable; with na.pass (a specification scoring remote data), all rows.
+dm_remote_filter <- function(D) {
+    if (identical(D$na, "pass")) return("TRUE")
+    cond <- unique(vapply(D$vars, function(v) dm_remote_var_ok(D, v), ""))
+    cond <- setdiff(cond, "TRUE")
     if (!length(cond)) "TRUE" else paste(sprintf("(%s)", cond), collapse = " AND ")
 }
 
@@ -335,7 +352,7 @@ dm_terms_vars <- function(tt) {
 ## A remote design from a formula: learn levels and transformations from the
 ## remote data.
 dm_remote_formula <- function(formula, src, contrasts.arg, xlev) {
-    D <- list(src = src)
+    D <- list(src = src, na = "omit")
     tt <- stats::terms(formula, data = src$proto)
     tv <- dm_terms_vars(tt)
     types <- src$types
@@ -386,14 +403,36 @@ dm_remote_formula <- function(formula, src, contrasts.arg, xlev) {
 }
 
 ## A remote design from a specification: score the remote data.
-dm_remote_spec <- function(plan, src) {
-    D <- list(src = src, plan = plan, terms_full = plan$terms, response = NULL)
+dm_remote_spec <- function(plan, src, na = "pass") {
+    D <- list(src = src, plan = plan, terms_full = plan$terms, response = NULL, na = na)
     tv <- dm_terms_vars(plan$terms)
     xl <- plan$xlevels
+    dm_remote_check_classes(plan, src, tv, xl)
     D$vars <- Map(function(nm, e) dm_remote_var(nm, e, src$types, D, xl, FALSE), tv$names, tv$exprs)
     names(D$vars) <- tv$names
     D$filter <- dm_remote_filter(D)
     D
+}
+
+## Columns of another type than in training (a numeric variable stored as
+## text, say): the error of predict.lm(), before anything is built. Only
+## plain columns are checked here; variables computed by R expressions are
+## checked on each batch (dm_chunk_design()).
+dm_remote_check_classes <- function(plan, src, tv, xl) {
+    cl <- plan$data_classes
+    if (is.null(cl)) return(invisible())
+    m <- list()
+    for (j in seq_along(tv$exprs)) {
+        e <- tv$exprs[[j]]
+        nm <- tv$names[[j]]
+        if (!is.name(e) || !as.character(e) %in% names(src$proto) || !nm %in% names(cl)) next
+        x <- src$proto[[as.character(e)]]
+        ## model.frame() turns a character variable with levels into a factor
+        if (is.character(x) && nm %in% names(xl)) x <- factor(x)
+        m[[nm]] <- x
+    }
+    if (length(m)) stats::.checkMFClasses(cl, m)
+    invisible()
 }
 
 ## Levels, columns, engine.
@@ -432,6 +471,13 @@ dm_remote_finish <- function(D, engine) {
     used <- unique(unlist(lapply(D$terms, function(t) t$vars)))
     loose <- setdiff(names(D$vars)[vapply(D$vars, function(v) v$kind == "other", NA)],
                      c(names(D$vars)[used], D$response))
+    short <- if (length(bad)) {
+        sprintf("term `%s` is evaluated in R", bad[[1L]]$label)
+    } else if (resp_bad) {
+        sprintf("response `%s` is evaluated in R", D$response)
+    } else if (length(loose)) {
+        sprintf("variable `%s` is evaluated in R", loose[1L])
+    }
     why <- if (length(bad)) {
         sprintf("term `%s` cannot be translated to SQL (%s)", bad[[1L]]$label, bad[[1L]]$reason)
     } else if (resp_bad) {
@@ -449,6 +495,7 @@ dm_remote_finish <- function(D, engine) {
     }
     D$engine <- engine
     D$why <- why
+    D$why_short <- if (engine == "chunked") short %||% "engine = \"chunked\"" else NULL
     if (engine == "sql") D <- dm_sql_prepare(D)
     class(D) <- "dm_remote"
     D
@@ -501,14 +548,12 @@ dm_remote_terms <- function(D) {
 
 #' @export
 print.dm_remote <- function(x, ...) {
-    cat(sprintf("<remote design_matrix: %s rows x %d columns>\n",
-                format(x$cache$n %||% x$n, big.mark = ","), x$p))
+    cat(sprintf("<remote design_matrix: %s rows x %d columns>\n", dm_fmt_count(x$cache$n %||% x$n), x$p))
     cat("source: ", x$src$label, "\n", sep = "")
     if (x$engine == "sql") {
         cat("engine: sql (all terms pushed down)\n")
     } else {
-        cat(sprintf("engine: chunked, %s rows per batch (%s)\n",
-                    format(x$chunk_size, big.mark = ","), x$why %||% "engine = \"chunked\""))
+        cat(sprintf("engine: chunked, %s rows per batch (%s)\n", dm_fmt_count(x$chunk_size), x$why_short))
     }
     cn <- x$colnames
     if (length(cn)) {
@@ -518,6 +563,8 @@ print.dm_remote <- function(x, ...) {
     }
     invisible(x)
 }
+
+dm_fmt_count <- function(n) format(n, big.mark = ",", scientific = FALSE, trim = TRUE)
 
 #' @export
 dim.dm_remote <- function(x) c(x$cache$n %||% x$n, x$p)
@@ -530,7 +577,7 @@ as.matrix.dm_remote <- function(x, force = FALSE, ...) {
     max_rows <- getOption("design.matrix.remote_max_rows", 1e5)
     if (!isTRUE(force) && nrow(x) > max_rows)
         stop(sprintf("The remote design has %s rows (more than %s): use `force = TRUE` to build the dense matrix in memory.",
-                     format(nrow(x), big.mark = ","), format(max_rows, big.mark = ",")), call. = FALSE)
+                     dm_fmt_count(nrow(x)), dm_fmt_count(max_rows)), call. = FALSE)
     chunk <- dm_query(x, dm_chunk_sql(x, dm_remote_inputs(x)))
     as.matrix(dm_chunk_design(x, chunk)$design)
 }
@@ -737,26 +784,39 @@ setMethod("colMeans", "dm_remote", function(x, na.rm = FALSE, dims = 1, ..., gro
 #' @param sql Print the generated SQL: the query that computes the model
 #'   variables and, for the SQL engine, the aggregates of `crossprod(x)`;
 #'   for the chunked engine, the query that reads a batch.
-#' @return A data frame with one row per term (`term`, `sql`, `reason`),
-#'   invisibly; it is printed with the engine of the design.
+#' @return A data frame of class `dm_explain` with one row per term
+#'   (`term`, `sql`, `reason`), printed with the engine of the design (and
+#'   the SQL, with `sql = TRUE`).
 #' @export
 design_explain <- function(x, sql = FALSE) {
     checkmate::assert_class(x, "dm_remote")
+    checkmate::assert_flag(sql)
     tab <- data.frame(
         term = vapply(x$terms, function(t) t$label, ""),
         sql = vapply(x$terms, function(t) t$sql_ok, NA),
         reason = vapply(x$terms, function(t) t$reason %||% "", ""),
         stringsAsFactors = FALSE)
-    cat(sprintf("engine: %s%s\n", x$engine,
-                if (x$engine == "chunked") sprintf(" (%s)", x$why %||% "engine = \"chunked\"") else ""))
-    print(tab, row.names = FALSE)
-    if (isTRUE(sql)) {
-        if (x$engine == "sql") {
-            cat("\n-- model variables\n", dm_sql_base(x), "\n", sep = "")
-            for (q in dm_sql_gram_queries(x, NULL)) cat("\n-- crossprod\n", q$sql, "\n", sep = "")
+    attr(tab, "engine") <- if (x$engine == "sql") "sql" else sprintf("chunked (%s)", x$why_short)
+    if (sql) {
+        attr(tab, "sql") <- if (x$engine == "sql") {
+            c(paste0("-- model variables\n", dm_sql_base(x)),
+              paste0("-- crossprod\n", vapply(dm_sql_gram_queries(x, NULL), function(q) q$sql, "")))
         } else {
-            cat("\n-- batch\n", dm_chunk_sql(x, dm_remote_inputs(x), range = c(0, x$chunk_size)), "\n", sep = "")
+            paste0("-- batch\n", dm_chunk_sql(x, dm_remote_inputs(x), range = c(0, x$chunk_size)))
         }
     }
-    invisible(tab)
+    class(tab) <- c("dm_explain", class(tab))
+    tab
+}
+
+#' @export
+print.dm_explain <- function(x, ...) {
+    cat("engine: ", attr(x, "engine"), "\n", sep = "")
+    sql <- attr(x, "sql")
+    tab <- x
+    attr(tab, "engine") <- attr(tab, "sql") <- NULL
+    class(tab) <- "data.frame"
+    print(tab, row.names = FALSE)
+    for (q in sql) cat("\n", q, "\n", sep = "")
+    invisible(x)
 }

@@ -105,19 +105,69 @@ for (i in 1:25) {
     if (inherits(spec$value, "captured_error")) next
     spec <- spec$value
     plan <- design_matrix(spec, newdata = NULL)
-    M <- capture(function() design_matrix(spec, dd, na.action = stats::na.omit))
-    for (engine in c("auto", "chunked")) {
-        info <- paste("spec", deparse(fo), engine)
-        Dr <- capture(function() suppressMessages(design_matrix(spec, con, table = "d", engine = engine, chunk_size = 50)))
-        if (inherits(M$value, "captured_error")) {
-            ## new levels: the same error as in memory
-            expect_inherits(Dr$value, "captured_error", info = info)
-            if (inherits(Dr$value, "captured_error")) expect_identical(Dr$value$msg, M$value$msg, info = info)
-            next
+    ## rows with missing values kept (na.pass, the default) or dropped
+    for (na in c("na.pass", "na.omit")) {
+        M <- capture(function() design_matrix(spec, dd, na.action = get(na)))
+        rows <- if (na == "na.pass") seq_len(nrow(dd)) else kept_rows(NULL, dd, plan)
+        for (engine in c("auto", "chunked")) {
+            info <- paste("spec", deparse(fo), engine, na)
+            Dr <- capture(function() suppressMessages(
+                design_matrix(spec, con, table = "d", engine = engine, chunk_size = 50, na.action = get(na))))
+            if (inherits(M$value, "captured_error")) {
+                ## new levels: the same error as in memory
+                expect_inherits(Dr$value, "captured_error", info = info)
+                if (inherits(Dr$value, "captured_error")) expect_identical(Dr$value$msg, M$value$msg, info = info)
+                next
+            }
+            if (inherits(Dr$value, "captured_error")) {
+                expect_true(FALSE, info = paste(info, Dr$value$msg))
+                next
+            }
+            check_remote(Dr$value, M$value, dd, rows, info)
         }
-        check_remote(Dr$value, M$value, dd, kept_rows(NULL, dd, plan), info)
     }
 }
+
+## na.pass explicitly: NULL predictions, NA in the columns of terms with a
+## missing value, the other columns computed over all rows
+train <- data.frame(x = rnorm(20), f = rep(c("a", "b"), 10), z = runif(20))
+spec <- design_matrix(~ x + f + z, train)
+nd <- data.frame(x = c(1, NA, 3, NaN, 5), f = c("a", "b", NA, "a", "b"), z = 1:5, g = c(1, 1, 2, 2, 2))
+DBI::dbWriteTable(con, "nd", nd)
+M <- design_matrix(spec, nd)
+for (engine in c("auto", "chunked")) {
+    Dr <- suppressMessages(design_matrix(spec, con, table = "nd", engine = engine))
+    expect_equal(nrow(Dr), 5)
+    expect_true(same(crossprod(Dr), crossprod(M)), info = engine)
+    expect_identical(is.na(crossprod(Dr)), is.na(crossprod(M)), info = engine)
+    expect_true(same(colSums(Dr, group = "g"), colSums(M, group = nd$g)), info = engine)
+    expect_identical(is.na(colSums(Dr, group = "g")), is.na(colSums(M, group = nd$g)), info = engine)
+    p <- as.data.frame(Dr %*% seq_len(4))
+    p <- p[order(p$z), ]
+    expect_identical(is.na(p$.fitted), c(FALSE, TRUE, TRUE, TRUE, FALSE), info = engine)
+    expect_true(same(p$.fitted, drop(M %*% seq_len(4))), info = engine)
+}
+
+## a column of another type than in training: the error of predict.lm(),
+## before anything is built
+train <- data.frame(x = rnorm(20), f = rep(c("a", "b"), 10))
+spec <- design_matrix(~ x + f, train)
+DBI::dbWriteTable(con, "badtype", data.frame(x = as.character(1:200), f = "a"))
+bad <- DBI::dbReadTable(con, "badtype")
+msg <- tryCatch(design_matrix(spec, bad), error = conditionMessage)
+expect_true(grepl("fitted with type", msg))
+for (engine in c("auto", "sql", "chunked")) {
+    expect_error(design_matrix(spec, con, table = "badtype", engine = engine), msg, fixed = TRUE)
+}
+## a factor stored as text is fine (model.frame() converts it)
+spec2 <- design_matrix(~ x + f, transform(train, f = factor(f)))
+DBI::dbWriteTable(con, "texttype", data.frame(x = 1:3, f = c("a", "b", "a")))
+expect_inherits(design_matrix(spec2, con, table = "texttype"), "dm_remote")
+## a variable computed in R: checked on each batch
+spec3 <- design_matrix(~ I(x) + f, train)
+msg3 <- tryCatch(design_matrix(spec3, bad), error = conditionMessage)
+expect_true(grepl("fitted with type", msg3))
+expect_error(suppressMessages(crossprod(design_matrix(spec3, con, table = "badtype"))), msg3, fixed = TRUE)
 
 ## new levels, explicitly
 train <- data.frame(x = rnorm(10), ch = rep(c("u", "v"), 5))
@@ -156,8 +206,16 @@ expect_error(design_matrix(y ~ poly(z, 2) + f1, con, table = "d", engine = "sql"
              "SQL engine cannot compute this design", fixed = TRUE)
 expect_silent(D <- design_matrix(y ~ x1 * f1 + I(x2^2) + log(z, 10), con, table = "d"))
 expect_identical(D$engine, "sql")
-expect_stdout(design_explain(D, sql = TRUE), "GROUP BY")
+expect_stdout(print(design_explain(D, sql = TRUE)), "GROUP BY")
+expect_silent(ex <- design_explain(D))
+expect_inherits(ex, "dm_explain")
+expect_identical(ex$sql, rep(TRUE, nrow(ex)))
 expect_stdout(print(D), "all terms pushed down")
+expect_identical(design.matrix:::dm_fmt_count(1e6), "1,000,000")
+Dc <- suppressMessages(design_matrix(y ~ poly(z, 2) + f1, con, table = "d"))
+out <- capture.output(print(Dc))
+expect_identical(sum(grepl("cannot be translated", out, fixed = TRUE)), 0L)
+expect_identical(sum(grepl("^engine: chunked.*poly\\(z, 2\\)", out)), 1L)
 
 ## sql= source, as.matrix, reuse of a remote design
 D <- design_matrix(y ~ x1 + f1, con, sql = "SELECT * FROM d WHERE id <= 200")
@@ -169,7 +227,7 @@ expect_error(as.matrix(D), "force = TRUE")
 expect_equal(unname(as.matrix(D, force = TRUE)), unname(as.matrix(M)))
 options(op)
 expect_equal(as.matrix(design_matrix(D, dd[1:5, ])), as.matrix(design_matrix(M, dd[1:5, ])))
-D2 <- design_matrix(D, con, table = "d")
+D2 <- design_matrix(D, con, table = "d", na.action = stats::na.omit)
 expect_true(same(crossprod(D2), crossprod(design_matrix(M, dd, na.action = stats::na.omit))))
 
 ## persisted predictions
@@ -185,8 +243,7 @@ expect_silent(design_predict(D, beta, name = "preds", overwrite = TRUE))
 ## several prediction columns; a fitted model scored with `newdata`
 fit <- lm(y ~ x1 + f1 + splines::ns(z, 2), dd)
 B <- cbind(a = coef(fit), b = -coef(fit))
-nd <- dd[stats::complete.cases(dd[c("x1", "f1", "z")]), ]
-ref <- as.matrix(design_matrix(fit, newdata = nd)) %*% B
+ref <- as.matrix(design_matrix(fit, newdata = dd)) %*% B
 for (engine in c("auto", "chunked")) {
     Df <- suppressMessages(design_matrix(fit, newdata = con, table = "d", engine = engine))
     p <- as.data.frame(design_predict(Df, B, keep = "id"))

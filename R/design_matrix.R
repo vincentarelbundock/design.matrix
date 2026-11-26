@@ -71,10 +71,10 @@ design_matrix <- function(object, data = environment(object),
     ## remote data (see remote.R)
     if (inherits(object, "dm_remote")) object <- object$plan
     if (!missing(data) && dm_is_remote_source(data))
-        return(dm_remote(object, data, contrasts.arg, xlev, list(...)))
+        return(dm_remote(object, data, contrasts.arg, xlev, list(...), na.action))
     if (!missing(newdata) && dm_is_remote_source(newdata)) {
         if (!missing(data)) stop("Supply only one of `data` and `newdata`.", call. = FALSE)
-        return(dm_remote(object, newdata, contrasts.arg, xlev, list(...)))
+        return(dm_remote(object, newdata, contrasts.arg, xlev, list(...), na.action))
     }
 
     if (!missing(newdata)) {

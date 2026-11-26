@@ -96,9 +96,12 @@ expression gives on the distinct values of its input columns.
 With a specification (a design, a plan, a fitted model or another remote
 design), the levels, contrasts and transformation parameters come from
 it, and the remote data is only scored. Levels absent from the
-specification raise the error that \code{\link[stats:model.frame]{stats::model.frame()}} raises. Rows
-with missing values are dropped as well: the rows of the design are the
-complete rows.
+specification raise the error that \code{\link[stats:model.frame]{stats::model.frame()}} raises, and
+columns of another type than in training (a numeric variable stored as
+text, say) the error of \code{\link[stats:predict.lm]{stats::predict.lm()}}. As in memory, the rows
+with missing values are kept by default (\code{na.action = na.pass}): their
+predictions are \code{NULL}, and products involving their columns are \code{NA}.
+With \code{na.action = na.omit}, they are dropped.
 }
 
 \section{Engines}{

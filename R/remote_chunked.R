@@ -50,11 +50,15 @@ dm_chunks <- function(D, cols, FUN) {
 }
 
 ## The in-memory design of a batch: rows with a missing model variable
-## (response included) are dropped, as na.omit() drops them.
+## (response included) are dropped, as na.omit() drops them, unless the
+## design keeps them (na.pass).
 ## Returns list(design, keep = rows of the chunk kept, y = response).
 dm_chunk_design <- function(D, chunk) {
     plan <- D$plan
-    mf <- design_frame(D$terms_full, chunk, xlev = plan$xlevels, na.action = stats::na.omit)
+    na <- if (identical(D$na, "pass")) stats::na.pass else stats::na.omit
+    mf <- design_frame(D$terms_full, chunk, xlev = plan$xlevels, na.action = na)
+    ## variables of another type than in training: the error of predict.lm()
+    if (!is.null(plan$data_classes)) stats::.checkMFClasses(plan$data_classes, mf)
     design <- design_matrix(plan$terms, mf, contrasts.arg = plan$contrasts)
     if (isTRUE(plan$drop_intercept)) design <- dm_drop_intercept(design)
     omit <- attr(mf, "na.action")
