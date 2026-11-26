@@ -157,11 +157,11 @@ dm_problem_memory <- function(call, env, contrasts, family, fe, clv) {
     mf <- eval(mf, env)
     mt <- attr(mf, "terms")
     if (!is.null(fe)) mt <- dm_fe_main_terms(mt, fe$main)
+    if (attr(attr(mf, "terms"), "response") == 0L) stop("The formula has no response.", call. = FALSE)
     if (lm) {
         y <- dmfit_response(mf)
         if (is.matrix(y)) stop("Multivariate responses are not supported.", call. = FALSE)
     } else {
-        if (attr(attr(mf, "terms"), "response") == 0L) stop("The formula has no response.", call. = FALSE)
         y <- mf[[1L]]
         if (!is.null(fe) && (is.numeric(y) || is.logical(y))) y <- dmfit_response(mf)
     }
@@ -228,6 +228,7 @@ dm_problem_remote <- function(call, env, formula, source, contrasts, dots, famil
         lhs <- attr(tt, "variables")[[attr(tt, "response") + 1L]]
     } else {
         formula <- fe$main
+        if (length(formula) < 3L) stop("The formula has no response.", call. = FALSE)
         lhs <- formula[[2L]]
     }
     resp <- if (!is.null(family)) dmglm_remote_response(lhs, src$types, src$holder$con)

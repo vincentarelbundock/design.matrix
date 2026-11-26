@@ -6,8 +6,6 @@
 # * offsets: lm() says "is %d, should equal", glm() and FE "is %d should equal";
 # * weights: LM "missing or negative weights not allowed", GLM "negative
 #   weights not allowed";
-# * a formula with no response fits in memory (LM), errors remotely; with FE
-#   remotely the right-hand side is taken as the response;
 # * a factor response with a non-binomial family errors in memory, fits remotely;
 # * a two-column response, a matrix offset, a subset leaving no rows: other
 #   errors remotely than in memory;
@@ -43,7 +41,7 @@ expect_error(design_lm(y ~ x, d, weights = wzero),
 expect_error(design_lm(y ~ x, d, offset = 1:3),
              "variable lengths differ (found for '(offset)')", fixed = TRUE)
 expect_error(design_lm(~ x, d, offset = z),
-             "number of offsets is 40, should equal 0 (number of observations)", fixed = TRUE)
+             "The formula has no response.", fixed = TRUE)
 expect_error(design_lm(yna ~ x, d, na.action = na.pass),
              "NA/NaN/Inf in 'y'", fixed = TRUE)
 expect_error(design_lm(yna ~ x, d, na.action = na.fail),
@@ -52,7 +50,8 @@ expect_error(design_lm(ch ~ x, d),
              "The response must be numeric.", fixed = TRUE)
 expect_error(design_lm(cbind(y, x) ~ z, d),
              "Multivariate responses are not supported.", fixed = TRUE)
-expect_inherits(design_lm(~ x, d), "design_lm")
+expect_error(design_lm(~ x, d),
+             "The formula has no response.", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, subset = x > 100),
              "0 (non-NA) cases", fixed = TRUE)
 expect_error(design_lm(y ~ x, d, subset = nosuch > 0),
@@ -250,7 +249,8 @@ expect_error(design_lm(y ~ x | id, con, table = "d", weights = wneg),
              "missing or negative weights not allowed", fixed = TRUE)
 expect_error(design_lm(y ~ x | id, con, table = "d", weights = ch),
              "`weights` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
-expect_inherits(design_lm(~ x | id, con, table = "d"), "design_lm")
+expect_error(design_lm(~ x | id, con, table = "d"),
+             "The formula has no response.", fixed = TRUE)
 expect_error(design_lm(ch ~ x | id, con, table = "d"),
              "`response` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
 expect_error(design_lm(yna ~ x | id, con, table = "d", na.action = na.fail),
@@ -304,7 +304,7 @@ expect_error(design_glm(b1 ~ x | id, binomial, con, table = "d", weights = wneg)
 expect_error(design_glm(k ~ x | id, poisson, con, table = "d", weights = ch),
              "`weights` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
 expect_error(design_glm(~ x | id, poisson, con, table = "d"),
-             "negative values not allowed for the 'Poisson' family", fixed = TRUE)
+             "The formula has no response.", fixed = TRUE)
 expect_inherits(design_glm(f ~ x | id, poisson, con, table = "d"), "design_glm")
 expect_error(design_glm(cbind(b1, fails, k) ~ x | id, binomial, con, table = "d"),
              "A two-column response needs two columns (successes and failures).", fixed = TRUE)
