@@ -104,6 +104,7 @@ dmc_lookup <- function(values, key, levels = NULL, along = list()) {
                                  sprintf("SELECT * FROM (%s) AS s LIMIT 0", fr$src$select))
     fr$src$types <- vapply(fr$src$proto, dm_col_type, "")
     fr$depth <- dm_frame_depth(frame) + 1L
+    fr <- dm_frame_child(fr, frame)
     dm_rcols(fr, sprintf("s.%s", q(col)))
 }
 

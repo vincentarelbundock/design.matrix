@@ -131,5 +131,32 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     got <- dmp_collect(dmc_cbind(design.matrix:::dmc_on(row, Dk), design.matrix:::dmc_on(lkc, Dk)))
     expect_equal(got[order(got[, 1]), 2], ref_codes)
     expect_equal(crossprod(Dk), crossprod(D))
+    ## frame lineage: columns built one on the other combine on the
+    ## descendant frame; columns on two branches of the same design (two
+    ## lookups, products or freezes from one frame) cannot be combined
+    sib <- "two different branches of the same remote design"
+    expect_error(lk + lk2, sib)
+    expect_error(dmc_cbind(lk, lk2), sib)
+    lk3 <- dmc_lookup(vals, rc("s.code"), along = list(lk2))
+    expect_equal(dmp_collect(lk2 + lk3), ref_lv + ref_codes)
+    expect_equal(dmp_collect(lk3 + lk2 + rc("s.x")), ref_codes + ref_lv + d$x)
+    p1 <- dmp_mult(D, c(0, 2), along = list(lk))
+    expect_equal(dmp_collect(p1 - 2 * rc("s.x") + lk), ref_codes)
+    expect_error(p1 + lk2, sib)
+    expect_error(dmp_mult(D, c(0, 1), along = list(lk, lk2)), sib)
+    f1 <- design.matrix:::dmc_freeze(rc("s.x") + 1)
+    f2 <- design.matrix:::dmc_freeze(rc("s.x") + 2)
+    expect_error(f1 + f2, sib)
+    f12 <- design.matrix:::dmc_freeze(dmc_cbind(rc("s.x") + 1, rc("s.x") + 2))
+    expect_equal(dmp_collect(design.matrix:::dmc_col(f12, 2) - design.matrix:::dmc_col(f12, 1)), rep(1, n))
+    ## (frames without a lineage, from older objects: the deeper one)
+    nopath <- function(v) {
+        v <- unclass(v)
+        v$frame$path <- NULL
+        structure(v, class = "dm_rcols")
+    }
+    expect_equal(design.matrix:::dm_frame_later(unclass(nopath(lk))$frame, unclass(nopath(lk3))$frame)$depth,
+                 unclass(lk3)$frame$depth)
+    expect_true(is.null(design.matrix:::dm_frame_later(unclass(nopath(lk))$frame, unclass(lk2)$frame)$path))
     DBI::dbDisconnect(con)
 }

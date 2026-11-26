@@ -700,9 +700,7 @@ dm_remote_column <- function(D, x, what, several = FALSE) {
 ## `numeric`: named columns must be numeric.
 dm_remote_cols <- function(D, x, what, several = FALSE, numeric = TRUE) {
     if (dm_is_rcols(x)) {
-        fr <- unclass(x)$frame
-        if (dm_frame_depth(D) > dm_frame_depth(fr)) fr <- D
-        return(list(D = dm_rebase(D, fr), sql = unclass(x)$sql, names = NULL))
+        return(list(D = dm_rebase(D, dm_frame_later(unclass(x)$frame, D)), sql = unclass(x)$sql, names = NULL))
     }
     if (inherits(x, "SQL")) {
         checkmate::assert_string(as.character(x), .var.name = what)
@@ -891,7 +889,7 @@ crossprod.dm_remote <- function(x, y = NULL, ...) {
         if (!is.null(y) && !dm_remote_same(x, y))
             stop("`crossprod(x, y)` of remote designs needs the same design, possibly with scaled rows.", call. = FALSE)
         ## (scales can read columns of a later frame: the products of the fit)
-        if (!is.null(y) && dm_frame_depth(y) > dm_frame_depth(x)) x <- dm_rebase(x, y)
+        if (!is.null(y)) x <- dm_rebase(x, dm_frame_later(x, y))
         w <- dm_sql_times(x$scale, if (is.null(y)) x$scale else y$scale)
         return(dm_remote_moments(dm_remote_unscaled(x), w = w)$xtx)
     }
