@@ -131,9 +131,19 @@
 #'   threshold is provisional), where compression saves many per-row
 #'   products, and when the patterns are at most 1% of the rows. Other
 #'   designs skip the decision entirely;
-#' * [design_lm()] and [design_glm()] are compressed when the patterns are at
-#'   most `getOption("design.matrix.remote_compress_ratio", 0.1)` times the
-#'   number of rows.
+#' * [design_glm()] is compressed when the patterns are at most 20% of the
+#'   rows (each IRLS iteration then reads the patterns instead of the rows);
+#' * [design_lm()] without weights is compressed when the patterns are at
+#'   most 0.1% of the rows;
+#' * weighted [design_lm()] is compressed only for designs with many numeric
+#'   columns (as `crossprod()`), when the patterns are at most 0.1% of the
+#'   rows (the sum of squares within the patterns takes a second pass over
+#'   the rows).
+#'
+#' These thresholds are provisional. The option
+#' `design.matrix.remote_compress_ratio` (unset by default), when set, caps
+#' every one of these ratios: under `"auto"`, the patterns must then also be
+#' at most that fraction of the rows.
 #'
 #' In every case the number of patterns must also be at most
 #' `getOption("design.matrix.remote_compress_max", 1e6)`. To decide, a design
