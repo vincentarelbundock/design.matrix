@@ -144,7 +144,8 @@ dmc_not_na <- function(key) {
 dmc_dense_codes <- function(key, along = list()) {
     if (!dm_is_rcols(key)) {
         cd <- dm_fe_code_term(key, names(key))
-        return(list(codes = dmc_codes(cd$codes, cd$G), levels = cd$levels))
+        ## (in memory, also the rows per level: n)
+        return(list(codes = dmc_codes(cd$codes, cd$G), levels = cd$levels, n = cd$n))
     }
     frame <- unclass(key)$frame
     sql <- unclass(key)$sql

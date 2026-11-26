@@ -9,7 +9,7 @@
  *                      edges are the (a, b) pairs of a crosstab;
  *  dm_fe_struct_gsum(): grouped sums of the design's structured moments,
  *                      the weights and other columns, for every FE at once;
- *  dm_fe_code_int():   integer codes of an integer-valued vector;
+ *  dm_fe_code():       codes of an FE variable and rows per level;
  *  dm_fe_schur():      the reduced system, formed (lower triangle);
  *  dm_fe_ichol(), dm_fe_pcg(): IC(0) and preconditioned conjugate
  *                      gradients for the reduced system, formed or
@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <limits.h>
+#include <stdint.h>
 #include <R.h>
 #include <Rinternals.h>
 #include "dm.h"
@@ -313,17 +314,161 @@ SEXP dm_fe_struct_gsum(SEXP setup, SEXP vars, SEXP w_, SEXP codes_, SEXP G_, SEX
     return out;
 }
 
-/* Integer codes of an integer-valued vector (integer or double, no missing
-   values) with a range below `maxrange`: codes 1..G in increasing order of
-   the values, and the values.  NULL when the vector is not of that kind. */
-SEXP dm_fe_code_int(SEXP v, SEXP maxrange_)
+/* Codes of the values of an FE variable (no missing values), and the rows
+   per level (for the removal of singletons), in one pass over the rows:
+
+   dm_fe_code(v, maxrange): v integer, logical or double.  When v is
+   integer valued with a range below maxrange, by direct indexing: codes
+   1..G in increasing order of the values; returns list(codes, G, values,
+   counts).  Otherwise, and for character vectors, by hashing:
+   codes in order of first appearance; returns list(codes, G, values,
+   counts, FALSE), the values in order of first appearance, which the
+   caller sorts and passes to dm_fe_recode().  NULL for a vector with
+   missing values or of another type.  Doubles are equal when ==
+   (0 and -0), as for unique() and match(); strings by their cached
+   CHARSXP (the caller checks that the values are unique as strings,
+   which they are unless the same string comes in two encodings).
+
+   dm_fe_recode(codes, rank): rank[codes], in place on a fresh copy. */
+
+static inline uint64_t fe_mix(uint64_t h)
+{
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdULL;
+    h ^= h >> 33;
+    h *= 0xc4ceb9fe1a85ec53ULL;
+    h ^= h >> 33;
+    return h;
+}
+
+typedef struct { uint64_t key; int g; } fe_slot; /* g: level + 1, 0 empty */
+
+static SEXP fe_code_hash(SEXP v)
+{
+    R_xlen_t n = XLENGTH(v);
+    int str = TYPEOF(v) == STRSXP, isi = TYPEOF(v) == INTSXP || TYPEOF(v) == LGLSXP;
+    const double *x = str || isi ? NULL : REAL_RO(v);
+    const int *xi = isi ? INTEGER_RO(v) : NULL;
+    const SEXP *sx = str ? STRING_PTR_RO(v) : NULL;
+    /* open addressing on the keys (pointers to cached strings, integers,
+       or the bits of doubles with -0 as 0: equal keys, equal values),
+       load at most 1/2; a run of equal keys skips the table */
+    size_t cap = 1024;
+    fe_slot *slot = (fe_slot *) calloc(cap, sizeof(fe_slot));
+    R_xlen_t ucap = 1024;
+    R_xlen_t *first = (R_xlen_t *) malloc((size_t) ucap * sizeof(R_xlen_t));
+    uint64_t *ukey = (uint64_t *) malloc((size_t) ucap * sizeof(uint64_t));
+    int *cnt = (int *) malloc((size_t) ucap * sizeof(int));
+#define FE_FREE() do { free(slot); free(first); free(ukey); free(cnt); } while (0)
+    if (!slot || !first || !ukey || !cnt) { FE_FREE(); error("cannot allocate the codes"); }
+    SEXP codes = PROTECT(allocVector(INTSXP, n));
+    int *cd = INTEGER(codes);
+    int G = 0, bad = 0, glast = -1;
+    uint64_t klast = 0;
+    for (R_xlen_t i = 0; i < n; i++) {
+	uint64_t key;
+	if (str) {
+	    if (sx[i] == NA_STRING) { bad = 1; break; }
+	    key = (uint64_t) (uintptr_t) sx[i];
+	} else if (isi) {
+	    if (xi[i] == NA_INTEGER) { bad = 1; break; }
+	    key = (uint64_t) (int64_t) xi[i];
+	} else {
+	    double a = x[i];
+	    if (ISNAN(a)) { bad = 1; break; }
+	    if (a == 0.0) a = 0.0; /* -0 */
+	    memcpy(&key, &a, sizeof(key));
+	}
+	int g;
+	if (glast >= 0 && key == klast) {
+	    g = glast;
+	} else {
+	    size_t mask = cap - 1, h = (size_t) fe_mix(key) & mask;
+	    for (;;) {
+		if (slot[h].g == 0) {
+		    if (G == INT_MAX - 1) { bad = 1; break; }
+		    if (G >= ucap) {
+			ucap *= 2;
+			R_xlen_t *f2 = (R_xlen_t *) realloc(first, (size_t) ucap * sizeof(R_xlen_t));
+			if (f2) first = f2;
+			uint64_t *k2 = (uint64_t *) realloc(ukey, (size_t) ucap * sizeof(uint64_t));
+			if (k2) ukey = k2;
+			int *c2 = (int *) realloc(cnt, (size_t) ucap * sizeof(int));
+			if (c2) cnt = c2;
+			if (!f2 || !k2 || !c2) { FE_FREE(); error("cannot allocate the codes"); }
+		    }
+		    first[G] = i;
+		    ukey[G] = key;
+		    cnt[G] = 0;
+		    g = G++;
+		    slot[h].key = key;
+		    slot[h].g = g + 1;
+		    if ((size_t) G * 2 > cap) {
+			/* grow and rehash */
+			size_t nc = cap * 2;
+			fe_slot *ns = (fe_slot *) calloc(nc, sizeof(fe_slot));
+			if (!ns) { FE_FREE(); error("cannot allocate the codes"); }
+			for (int u = 0; u < G; u++) {
+			    size_t hh = (size_t) fe_mix(ukey[u]) & (nc - 1);
+			    while (ns[hh].g) hh = (hh + 1) & (nc - 1);
+			    ns[hh].key = ukey[u];
+			    ns[hh].g = u + 1;
+			}
+			free(slot);
+			slot = ns;
+			cap = nc;
+		    }
+		    break;
+		}
+		if (slot[h].key == key) { g = slot[h].g - 1; break; }
+		h = (h + 1) & mask;
+	    }
+	    if (bad) break;
+	    glast = g;
+	    klast = key;
+	}
+	cd[i] = g + 1;
+	cnt[g]++;
+    }
+    free(ukey);
+    ukey = NULL;
+    free(slot);
+    slot = NULL;
+    if (bad) {
+	FE_FREE();
+	UNPROTECT(1);
+	return R_NilValue;
+    }
+    SEXP vals = PROTECT(allocVector(str ? STRSXP : isi ? INTSXP : REALSXP, G));
+    SEXP counts = PROTECT(allocVector(INTSXP, G));
+    for (int g = 0; g < G; g++) {
+	if (str) SET_STRING_ELT(vals, g, sx[first[g]]);
+	else if (isi) INTEGER(vals)[g] = xi[first[g]];
+	else REAL(vals)[g] = x[first[g]];
+	INTEGER(counts)[g] = cnt[g];
+    }
+    FE_FREE();
+#undef FE_FREE
+    SEXP out = PROTECT(allocVector(VECSXP, 5));
+    SET_VECTOR_ELT(out, 0, codes);
+    SET_VECTOR_ELT(out, 1, ScalarInteger(G));
+    SET_VECTOR_ELT(out, 2, vals);
+    SET_VECTOR_ELT(out, 3, counts);
+    SET_VECTOR_ELT(out, 4, ScalarLogical(0));
+    UNPROTECT(4);
+    return out;
+}
+
+SEXP dm_fe_code(SEXP v, SEXP maxrange_)
 {
     R_xlen_t n = XLENGTH(v);
     double maxrange = asReal(maxrange_);
     if (n == 0) return R_NilValue;
+    if (TYPEOF(v) == STRSXP) return fe_code_hash(v);
     double lo, hi;
-    if (TYPEOF(v) == INTSXP) {
-	const int *x = INTEGER(v);
+    int isint = TYPEOF(v) == INTSXP || TYPEOF(v) == LGLSXP;
+    if (isint) {
+	const int *x = INTEGER_RO(v);
 	int a = x[0], b = x[0];
 	for (R_xlen_t i = 0; i < n; i++) {
 	    if (x[i] == NA_INTEGER) return R_NilValue;
@@ -332,11 +477,12 @@ SEXP dm_fe_code_int(SEXP v, SEXP maxrange_)
 	}
 	lo = a; hi = b;
     } else if (TYPEOF(v) == REALSXP) {
-	const double *x = REAL(v);
+	const double *x = REAL_RO(v);
 	lo = x[0]; hi = x[0];
 	for (R_xlen_t i = 0; i < n; i++) {
 	    double a = x[i];
-	    if (!R_FINITE(a) || a != (double)(long long) a) return R_NilValue;
+	    if (ISNAN(a)) return R_NilValue;
+	    if (!R_FINITE(a) || fabs(a) > 4.5e15 || a != (double)(long long) a) return fe_code_hash(v);
 	    if (a < lo) lo = a;
 	    if (a > hi) hi = a;
 	}
@@ -344,34 +490,51 @@ SEXP dm_fe_code_int(SEXP v, SEXP maxrange_)
 	return R_NilValue;
     }
     double range = hi - lo + 1;
-    if (range > maxrange || range > INT_MAX / 2) return R_NilValue;
+    if (range > maxrange || range > INT_MAX / 2) return fe_code_hash(v);
     int R = (int) range;
     int *map = (int *) R_alloc((size_t) R, sizeof(int));
     memset(map, 0, sizeof(int) * (size_t) R);
     SEXP codes = PROTECT(allocVector(INTSXP, n));
     int *cd = INTEGER(codes);
-    if (TYPEOF(v) == INTSXP) {
-	const int *x = INTEGER(v);
+    /* map[r]: the rows with value lo + r */
+    if (isint) {
+	const int *x = INTEGER_RO(v);
 	int a = (int) lo;
-	for (R_xlen_t i = 0; i < n; i++) { cd[i] = x[i] - a; map[cd[i]] = 1; }
+	for (R_xlen_t i = 0; i < n; i++) { cd[i] = x[i] - a; map[cd[i]]++; }
     } else {
-	const double *x = REAL(v);
-	for (R_xlen_t i = 0; i < n; i++) { cd[i] = (int) (x[i] - lo); map[cd[i]] = 1; }
+	const double *x = REAL_RO(v);
+	for (R_xlen_t i = 0; i < n; i++) { cd[i] = (int) (x[i] - lo); map[cd[i]]++; }
     }
     int G = 0;
-    for (int r = 0; r < R; r++) if (map[r]) map[r] = ++G;
-    SEXP vals = PROTECT(allocVector(TYPEOF(v) == INTSXP ? INTSXP : REALSXP, G));
+    for (int r = 0; r < R; r++) if (map[r]) G++;
+    SEXP vals = PROTECT(allocVector(TYPEOF(v) == REALSXP ? REALSXP : INTSXP, G));
+    SEXP counts = PROTECT(allocVector(INTSXP, G));
+    int g = 0;
     for (int r = 0; r < R; r++) {
 	if (!map[r]) continue;
-	if (TYPEOF(v) == INTSXP) INTEGER(vals)[map[r] - 1] = (int) lo + r;
-	else REAL(vals)[map[r] - 1] = lo + r;
+	INTEGER(counts)[g] = map[r];
+	if (TYPEOF(v) == REALSXP) REAL(vals)[g] = lo + r;
+	else INTEGER(vals)[g] = (int) lo + r;
+	map[r] = ++g;
     }
     for (R_xlen_t i = 0; i < n; i++) cd[i] = map[cd[i]];
-    SEXP out = PROTECT(allocVector(VECSXP, 3));
+    SEXP out = PROTECT(allocVector(VECSXP, 4));
     SET_VECTOR_ELT(out, 0, codes);
     SET_VECTOR_ELT(out, 1, ScalarInteger(G));
     SET_VECTOR_ELT(out, 2, vals);
-    UNPROTECT(3);
+    SET_VECTOR_ELT(out, 3, counts);
+    UNPROTECT(4);
+    return out;
+}
+
+SEXP dm_fe_recode(SEXP codes_, SEXP rank_)
+{
+    R_xlen_t n = XLENGTH(codes_);
+    const int *c = INTEGER_RO(codes_), *rk = INTEGER_RO(rank_);
+    SEXP out = PROTECT(allocVector(INTSXP, n));
+    int *o = INTEGER(out);
+    for (R_xlen_t i = 0; i < n; i++) o[i] = rk[c[i] - 1];
+    UNPROTECT(1);
     return out;
 }
 

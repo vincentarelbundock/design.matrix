@@ -180,17 +180,35 @@ dm_fe_opts <- function() {
 ## ---------------------------------------------------------------------------
 ## Codes of fixed effects (in memory)
 
-## Integer codes 1..G of a vector without missing values, and its levels
-## (the values that occur, sorted, or in level order for a factor).
+## Integer codes 1..G of a vector without missing values, its levels (the
+## values that occur, sorted, or in level order for a factor) and the rows
+## per level (n), in one pass in C (dm_fe_code() in src/fe.c: direct
+## indexing for integer values with a compact range, hashing otherwise;
+## the levels are then sorted as sort(unique(v), method = "radix") sorts
+## them). Other types, and strings that occur in several encodings, as
+## sort(unique()) and match().
 dm_fe_code <- function(v) {
     if (is.factor(v)) {
+        r <- .Call(C_dm_fe_code, as.integer(v), nlevels(v) + 1)
+        if (!is.null(r)) return(list(codes = r[[1L]], G = r[[2L]], levels = levels(v)[r[[3L]]], n = r[[4L]]))
         cd <- dm_fe_compact(as.integer(v), nlevels(v))
         return(list(codes = cd$codes, G = cd$G, levels = levels(v)[cd$used]))
     }
     if (is.logical(v)) v <- as.integer(v)
-    if (is.numeric(v)) {
-        r <- .Call(C_dm_fe_code_int, v, max(4 * length(v), 1e6))
-        if (!is.null(r)) return(list(codes = r[[1L]], G = r[[2L]], levels = r[[3L]]))
+    if (is.numeric(v) || (is.character(v) && is.null(attributes(v)))) {
+        r <- .Call(C_dm_fe_code, v, max(4 * length(v), 1e6))
+        if (!is.null(r)) {
+            if (length(r) == 4L) return(list(codes = r[[1L]], G = r[[2L]], levels = r[[3L]], n = r[[4L]]))
+            ## hashed: levels in order of first appearance, sorted here
+            u <- r[[3L]]
+            if (!is.character(u) || !anyDuplicated(u)) {
+                o <- order(u, method = "radix")
+                rank <- integer(length(o))
+                rank[o] <- seq_along(o)
+                return(list(codes = .Call(C_dm_fe_recode, r[[1L]], rank), G = r[[2L]], levels = u[o],
+                            n = r[[4L]][o]))
+            }
+        }
     }
     u <- sort(unique(v), method = "radix")
     list(codes = match(v, u), G = length(u), levels = u)
@@ -211,7 +229,7 @@ dm_fe_code_term <- function(d, vars) {
         cd <- dm_fe_code(d[[vars]])
         lv <- list(cd$levels)
         names(lv) <- vars
-        return(list(codes = cd$codes, G = cd$G, levels = as.data.frame(lv, stringsAsFactors = FALSE)))
+        return(list(codes = cd$codes, G = cd$G, levels = as.data.frame(lv, stringsAsFactors = FALSE), n = cd$n))
     }
     parts <- lapply(vars, function(v) dm_fe_code(d[[v]]))
     cd <- parts[[1L]]$codes
@@ -226,7 +244,7 @@ dm_fe_code_term <- function(d, vars) {
         code <- code %/% Gk
     }
     names(lv) <- vars
-    list(codes = comb$codes, G = comb$G, levels = as.data.frame(lv, stringsAsFactors = FALSE))
+    list(codes = comb$codes, G = comb$G, levels = as.data.frame(lv, stringsAsFactors = FALSE), n = comb$n)
 }
 
 ## Labels of FE levels, as fixest names them (a_b for interactions).
@@ -1073,8 +1091,9 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
         ## per level: rows, rows with a response not 0, not 1 (in memory
         ## without bounds, the counts of rows: no columns to form)
         if (!rm0 && !rm1 && !dm_is_rcols(z)) {
+            ## (the rows per level come with the codes, dm_fe_code())
             cnt <- lapply(cds, function(cd) {
-                m <- as.double(tabulate(cd$codes$codes, nbins = cd$codes$G))
+                m <- as.double(cd$n %||% tabulate(cd$codes$codes, nbins = cd$codes$G))
                 matrix(m, length(m), 3L)
             })
         } else {
