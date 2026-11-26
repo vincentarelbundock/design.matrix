@@ -245,6 +245,7 @@ dm_problem_remote <- function(call, env, formula, source, contrasts, dots, famil
     D <- r$x
     ## an offset with several columns: its number of values, as in memory
     if (r$offk > 1L) dm_offset_length(r$offk * D$n, D$n, is.null(family) && is.null(fe))
+    dmglm_check_factor(resp, family)
     y <- if (length(resp$present)) dmglm_remote_factor(D, resp$present) else r$cols$y
     list(x = D, y = y, w = r$cols$weights, off = r$off, resp = list(a = r$cols$a, b = r$cols$b, cbind = resp$cbind),
          na.action = if (na == "exclude") dm_remote_exclude(D), exclude = na == "exclude", rows = NULL, nall = D$n,
@@ -410,6 +411,13 @@ dmglm_remote_response <- function(lhs, types, con) {
     list(args = list(y = lhs), present = character(), cbind = FALSE)
 }
 
+## A character or factor response (dmglm_remote_response()) needs a
+## binomial family, as in memory (dmglm_mem_cols()).
+dmglm_check_factor <- function(resp, k) {
+    if (length(resp$present) && !is.null(k) && !k$binomial)
+        stop("A factor response needs a binomial family.", call. = FALSE)
+}
+
 ## A character or factor response as a column: 0 for the first level of the
 ## rows used, 1 for the others.
 dmglm_remote_factor <- function(D, col) {
@@ -442,6 +450,7 @@ dm_remote_glm_design <- function(D, y, weights, offset, family, start, control, 
     resp <- dmglm_remote_response(lhs, D$src$types, dm_con(D))
     r <- dmp_resolve(D, c(resp$args, list(weights = weights, offset = offset)), env)
     D <- r$x
+    dmglm_check_factor(resp, k)
     y <- if (length(resp$present)) dmglm_remote_factor(D, resp$present) else r$cols$y
     cols <- dmglm_cols(y, r$cols$a, r$cols$b, if (is.null(r$cols$weights)) dmc_const(D, 1) else r$cols$weights,
                        r$cols$offset, k, resp$cbind, weighted = !is.null(r$cols$weights))

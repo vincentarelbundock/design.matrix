@@ -6,7 +6,6 @@
 # * offsets: lm() says "is %d, should equal", glm() and FE "is %d should equal";
 # * weights: LM "missing or negative weights not allowed", GLM "negative
 #   weights not allowed";
-# * a factor response with a non-binomial family errors in memory, fits remotely;
 # * a two-column response, a subset leaving no rows: other errors remotely
 #   than in memory;
 # * na.action = na.pass with FE: fits in memory, refused remotely.
@@ -138,6 +137,8 @@ expect_error(design_glm(yna ~ x, gaussian, d, na.action = na.fail),
              "missing values in object", fixed = TRUE)
 expect_error(design_glm(f ~ x, poisson, d),
              "A factor response needs a binomial family.", fixed = TRUE)
+expect_error(design_glm(design_matrix(~ x, d), poisson, y = d$f),
+             "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(ch ~ x, poisson, d),
              "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(cbind(b1, fails, k) ~ x, binomial, d),
@@ -186,8 +187,13 @@ expect_error(design_glm(yna ~ x, gaussian, con, table = "d", na.action = na.pass
              "`na.action` must be na.omit, na.exclude, na.fail.", fixed = TRUE)
 expect_error(design_glm(yna ~ x, gaussian, con, table = "d", na.action = na.fail),
              "missing values in object", fixed = TRUE)
-expect_inherits(design_glm(f ~ x, poisson, con, table = "d"), "design_glm")
-expect_inherits(design_glm(ch ~ x, poisson, con, table = "d"), "design_glm")
+expect_error(design_glm(f ~ x, poisson, con, table = "d"),
+             "A factor response needs a binomial family.", fixed = TRUE)
+expect_error(design_glm(ch ~ x, poisson, con, table = "d"),
+             "A factor response needs a binomial family.", fixed = TRUE)
+expect_inherits(design_glm(f ~ x, binomial, con, table = "d"), "design_glm")
+expect_error(design_glm(design_matrix(~ x, con, table = "d"), poisson, y = "f"),
+             "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(cbind(b1, fails, k) ~ x, binomial, con, table = "d"),
              "A two-column response needs two columns (successes and failures).", fixed = TRUE)
 expect_error(design_glm(cbind(b1, fails) ~ x, poisson, con, table = "d"),
@@ -201,7 +207,7 @@ expect_error(design_glm(y ~ x, gaussian, con, table = "d", foo = 1, weights = wn
 expect_error(design_glm(cbind(b1, fails, k) ~ x, binomial, con, table = "d", weights = ch),
              "A two-column response needs two columns (successes and failures).", fixed = TRUE)
 expect_error(design_glm(f ~ x, poisson, con, table = "d", weights = wneg),
-             "negative weights not allowed", fixed = TRUE)
+             "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, con, table = "d", na.action = na.pass, foo = 1),
              "`na.action` must be na.omit, na.exclude, na.fail.", fixed = TRUE)
 expect_error(design_glm(y ~ x, gaussian, con, table = "d", start = 1),
@@ -305,7 +311,8 @@ expect_error(design_glm(k ~ x | id, poisson, con, table = "d", weights = ch),
              "`weights` has no SQL translation: column `ch` is not numeric.", fixed = TRUE)
 expect_error(design_glm(~ x | id, poisson, con, table = "d"),
              "The formula has no response.", fixed = TRUE)
-expect_inherits(design_glm(f ~ x | id, poisson, con, table = "d"), "design_glm")
+expect_error(design_glm(f ~ x | id, poisson, con, table = "d"),
+             "A factor response needs a binomial family.", fixed = TRUE)
 expect_error(design_glm(cbind(b1, fails, k) ~ x | id, binomial, con, table = "d"),
              "A two-column response needs two columns (successes and failures).", fixed = TRUE)
 expect_error(design_glm(k ~ x | id, poisson, con, table = "d", na.action = na.fail),
