@@ -92,14 +92,30 @@ q <- queries(colSums(DW, group = "g"), design.matrix.remote_compress = "auto")
 expect_true(same(q$value, rowsum(MW, d$g)))
 expect_false(grouped_scan(q$sql))
 ## more patterns than 1% of the rows (here with f, 45 for 2000 rows): not
-## compressed, though fits (ratio 0.1) would be
+## compressed, though a glm fit (ratio 0.2) would be; an unweighted lm (ratio
+## 1e-3) would not, nor a weighted one
+cap <- function(D, op) design.matrix:::dm_compress_cap(D, "auto", op = op)
 DW2 <- suppressMessages(design_matrix(update(fw, ~ . + f), con, table = "d"))
 MW2 <- as.matrix(design_matrix(update(fw, ~ . + f), d))
 q <- queries(crossprod(DW2), design.matrix.remote_compress = "auto")
 expect_true(same(q$value, crossprod(MW2)))
 expect_false(grouped_scan(q$sql[length(q$sql)]))
-expect_null(design.matrix:::dm_compress_cap(DW2, "auto", op = "products"))
-expect_false(is.null(design.matrix:::dm_compress_cap(DW2, "auto", op = "fit")))
+expect_null(cap(DW2, "products"))
+expect_false(is.null(cap(DW2, "glm")))
+expect_null(cap(DW2, "lm"))
+expect_null(cap(DW2, "wlm"))
+## the option design.matrix.remote_compress_ratio caps every ratio (never
+## raises one)
+rule <- design.matrix:::dm_compress_rule
+expect_null(rule("colsums"))
+expect_equal(rule("products"), list(numeric = 8L, ratio = 1e-2))
+expect_equal(rule("glm"), list(numeric = 0L, ratio = 0.2))
+expect_equal(rule("lm"), list(numeric = 0L, ratio = 1e-3))
+expect_equal(rule("wlm"), list(numeric = 8L, ratio = 1e-3))
+expect_equal(with_opts(rule("glm")$ratio, design.matrix.remote_compress_ratio = 0.05), 0.05)
+expect_equal(with_opts(rule("lm")$ratio, design.matrix.remote_compress_ratio = 0.05), 1e-3)
+expect_equal(with_opts(rule("lm")$ratio, design.matrix.remote_compress_ratio = 1e-4), 1e-4)
+expect_null(with_opts(cap(DW2, "glm"), design.matrix.remote_compress_ratio = 0.01))
 
 ## a missing response: compressed products put NA where the dense one does
 xm <- with_opts(crossprod(D, "ym"), design.matrix.remote_compress = TRUE)
@@ -122,6 +138,36 @@ a <- design_glm(yp ~ xd + f, poisson, con, table = "d", offset = "g", compress =
 g0 <- glm(yp ~ xd + f, poisson, d, offset = g)
 expect_true(a$compressed)
 expect_true(same(coef(a), coef(g0), 1e-7) && same(deviance(a), deviance(g0), 1e-7))
+
+## fits under "auto" (dm_compress_rule()). With 2000 rows: the glm compresses
+## (90 patterns with the offset g, 4.5% of the rows), the lm (30 patterns,
+## 1.5%) does not
+a <- design_glm(yp ~ xd + f, poisson, con, table = "d", offset = "g")
+expect_true(a$compressed)
+expect_true(same(coef(a), coef(g0), 1e-7) && same(deviance(a), deviance(g0), 1e-7))
+expect_false(design_lm(y ~ xd * f + lg, con, table = "d")$compressed)
+## with 20000 rows: an unweighted lm of 6 patterns (0.03%) compresses; the
+## weighted one does not, without a decision query (2 numeric columns); a
+## weighted lm with many numeric columns (11) and 15 patterns (0.075%) does
+nb <- 20000
+b <- data.frame(xd = sample(0:4, nb, TRUE) / 2, xe = sample(0:2, nb, TRUE), f = sample(c("a", "b"), nb, TRUE),
+                w = sample(1:3, nb, TRUE))
+b$y <- b$xd + b$xe + rnorm(nb)
+DBI::dbWriteTable(con, "b", b)
+a <- design_lm(y ~ xe + f, con, table = "b")
+expect_true(a$compressed)
+expect_true(same(coef(a), coef(lm(y ~ xe + f, b))))
+q <- queries(design_lm(y ~ xe * f, con, table = "b", weights = "w"))
+expect_false(q$value$compressed)
+expect_false(any(grepl("approx_count_distinct(hash(", q$sql, fixed = TRUE)))
+expect_true(same(coef(q$value), coef(lm(y ~ xe * f, b, weights = w))))
+fwy <- update(fw, y ~ .)
+a <- design_lm(fwy, con, table = "b", weights = "w")
+expect_true(a$compressed)
+expect_true(same(coef(a), coef(lm(fwy, b, weights = w))))
+## compress = TRUE still forces, FALSE never
+expect_true(design_lm(y ~ xe * f, con, table = "b", weights = "w", compress = TRUE)$compressed)
+expect_false(design_lm(y ~ xe + f, con, table = "b", compress = FALSE)$compressed)
 
 ## too many cells: TRUE gives up after the scan (every row distinct), and
 ## the products are the scan over the rows
