@@ -14,6 +14,8 @@
 typedef struct {
     int L, ns, nf, nn, kc, count, off;
     const int *code[SMAXC];
+    int fvar[SMAXC];     /* index of each factor's variable (shared across terms) */
+    SEXP fcm[SMAXC];     /* each factor's contrast matrix */
     int adj[SMAXC], lstride[SMAXC], nrc[SMAXC], fnc[SMAXC], fstride[SMAXC];
     const double *cm[SMAXC];
     const double *num[SMAXC];

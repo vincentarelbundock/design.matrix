@@ -1,6 +1,6 @@
 ## design_glm(), one implementation in memory and on remote data: each case
 ## of glm_cases.R fitted in memory (compressed or not) and on a DuckDB table
-## (compressed or not) and on Parquet, compared
+## (compressed or not) and on Parquet (full tier), compared
 ## with glm() on the same rows: coefficients (with the NA pattern of
 ## aliased columns), vcov, deviances, AIC, degrees of freedom, dispersion
 ## and the number of iterations. The other checks (warnings, methods,
@@ -64,10 +64,13 @@ case_args <- function(cs) {
 for (cs in glm_cases) {
     b <- suppressWarnings(glm_ref(cs, dd))
     for (mode in modes) for (cp in list("auto", FALSE)) {
+        ## (remote fits without compression: full tier; the checks below
+        ## fit remotely without compression in the default tier too)
+        if (!full_tests && mode$name != "memory" && isFALSE(cp)) next
         a <- suppressWarnings(do.call(fit_in, c(list(mode, cs[[2]], cs[[3]]), case_args(cs), compress = cp)))
         glm_same(a, b, paste(cs[[1]], mode$name, "compress", cp))
     }
-    if (length(modes) > 1L && cs[[1]] %in% c("logit x*f", "binomial cbind", "poisson offset()", "Gamma inverse")) {
+    if (length(modes) > 1L && "parquet" %in% remote_modes && cs[[1]] %in% c("logit x*f", "binomial cbind", "poisson offset()", "Gamma inverse")) {
         for (eng in "sql") {
             a <- suppressWarnings(do.call(fit_in, c(list(modes$sql, cs[[2]], cs[[3]]), case_args(cs),
                                                    data = list(list(pq, engine = eng)))))
@@ -142,8 +145,8 @@ for (mode in modes) {
 ## regression: nested expressions (probit: DuckDB expands the qnorm and
 ## pnorm macros inline) once made queries so long that DuckDB hung; the
 ## linear predictor, fitted means and working weights are computed once
-## (dmc_freeze()), which bounds the queries
-if (length(modes) > 1L) {
+## (dmc_freeze()), which bounds the queries (full tier)
+if (length(modes) > 1L && full_tests) {
     qlen <- integer()
     withCallingHandlers({
         op <- options(design.matrix.remote_debug = TRUE)

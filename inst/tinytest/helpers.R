@@ -1,4 +1,18 @@
 # Shared helpers for the tests (sourced by each test file).
+#
+# Test tiers. By default (R CMD check, CRAN, quick iterations) the suite
+# runs a fast tier: every feature in memory and on a DuckDB table (the SQL
+# backend). DESIGN_MATRIX_TESTS=full runs the full tier: also on Parquet
+# files, every case of the parity loops remotely (both compression modes,
+# all fixed-effect cases), the random-formula sweeps at full length and the
+# slow regression tests. Run it before every merge:
+#   DESIGN_MATRIX_TESTS=full Rscript -e 'tinytest::run_test_dir("inst/tinytest")'
+# Files shorten their loops with `full_tests` and `remote_modes`; a file
+# that only belongs to the full tier starts with
+#   if (!full_tests) exit_file("full tier only: set DESIGN_MATRIX_TESTS=full")
+full_tests <- identical(Sys.getenv("DESIGN_MATRIX_TESTS"), "full")
+# remote data sources a test runs on: a DuckDB table, plus Parquet in full
+remote_modes <- if (full_tests) c("sql", "parquet") else "sql"
 
 strict_identical <- function(a, b) {
     identical(a, b, num.eq = FALSE, single.NA = FALSE, attrib.as.set = FALSE)
