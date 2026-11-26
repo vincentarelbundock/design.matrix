@@ -20,7 +20,7 @@ options(width = 200)
 
 ## Introduction
 
-The `design.matrix` package builds model matrices that are identical, bit for bit, to those returned by `stats::model.matrix()`, and computes with them without forming the dense matrix. Most uses of a model matrix only need something derived from it: predictions, their standard errors, or weighted and grouped sums. Computing those directly from the factor codes and numeric variables saves both time and memory, often by an order of magnitude or more. On data with 200,000 rows and 119 columns, on one thread:
+The `design.matrix` package builds model matrices that are identical, bit for bit, to those returned by `stats::model.matrix()`, and computes with them without forming the dense matrix. Most uses of a model matrix only need something derived from it: predictions, their standard errors, or weighted and grouped sums. Computing those directly from the factor codes and numeric variables saves both time and memory, often by an order of magnitude or more.
 
 ```{r}
 #| include: false
@@ -66,15 +66,6 @@ cell <- function(task, i) {
     paste0(format(m$median[i]), ", ", format(m$mem_alloc[i]))
 }
 ```
-
-| Task | Base R | `design.matrix` |
-|---|---|---|
-| Predictions on new data | `r cell("predict", 1)` | `r cell("predict", 2)` |
-| Standard errors of predictions | `r cell("se", 1)` | `r cell("se", 2)` |
-| Grouped weighted sums (cluster-robust variance) | `r cell("sums", 1)` | `r cell("sums", 2)` |
-| Sparse model matrix (vs. `Matrix::sparse.model.matrix()`) | `r cell("sparse", 1)` | `r cell("sparse", 2)` |
-
-Memory is the total allocated on the R heap during one evaluation; the benchmarks below give the details. When you do need the dense matrix, `design.matrix` returns the identical matrix at about the same speed on one thread and about twice as fast on four threads, but it takes the same memory.
 
 Use `design.matrix` when you have a formula (or fitted model) and data, and you want to avoid the cost of allocating, filling, and storing a dense model matrix. If you already have the dense matrix `X`, use it directly.
 
@@ -145,6 +136,17 @@ ggsave("prediction-batch-timing.png", p, width = 10, height = 5, dpi = 160, bg =
 
 
 ![Median prediction time by batch size for base R and design_matrix().](prediction-batch-timing.png)
+
+The plot measures only time, and only for predictions. The savings extend to memory and to other common tasks. On data with 200,000 rows and 119 columns, on one thread:
+
+| Task | Base R | `design.matrix` |
+|---|---|---|
+| Predictions on new data | `r cell("predict", 1)` | `r cell("predict", 2)` |
+| Standard errors of predictions | `r cell("se", 1)` | `r cell("se", 2)` |
+| Grouped weighted sums (cluster-robust variance) | `r cell("sums", 1)` | `r cell("sums", 2)` |
+| Sparse model matrix (vs. `Matrix::sparse.model.matrix()`) | `r cell("sparse", 1)` | `r cell("sparse", 2)` |
+
+Memory is the total allocated on the R heap during one evaluation; the benchmarks below give the details. When you do need the dense matrix, `design.matrix` returns the identical matrix at about the same speed on one thread and about twice as fast on four threads, but it takes the same memory.
 
 ### Promises
 
