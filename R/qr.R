@@ -103,47 +103,78 @@ qr.design_matrix <- function(x, tol = 1e-07, ...) {
 ## columns from products with the data. There is no dense fallback.
 #' @method qr dm_remote
 #' @export
-qr.dm_remote <- function(x, tol = 1e-07, ...) {
+qr.dm_remote <- function(x, tol = 1e-07, ...) dmqr_remote(x, tol)
+
+## (`Y`, remote columns: X'Y comes from the scan that computes X'X, and is
+## kept for dmqr_coef(), see dm_remote_gram_xty())
+##
+## The columns kept and their order come from X'X (lm()'s rule, as in
+## memory), but the values of the factor of the kept columns come from the
+## X'X of the design with numeric variables shifted by their mean in a
+## sample, when that design is X~ = X T with T unit upper triangular
+## (dm_center()): R = R~ T^-1. A numeric variable far from zero (x + 1e7)
+## makes X'X nearly singular, while the shifted one is well conditioned; the
+## database sums X'X with another rounding than the in-memory kernels, so
+## without the shift the factor would lose the accuracy that in-memory
+## designs keep. The sums are then those of the shifted design only (one
+## scan), and X'X = T^-T (X~'X~) T^-1 follows from them.
+dmqr_remote <- function(x, tol, Y = NULL) {
     checkmate::assert_number(tol, lower = 0, finite = TRUE)
-    G <- crossprod(x)
+    ctr <- if (isTRUE(getOption("design.matrix.remote_center", TRUE))) dm_center(x)
+    mc <- xs <- NULL
+    if (!is.null(ctr)) {
+        xs <- dm_shifted(x, ctr$shift)
+        ## (not compressed: the design of the patterns would not be shifted)
+        op <- options(design.matrix.remote_compress = FALSE)
+        mc <- tryCatch(dm_remote_gram_xty(xs, Y), finally = options(op))
+        if (!all(is.finite(mc$xtx))) mc <- NULL
+    }
+    if (is.null(mc)) {
+        mo <- dm_remote_gram_xty(x, Y)
+    } else {
+        Ti <- backsolve(ctr$T, diag(ncol(ctr$T)))
+        G <- crossprod(Ti, mc$xtx %*% Ti)
+        mo <- list(xtx = (G + t(G)) / 2, xty = if (!is.null(mc$xty)) crossprod(Ti, mc$xty))
+        dimnames(mo$xtx) <- dimnames(mc$xtx)
+    }
+    G <- mo$xtx
     storage.mode(G) <- "double"
     if (!all(is.finite(G))) stop("NA/NaN/Inf in 'x'", call. = FALSE)
     ch <- dmqr_chol(x, G, tol)
     if (is.null(ch)) stop("The squares of some entries of the design underflow.", call. = FALSE)
-    ch <- dmqr_centered(x, ch, G)
+    if (!is.null(mc)) ch <- dmqr_centered(ch, G, ctr$T, xs, mc, Y)
     R <- ch$R
     cn <- colnames(x)
     if (!is.null(cn)) colnames(R) <- cn[ch$pivot]
     structure(list(design = x, R = R, rank = ch$rank, pivot = ch$pivot, tol = tol, G = unname(G),
-                   centered = ch$centered),
+                   centered = ch$centered, xty = mo$xty, xty_of = if (!is.null(mo$xty)) unclass(Y)$sql),
               class = "design_qr")
 }
 
-## The factor of a remote design, with better values: the columns kept and
-## their order come from X'X (lm()'s rule, as in memory), but the values of
-## the factor of the kept columns from the X'X of the design with numeric
-## variables shifted by their mean in a sample, when that design is X T with
-## T unit upper triangular (dm_center()): R = R~ T^-1. A numeric variable
-## far from zero (x + 1e7) makes X'X nearly singular, while the shifted one
-## is well conditioned; the database sums X'X with another rounding than
-## the in-memory kernels, so without the shift the factor would lose the
-## accuracy that in-memory designs keep.
-dmqr_centered <- function(x, ch, G) {
-    if (!isTRUE(getOption("design.matrix.remote_center", TRUE)) || ch$rank == 0L) return(ch)
-    ctr <- dm_center(x)
-    if (is.null(ctr)) return(ch)
+## The factorization of a design for a least squares fit of the columns Y:
+## qr(x), which remotely also computes X'Y in the same scan.
+dmqr_for <- function(x, tol, Y) {
+    if (inherits(x, "dm_remote") && dm_is_rcols(Y)) dmqr_remote(x, tol, Y) else qr(x, tol = tol)
+}
+
+## X'Y for the columns Y, from the scan of the factorization when it was
+## made for them (dmqr_for()), else computed.
+dmqr_xty <- function(q, D, Y) {
+    if (!is.null(q$xty) && dm_is_rcols(Y) && identical(q$xty_of, unclass(Y)$sql)) return(q$xty)
+    dmp_crossprod(D, Y)
+}
+
+## The factor of a remote design with the values of the shifted design
+## (see dmqr_remote()): `xs` the shifted design, `mc` its X'X and X'Y, `Tm`
+## with X~ = X T. Unchanged when the kept columns do not allow it.
+dmqr_centered <- function(ch, G, Tm, xs, mc, Y = NULL) {
+    if (ch$rank == 0L) return(ch)
     k <- ch$rank
     p <- length(ch$pivot)
     keep <- ch$pivot[seq_len(k)]
     al <- ch$pivot[seq_len(p) > k]
-    Tm <- ctr$T
     if (!identical(keep, sort(keep)) || (length(al) && any(Tm[al, keep] != 0))) return(ch)
-    xs <- dm_shifted(x, ctr$shift)
-    ## (not compressed: the design of the patterns would not be shifted)
-    op <- options(design.matrix.remote_compress = FALSE)
-    on.exit(options(op))
-    Gc <- crossprod(xs)
-    Rt <- tryCatch(chol(unname(Gc[keep, keep, drop = FALSE])), error = function(e) NULL)
+    Rt <- tryCatch(chol(unname(mc$xtx[keep, keep, drop = FALSE])), error = function(e) NULL)
     if (is.null(Rt)) return(ch)
     R11 <- Rt %*% backsolve(Tm[keep, keep, drop = FALSE], diag(k))
     R <- ch$R
@@ -152,19 +183,15 @@ dmqr_centered <- function(x, ch, G) {
         R[seq_len(k), k + seq_along(al)] <- backsolve(R11, unname(G[keep, al, drop = FALSE]), transpose = TRUE)
     }
     ch$R <- R
-    ch$centered <- list(design = xs, T = Tm[keep, keep, drop = FALSE], Rt = Rt)
+    ch$centered <- list(design = xs, T = Tm[keep, keep, drop = FALSE], Rt = Rt, xty = mc$xty,
+                        xty_of = if (!is.null(mc$xty)) unclass(Y)$sql)
     ch
 }
 
-## The remote design with numeric variables shifted (their SQL, or the
-## batches of the chunked engine).
+## The remote design with numeric variables shifted (their SQL).
 dm_shifted <- function(x, shift) {
-    if (x$engine == "sql") {
-        for (nm in names(shift))
-            x$vars[[nm]]$sql <- sprintf("(%s - %s)", x$vars[[nm]]$sql, dm_sql_double(shift[[nm]]))
-    } else {
-        x$shift <- shift
-    }
+    for (nm in names(shift))
+        x$vars[[nm]]$sql <- sprintf("(%s - %s)", x$vars[[nm]]$sql, dm_sql_double(shift[[nm]]))
     x
 }
 
@@ -172,6 +199,12 @@ dm_shifted <- function(x, shift) {
 ## by variable), T) with X(shifted) = X T, T unit upper triangular, or NULL
 ## (nothing to center, or no such T); from a sample of its rows.
 dm_center <- function(D) {
+    ## (once for a design: its scaled copies share the cache)
+    if (is.null(D$cache$center)) D$cache$center <- list(dm_center_sample(D))
+    D$cache$center[[1L]]
+}
+
+dm_center_sample <- function(D) {
     plan <- D$plan
     sample <- dm_remote_sample(D)
     if (!nrow(sample)) return(NULL)
@@ -407,14 +440,14 @@ dmqr_coef <- function(qr, Y, steps = 3L) {
         cc <- qr$centered
         op <- options(design.matrix.remote_compress = FALSE)
         on.exit(options(op))
-        ht <- dmp_crossprod(cc$design, Y)[keep, , drop = FALSE]
+        ht <- dmqr_xty(cc, cc$design, Y)[keep, , drop = FALSE]
         bt <- backsolve(cc$Rt, backsolve(cc$Rt, ht, transpose = TRUE))
         b <- cc$T %*% bt
         ## the moments of the solution, for sums of squares (dmfit_ls())
         attr(b, "moments") <- list(b = bt, h = ht, G = crossprod(cc$Rt))
         return(b)
     }
-    h <- dmp_crossprod(D, Y)
+    h <- dmqr_xty(qr, D, Y)
     b <- dmqr_solve(qr, h[keep, , drop = FALSE])
     if (k == 0L) return(b)
     ## The normal equations lose about kappa^2 * eps of accuracy, where

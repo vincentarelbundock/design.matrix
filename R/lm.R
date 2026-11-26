@@ -377,7 +377,7 @@ dmfit_lm <- function(x, y, weights = NULL, offset = NULL, compress = "auto",
 ## the pivoted factor, the weighted residual sum of squares and the
 ## explained sum of squares (around the weighted mean with an intercept,
 ## around zero without), as summary.lm() computes it.
-dmfit_ls <- function(x, z, w, tol, intercept) {
+dmfit_ls <- function(x, z, w, tol, intercept, sums = TRUE) {
     p <- ncol(x)
     cn <- colnames(x)
     if (p == 0L) {
@@ -389,10 +389,15 @@ dmfit_ls <- function(x, z, w, tol, intercept) {
     ## (the primitives of primitives.R: columns are numeric vectors in
     ## memory, remote columns for a remote design)
     sw <- if (is.null(w)) NULL else sqrt(w)
-    q <- qr(dmp_scale(x, sw), tol = tol)
     Y <- if (is.null(sw)) z else sw * z
+    q <- dmqr_for(dmp_scale(x, sw), tol, Y)
     b <- dmqr_coef(q, Y)
     beta <- dmqr_full(q, b)[, 1L]
+    coef <- beta
+    coef[setdiff(seq_len(p), q$pivot[seq_len(q$rank)])] <- NA_real_
+    names(coef) <- cn
+    ## (the weighted least squares steps of a GLM need only the solution)
+    if (!sums) return(list(coefficients = coef, rank = q$rank, pivot = q$pivot, R = q$R, tol = tol))
     f <- dmp_mult(x, beta, along = list(z, w))
     r <- z - f
     ww <- if (is.null(w)) 1 else w
@@ -425,9 +430,6 @@ dmfit_ls <- function(x, z, w, tol, intercept) {
             dm_colsum(ww * f^2)
         }
     }
-    coef <- beta
-    coef[setdiff(seq_len(p), q$pivot[seq_len(q$rank)])] <- NA_real_
-    names(coef) <- cn
     R <- q$R
     list(coefficients = coef, rank = q$rank, pivot = q$pivot, R = R, tol = tol,
          rss = rss, mss = mss, intercept = intercept)

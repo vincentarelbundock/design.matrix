@@ -3,7 +3,7 @@
 # observations (rows removed: singletons and levels whose FE is infinite),
 # deviance, log-likelihood, predictions and residuals, with fixest's
 # default small sample corrections. Every case runs in memory and on
-# remote data (DuckDB table with the SQL and the chunked engines, and
+# remote data (a DuckDB table, and
 # Parquet). fixest demeans iteratively; tight glm.tol and fixef.tol make its
 # results exact enough for a 1e-8 comparison.
 
@@ -46,7 +46,7 @@ put <- function(d, name) {
 # Fits of the same model in memory and on remote data (`weights` and
 # `offset` name columns; `modes`: the remote modes).
 fe_fits <- function(fml, family, d, src, vcov = "iid", weights = NULL, offset = NULL,
-                    modes = c("sql", "chunked", "parquet"), ...) {
+                    modes = c("sql", "parquet"), ...) {
     marg <- list(fml, family, d, vcov = vcov, control = CTRL, ...)
     if (!is.null(weights)) marg$weights <- d[[weights]]
     if (!is.null(offset)) marg$offset <- log(d[[offset]])
@@ -60,7 +60,6 @@ fe_fits <- function(fml, family, d, src, vcov = "iid", weights = NULL, offset = 
             suppressMessages(do.call(design_glm, a))
         }
         if ("sql" %in% modes) fits$sql <- rfit(con, table = src$table, ...)
-        if ("chunked" %in% modes) fits$chunked <- rfit(con, table = src$table, engine = "chunked", chunk_size = 700, ...)
         if ("parquet" %in% modes) fits$parquet <- rfit(src$parquet, ...)
     }
     fits
@@ -70,7 +69,7 @@ fe_fits <- function(fml, family, d, src, vcov = "iid", weights = NULL, offset = 
 # (ll = FALSE: fixest's log-likelihood of families with a dispersion
 # differs from glm()'s, which design_glm() follows)
 check_fe <- function(fml, family, d, src, cluster = NULL, weights = NULL, offset = NULL, ...,
-                     modes = c("sql", "chunked", "parquet"), ll = TRUE, info = "") {
+                     modes = c("sql", "parquet"), ll = TRUE, info = "") {
     vc <- if (is.null(cluster)) "iid" else cluster
     fits <- fe_fits(fml, family, d, src, vc, weights, offset, modes = modes, ...)
     b <- fx_fit(fml, d, family, weights = weights, offset = if (!is.null(offset)) sprintf("log(%s)", offset))

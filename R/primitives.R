@@ -58,7 +58,7 @@
 ## Comparisons with NULL are NULL (R: NA).
 ##
 ## Columns from successive products live on successive frames: each product
-## builds a new frame (a view, or a table with the chunked engine) on top of
+## builds a new frame (a view) on top of
 ## the frame of the columns passed as `along`, and keeps all their columns.
 ## Combining columns takes the later frame (they must come from the same
 ## design). In memory `along` is ignored.
@@ -108,7 +108,7 @@
 ##   dmc_mean(col)            the mean of a column
 ##   dmp_colnorms(col)        Euclidean norms of the columns
 ##   dm_nrows(x)              number of rows of a design or column
-##   dm_engine(x)             "sql" or "chunked" for a remote design, ""
+##   dm_engine(x)             "sql" for a remote design, ""
 ##                            in memory (for the description of a fit)
 ##   dmp_patterns(x, z, w, compress, keys = NULL)
 ##                            compressed least squares: when rows with the
@@ -154,7 +154,7 @@
 ##                            the container differs.
 ##
 ## Remote methods: crossprod, colSums, products and patterns run in the
-## database (or in batches with the chunked engine); dmp_groupsum and
+## database; dmp_groupsum and
 ## dmp_crosstab are single GROUP BY queries.
 ##
 ## ---------------------------------------------------------------------------
@@ -192,7 +192,7 @@
 ##   finite_rows(D) (internal)    a logical column                  done
 ##
 ## Tests: test_primitives.R (the layer), test_parity_ops.R (every operation
-## above on the same data, in memory and remote: SQL, chunked, Parquet).
+## above on the same data, in memory and remote: a table, Parquet).
 
 ## ---- remote columns ----
 
@@ -398,8 +398,8 @@ dmc_sums <- function(...) {
 ## The mean of a column (in memory as mean() computes it).
 dmc_mean <- function(x) if (dm_is_rcols(x)) dm_colsum(x) / dm_nrows(x) else mean(x)
 
-## The engine of a remote design ("sql" or "chunked"), "" in memory.
-dm_engine <- function(x) if (inherits(x, "dm_remote")) x$engine else ""
+## "sql" for a remote design, "" in memory.
+dm_engine <- function(x) if (inherits(x, "dm_remote")) "sql" else ""
 
 dm_nrows <- function(x) {
     if (inherits(x, "dm_remote")) return(x$cache$n %||% x$n)
@@ -454,28 +454,14 @@ dm_with_columns <- function(x, col, nm) {
 }
 
 dmp_crossprod <- function(x, y = NULL) {
-    if (!inherits(x, "dm_remote")) return(if (is.null(y)) crossprod(x) else crossprod(x, y))
     if (is.null(y)) return(crossprod(x))
-    if (inherits(y, "dm_remote")) {
-        if (dm_frame_depth(y) > dm_frame_depth(x)) x <- dm_rebase(x, y)
-        if (dm_frame_depth(x) > dm_frame_depth(y)) y <- dm_rebase(y, x)
-        return(crossprod(x, y))
-    }
-    if (!dm_is_rcols(y)) stop("`y` must be a design or a column.", call. = FALSE)
-    nm <- paste0("__dm_y", seq_along(y))
-    out <- crossprod(dm_with_columns(x, y, nm), nm)
-    dimnames(out) <- list(colnames(x), NULL)
-    out
+    if (inherits(x, "dm_remote") && !inherits(y, "dm_remote") && !dm_is_rcols(y))
+        stop("`y` must be a design or a column.", call. = FALSE)
+    crossprod(x, y)
 }
 
 dmp_colsums <- function(x, group = NULL) {
-    if (!inherits(x, "dm_remote")) {
-        if (is.null(group)) return(colSums(x))
-        return(colSums(x, group = group))
-    }
-    if (is.null(group)) return(colSums(x))
-    if (!dm_is_rcols(group)) stop("`group` of a remote design must be a remote column.", call. = FALSE)
-    colSums(dm_with_columns(x, group, "__dm_g"), group = "__dm_g")
+    if (is.null(group)) colSums(x) else colSums(x, group = group)
 }
 
 ## SQL GROUP BY over the frame of columns: list(groups (a data frame of the
@@ -577,15 +563,11 @@ dmp_quad <- function(x, V, along = list()) {
 dmp_patterns <- function(x, z, w = NULL, compress = "auto", keys = NULL) {
     if (inherits(x, "dm_remote")) {
         mode <- if (isTRUE(compress)) TRUE else if (isFALSE(compress)) FALSE else dm_compress_mode()
-        if (!is.null(keys)) {
-            ## extra key columns: added to the source, and to the GROUP BY
-            nm <- paste0("__dm_key", seq_along(keys))
-            x <- dm_with_columns(x, keys, nm)
-            z <- dm_rcols(x, unclass(z)$sql)
-            if (!is.null(w)) w <- dm_rcols(x, unclass(w)$sql)
-        }
+        ## (extra key columns: more keys of the GROUP BY)
+        nm <- if (!is.null(keys)) paste0("__dm_g", seq_along(keys))
+        if (!is.null(keys)) x <- dm_remote_cols(x, keys, "keys")$D
         pt <- dm_remote_patterns(x, unclass(z)$sql, if (!is.null(w)) unclass(w)$sql, within = TRUE,
-                                 mode = mode, group = if (!is.null(keys)) nm)
+                                 mode = mode, group = if (!is.null(keys)) unclass(keys)$sql)
         if (is.null(pt)) return(NULL)
         pd <- dm_pattern_design(x, pt$P[dm_compress_keys(x)])
         k <- pd$keep

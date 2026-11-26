@@ -34,7 +34,6 @@ DBI::dbExecute(con, sprintf("COPY d TO '%s' (FORMAT PARQUET)", pq))
 
 remotes <- list(
     sql = list(data = quote(con), extra = list(table = "d")),
-    chunked = list(data = quote(con), extra = list(table = "d", engine = "chunked", chunk_size = 64)),
     parquet = list(data = quote(pq), extra = list()))
 fit_on <- function(fun, args, data, extra = list()) eval(as.call(c(list(fun), args, list(data = data), extra)))
 
