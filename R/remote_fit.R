@@ -1,9 +1,10 @@
-## The input side of fits on remote data (design_lm(), design_glm() and
-## fixed effects; see remote.R): the design of the rows used, and the
-## response, weights, offset and subset as columns over them (in SQL, or
-## evaluated in R into a temporary table), with one code path for the three
-## fits. The fits themselves are the code of lm.R, glm.R and fe.R on the
-## primitives of primitives.R.
+## The input side of the fits (design_lm(), design_glm() and fixed
+## effects): design_problem() turns a formula and a data frame or remote
+## data (see remote.R) into the design of the rows used and the response,
+## weights, offset and subset as columns over them (vectors in memory; in
+## SQL remotely, or evaluated in R into a temporary table), with one code
+## path for the three fits. The fits themselves are the code of lm.R,
+## glm.R and fe.R on the primitives of primitives.R.
 
 #' @name design_remote
 #' @section Linear models:
@@ -99,6 +100,149 @@ dm_na_kind <- function(na.action, allowed = c("omit", "exclude", "fail", "pass")
                  paste(paste0("na.", allowed), collapse = ", ")), call. = FALSE)
 }
 
+## The input stage of the fits on a formula (design_lm(), design_glm() and
+## fixed effects): the call's formula, data, subset, weights, offset and
+## na.action as a design and the columns of the response, weights and
+## offset, from a data frame (a model frame, as lm() and glm() build it) or
+## from remote data (a remote design, dm_remote_fit()); the fits then run
+## the same code on either.
+##   call: the matched call of the fit (its arguments are taken from it,
+##     unevaluated), env its parent frame; formula and data their values
+##     (data NULL when missing); dots the arguments in `...`.
+##   family: NULL for a linear model; for a GLM, its dmglm_kind(): the
+##     response as glm() takes it (a factor, a two-column response), and
+##     its columns (dmglm_cols()) as `cols`.
+##   fe, clv: with fixed effects, the parsed formula (dm_fe_parse()) and
+##     the cluster variable (or NULL): the design is that of the main terms,
+##     rows with a missing FE or cluster value are dropped, and `keys` holds
+##     their values (dm_fe_keys()).
+## Messages are those of lm() for a linear model without FE, of glm()
+## otherwise. Returns list(x (the design), y (the response), w, off (or
+## NULL), cols (GLM), resp (remotely: the columns of a two-column
+## response), keys, frame (the model frame in memory), na.action, exclude
+## (remotely, na.exclude), rows, nall, terms, formula, contrasts, xlevels,
+## env).
+design_problem <- function(call, env, formula, data, contrasts, dots, family = NULL, fe = NULL, clv = NULL) {
+    P <- if (!is.null(data) && dm_is_remote_source(data)) {
+        dm_problem_remote(call, env, formula, data, contrasts, dots, family, fe, clv)
+    } else {
+        if (length(dots)) stop("Unknown arguments: ", paste(names(dots), collapse = ", "), call. = FALSE)
+        dm_problem_memory(call, env, contrasts, family, fe, clv)
+    }
+    if (!is.null(fe)) P$keys <- dm_fe_keys(P$x, fe, clv, P$frame)
+    if (!is.null(family)) P$cols <- if (is.null(P$frame)) {
+        dmglm_cols(P$y, P$resp$a, P$resp$b, if (is.null(P$w)) dmc_const(P$x, 1) else P$w, P$off, family,
+                   P$resp$cbind, weighted = !is.null(P$w))
+    } else {
+        dmglm_mem_cols(P$y, P$w, P$off, family)
+    }
+    P
+}
+
+## In memory: the model frame (with the FE and cluster variables, so that
+## rows with a missing value in any of them are dropped), its terms (of
+## the main terms with FE), response (as lm() takes it; a GLM's as in the
+## frame: a vector, factor or matrix), weights, offset (offset() terms and
+## the `offset` argument) and the design (with the frame's predvars).
+dm_problem_memory <- function(call, env, contrasts, family, fe, clv) {
+    lm <- is.null(family) && is.null(fe)
+    mf <- call[c(1L, match(c("formula", "data", "subset", "weights", "na.action", "offset"), names(call), 0L))]
+    if (!is.null(fe)) {
+        aug <- dm_fe_augment(fe$main, unique(c(unlist(fe$fe, use.names = FALSE), clv)))
+        environment(aug) <- environment(fe$main)
+        mf$formula <- aug
+    }
+    mf$drop.unused.levels <- TRUE
+    mf[[1L]] <- quote(design.matrix::design_frame)
+    mf <- eval(mf, env)
+    mt <- attr(mf, "terms")
+    if (!is.null(fe)) mt <- dm_fe_main_terms(mt, fe$main)
+    if (lm) {
+        y <- dmfit_response(mf)
+        if (is.matrix(y)) stop("Multivariate responses are not supported.", call. = FALSE)
+    } else {
+        if (attr(attr(mf, "terms"), "response") == 0L) stop("The formula has no response.", call. = FALSE)
+        y <- mf[[1L]]
+        if (!is.null(fe) && (is.numeric(y) || is.logical(y))) y <- dmfit_response(mf)
+    }
+    w <- as.vector(stats::model.weights(mf))
+    if (!is.null(w) && !is.numeric(w)) stop("'weights' must be a numeric vector", call. = FALSE)
+    off <- as.vector(stats::model.offset(mf))
+    if (!is.null(off) && length(off) != NROW(y))
+        stop(gettextf(if (lm) "number of offsets is %d, should equal %d (number of observations)"
+                      else "number of offsets is %d should equal %d (number of observations)",
+                      length(off), NROW(y)), call. = FALSE)
+    if (!lm) {
+        if (!is.null(w)) w <- as.double(w)
+        if (!is.null(off)) off <- as.double(off)
+    }
+    X <- design_matrix(mt, mf, contrasts.arg = contrasts)
+    list(x = X, y = y, w = w, off = off, frame = mf, na.action = attr(mf, "na.action"), exclude = FALSE,
+         rows = seq_len(nrow(mf)), nall = nrow(mf), terms = mt, formula = stats::formula(mt),
+         contrasts = X$contrasts, xlevels = stats::.getXlevels(mt, mf), env = environment(mt))
+}
+
+## The terms of the main formula of an FE fit, from those of its model
+## frame (which has the FE and cluster variables too).
+dm_fe_main_terms <- function(mt_aug, main) {
+    labs <- attr(mt_aug, "term.labels")
+    drop <- which(!labs %in% attr(stats::terms(main), "term.labels"))
+    mt <- if (!length(drop)) {
+        mt_aug
+    } else if (length(drop) < length(labs)) {
+        stats::drop.terms(mt_aug, drop, keep.response = TRUE)
+    } else {
+        ## no main term left: a formula with the response, offset() terms
+        ## and the intercept
+        tt <- stats::terms(main)
+        nv <- length(attr(tt, "variables"))
+        attr(tt, "predvars") <- attr(mt_aug, "predvars")[seq_len(nv)]
+        attr(tt, "dataClasses") <- attr(mt_aug, "dataClasses")[seq_len(nv - 1L)]
+        tt
+    }
+    environment(mt) <- environment(main)
+    mt
+}
+
+## Remotely: the remote design of the right-hand side, and the response,
+## weights, offset and subset (linear models without FE) resolved as
+## columns (dm_remote_fit()), on the rows where the model, FE and cluster
+## variables, the response, weights and offset are present, as the model
+## frame in memory. A GLM's response: dmglm_remote_response() (a factor
+## as 0/1, the columns of cbind(a, b) as `resp`).
+dm_problem_remote <- function(call, env, formula, source, contrasts, dots, family, fe, clv) {
+    na <- if (is.null(call$na.action)) "omit" else
+        dm_na_kind(eval(call$na.action, env), if (is.null(fe)) c("omit", "exclude", "fail", "pass") else c("omit", "exclude"),
+                   "For remote data, ")
+    if (!is.null(fe)) {
+        nms <- names(dots) %||% rep("", length(dots))
+        keys <- c("table", "sql", "engine", "chunk_size")
+        if (any(!nms %in% keys))
+            stop("Unknown arguments: ", paste(nms[!nms %in% keys], collapse = ", "), call. = FALSE)
+    }
+    dm_need_duckdb()
+    src <- dm_remote_source(source, dots$table, dots$sql)
+    if (is.null(fe)) {
+        tt <- stats::terms(formula, data = src$proto)
+        if (attr(tt, "response") == 0L) stop("The formula has no response.", call. = FALSE)
+        lhs <- attr(tt, "variables")[[attr(tt, "response") + 1L]]
+    } else {
+        formula <- fe$main
+        lhs <- formula[[2L]]
+    }
+    resp <- if (!is.null(family)) dmglm_remote_response(lhs, src$types, src$holder$con)
+            else list(args = list(y = lhs), present = character(), cbind = FALSE)
+    args <- c(resp$args, list(weights = call$weights, offset = call$offset, subset = if (is.null(family)) call$subset))
+    r <- dm_remote_fit(formula, src, args, env, dots, contrasts, logical = "subset",
+                       present = unique(c(unlist(fe$fe, use.names = FALSE), clv, resp$present)), na = na)
+    D <- r$x
+    y <- if (length(resp$present)) dmglm_remote_factor(D, resp$present) else r$cols$y
+    list(x = D, y = y, w = r$cols$weights, off = r$off, resp = list(a = r$cols$a, b = r$cols$b, cbind = resp$cbind),
+         na.action = if (na == "exclude") dm_remote_exclude(D), exclude = na == "exclude", rows = NULL, nall = D$n,
+         terms = if (is.null(fe)) tt else stats::terms(formula), formula = formula, contrasts = D$plan$contrasts,
+         xlevels = D$plan$xlevels, env = env)
+}
+
 ## The remote design of a fit and the columns of its arguments (one code
 ## path for design_lm(), design_glm() and fixed effects).
 ##   formula: the model formula; the design is that of its right-hand side
@@ -176,16 +320,6 @@ dm_remote_fit <- function(formula, src, args, env, dots, contrasts = NULL, logic
     list(x = D, cols = cols, off = if (length(off)) dm_rcols(D, paste(sprintf("(%s)", off), collapse = " + ")))
 }
 
-## The source of a fit on remote data, the terms of its formula and the
-## response expression: list(src, terms, lhs).
-dm_remote_model <- function(formula, source, dots) {
-    dm_need_duckdb()
-    src <- dm_remote_source(source, dots$table, dots$sql)
-    tt <- stats::terms(formula, data = src$proto)
-    if (attr(tt, "response") == 0L) stop("The formula has no response.", call. = FALSE)
-    list(src = src, terms = tt, lhs = attr(tt, "variables")[[attr(tt, "response") + 1L]])
-}
-
 ## na.fail and na.pass: the errors of lm() when rows have missing values.
 dm_remote_fit_na <- function(D, res, na, args, offt) {
     total <- as.numeric(dm_query(D, sprintf("SELECT COUNT(*) AS n FROM (%s) AS s", D$src$select))$n)
@@ -200,25 +334,6 @@ dm_remote_fit_na <- function(D, res, na, args, offt) {
     if (any(vapply(c("y", "a", "b", "offset", offt), bad, NA))) stop("NA/NaN/Inf in 'y'", call. = FALSE)
     if (bad("weights")) stop("missing or negative weights not allowed", call. = FALSE)
     stop("NA/NaN/Inf in 'x'", call. = FALSE)
-}
-
-## design_lm(formula, <remote data>, ...). `weights`, `offset` and `subset`
-## are unevaluated arguments, resolved in `env`.
-dm_remote_lm <- function(formula, source, weights, offset, subset, na.action, contrasts,
-                         compress, tol, call, dots, env) {
-    na <- dm_na_kind(na.action, what = "For remote data, ")
-    m <- dm_remote_model(formula, source, dots)
-    src <- m$src
-    tt <- m$terms
-    r <- dm_remote_fit(formula, src, list(y = m$lhs, weights = weights, offset = offset, subset = subset),
-                       env, dots, contrasts, logical = "subset", na = na)
-    fit <- dm_remote_lm_fit(r$x, r$cols$y, r$cols$weights, r$off, compress, tol)
-    if (na == "exclude") fit$na.action <- dm_remote_exclude(r$x)
-    fit$offset_call <- offset
-    fit$env <- env
-    fit$call <- call
-    fit$terms <- tt
-    fit
 }
 
 ## design_lm(<remote design>, y = , weights = , offset = ): unevaluated
@@ -254,36 +369,6 @@ dm_remote_lm_fit <- function(D, y, w, off, compress = "auto", tol = 1e-07) {
     out$data <- list(design = D, y = y, weights = w, offset = off)
     D$cache$n <- out$rows
     out
-}
-
-## design_glm(formula, family, <remote>, ...): `weights` and `offset` are
-## unevaluated arguments (or NULL), evaluated in env. The response: an
-## expression, cbind(successes, failures), or a character, factor or
-## logical column (success: any level but the first).
-dm_remote_glm <- function(formula, source, family, weights, offset, start, contrasts, compress, control,
-                          call, dots, na, env) {
-    k <- dmglm_kind(family)
-    m <- dm_remote_model(formula, source, dots)
-    src <- m$src
-    tt <- m$terms
-    resp <- dmglm_remote_response(m$lhs, src$types, src$holder$con)
-    r <- dm_remote_fit(formula, src, c(resp$args, list(weights = weights, offset = offset)), env, dots,
-                       contrasts, present = resp$present, na = na)
-    D <- r$x
-    y <- if (length(resp$present)) dmglm_remote_factor(D, resp$present) else r$cols$y
-    cols <- dmglm_cols(y, r$cols$a, r$cols$b, if (is.null(r$cols$weights)) dmc_const(D, 1) else r$cols$weights,
-                       r$off, k, resp$cbind, weighted = !is.null(r$cols$weights))
-    fit <- dmglm_fit(D, cols, family, start, control, attr(tt, "intercept") > 0L, compress,
-                     wmsg = "negative weights not allowed")
-    if (na == "exclude") fit$na.action <- dm_remote_exclude(D)
-    fit$call <- call
-    fit$terms <- tt
-    fit$formula <- formula
-    fit$contrasts <- D$plan$contrasts
-    fit$xlevels <- D$plan$xlevels
-    fit$offset_call <- offset
-    fit$env <- env
-    fit
 }
 
 ## The response of a remote GLM as arguments: list(args, present, cbind).

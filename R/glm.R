@@ -230,37 +230,21 @@ design_glm <- function(formula, family = stats::gaussian, data, weights, na.acti
         return(dm_fe_glm(cl, parent.frame(), formula, family, if (missing(data)) NULL else data, start, control,
                          contrasts, compress, model, vcov, fixef.rm, list(...), na_kind))
     }
-    ## remote data: the response, weights and offset as SQL (remote_fit.R)
-    if (!missing(data) && dm_is_remote_source(data)) {
-        return(dm_remote_glm(formula, data, family, if (missing(weights)) NULL else substitute(weights),
-                             if (missing(offset)) NULL else substitute(offset), start, contrasts, compress,
-                             control, cl, list(...), na = na_kind, env = parent.frame()))
-    }
-    if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
-    ## the model frame, as glm() builds it
-    mf <- dmfit_model_frame(cl, c("weights", "na.action", "offset"), parent.frame())
-    mt <- attr(mf, "terms")
-    if (attr(mt, "response") == 0L) stop("The formula has no response.", call. = FALSE)
-    w <- as.vector(stats::model.weights(mf))
-    if (!is.null(w) && !is.numeric(w)) stop("'weights' must be a numeric vector", call. = FALSE)
-    off <- as.vector(stats::model.offset(mf))
-    Y <- mf[[1L]]
-    if (!is.null(off) && length(off) != NROW(Y))
-        stop(gettextf("number of offsets is %d should equal %d (number of observations)",
-                      length(off), NROW(Y)), call. = FALSE)
-    X <- design_matrix(mt, mf, contrasts.arg = contrasts)
-    cols <- dmglm_mem_cols(Y, w, off, dmglm_kind(family))
-    fit <- dmglm_fit(X, cols, family, start, control, attr(mt, "intercept") > 0L, compress,
+    ## the design and columns of a data frame or remote data (remote_fit.R)
+    P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, list(...),
+                        family = dmglm_kind(family))
+    fit <- dmglm_fit(P$x, P$cols, family, start, control, attr(P$terms, "intercept") > 0L, compress,
                      wmsg = "negative weights not allowed")
     fit$call <- cl
-    fit$terms <- mt
-    fit$formula <- stats::formula(mt)
-    fit$contrasts <- X$contrasts
-    fit$xlevels <- stats::.getXlevels(mt, mf)
-    fit$na.action <- attr(mf, "na.action")
+    fit$terms <- P$terms
+    fit$formula <- P$formula
+    fit$contrasts <- P$contrasts
+    fit$xlevels <- P$xlevels
+    fit$na.action <- P$na.action
     fit$offset_call <- cl$offset
-    fit$env <- environment(mt)
-    if (model) fit$model <- mf else fit$data <- NULL
+    fit$env <- P$env
+    ## (the data of a remote fit stay in the database: always kept)
+    if (model) fit$model <- P$frame else if (!is.null(P$frame)) fit$data <- NULL
     fit
 }
 

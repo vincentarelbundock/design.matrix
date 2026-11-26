@@ -2,8 +2,8 @@
 ##
 ## The code is split so that a later glm() fit can reuse it:
 ##
-##  * dmfit_frame():     model frame, terms, response, weights and offset,
-##                       as lm() and glm() extract them;
+##  * design_problem():  (remote_fit.R) design, response, weights and
+##                       offset, as lm() and glm() extract them;
 ##  * dmfit_check():     checks of the response, weights and offset;
 ##  * dmfit_groups():    rows that share a design pattern (the dedup
 ##                       machinery of algebra.R);
@@ -161,33 +161,22 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
     checkmate::assert_number(tol, lower = 0, finite = TRUE)
     checkmate::assert_flag(model)
     cl <- match.call()
-    ## remote data (see remote_fit.R)
-    if (!missing(data) && dm_is_remote_source(data)) {
-        return(dm_remote_lm(formula, data,
-                            weights = if (missing(weights)) NULL else substitute(weights),
-                            offset = if (missing(offset)) NULL else substitute(offset),
-                            subset = if (missing(subset)) NULL else substitute(subset),
-                            na.action = if (missing(na.action)) NULL else na.action,
-                            contrasts, compress, tol, cl, list(...), parent.frame()))
-    }
-    if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
-    ## the model frame, as lm() builds it
-    mf <- dmfit_model_frame(cl, c("subset", "weights", "na.action", "offset"), parent.frame())
-    fr <- dmfit_frame(mf, contrasts)
-    fit <- dmfit_lm(fr$design, fr$y, fr$weights, fr$offset, compress, tol,
-                    intercept = attr(fr$terms, "intercept") > 0L)
+    ## the design and columns of a data frame or remote data (remote_fit.R)
+    P <- design_problem(cl, parent.frame(), formula, if (missing(data)) NULL else data, contrasts, list(...))
+    fit <- dmfit_lm(P$x, P$y, P$w, P$off, compress, tol, intercept = attr(P$terms, "intercept") > 0L)
     fit$call <- cl
-    fit$terms <- fr$terms
-    fit$contrasts <- fr$design$contrasts
-    fit$xlevels <- stats::.getXlevels(fr$terms, mf)
-    fit$na.action <- attr(mf, "na.action")
+    fit$terms <- P$terms
+    fit$contrasts <- P$contrasts
+    fit$xlevels <- P$xlevels
+    fit$na.action <- P$na.action
     fit$offset_call <- cl$offset
-    fit$env <- environment(fr$terms)
-    if (model) {
-        fit$model <- mf
-        fit$data <- list(design = fr$design, y = fr$y, weights = fr$weights,
-                         offset = fr$offset)
-    }
+    fit$env <- P$env
+    fit$method <- switch(dm_engine(P$x), sql = if (fit$compressed) "patterns" else "SQL moments")
+    ## (the rows of the design, which later queries on a remote design reuse)
+    assign("n", fit$rows, envir = P$x$cache)
+    ## (the data of a remote fit stay in the database: always kept)
+    if (model || is.null(P$frame)) fit$data <- list(design = P$x, y = P$y, weights = P$w, offset = P$off)
+    if (model) fit$model <- P$frame
     fit
 }
 
@@ -224,25 +213,6 @@ dmfit_model_frame <- function(cl, args, env, formula = NULL) {
 dmfit_check_compress <- function(compress) {
     if (!(isTRUE(compress) || isFALSE(compress) || identical(compress, "auto")))
         stop("`compress` must be \"auto\", TRUE or FALSE.", call. = FALSE)
-}
-
-## The parts of a model frame that lm() and glm() use: terms, response,
-## weights, offset (offset() terms and the `offset` argument, summed by
-## model.offset()) and the design matrix.
-dmfit_frame <- function(mf, contrasts = NULL) {
-    mt <- attr(mf, "terms")
-    y <- dmfit_response(mf)
-    if (is.matrix(y))
-        stop("Multivariate responses are not supported.", call. = FALSE)
-    w <- as.vector(stats::model.weights(mf))
-    if (!is.null(w) && !is.numeric(w))
-        stop("'weights' must be a numeric vector", call. = FALSE)
-    offset <- as.vector(stats::model.offset(mf))
-    if (!is.null(offset) && length(offset) != NROW(y))
-        stop(gettextf("number of offsets is %d, should equal %d (number of observations)",
-                      length(offset), NROW(y)), call. = FALSE)
-    design <- design_matrix(mt, mf, contrasts.arg = contrasts)
-    list(terms = mt, y = y, weights = w, offset = offset, design = design)
 }
 
 ## The response of a model frame, as model.response(mf, "numeric") but
