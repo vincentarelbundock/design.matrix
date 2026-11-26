@@ -119,12 +119,14 @@
 #' @export
 design_lm <- function(formula, data, subset, weights, na.action, offset,
                       contrasts = NULL, compress = "auto", tol = 1e-07,
-                      model = TRUE, y = NULL, ...) {
+                      model = TRUE, y = NULL, vcov = "iid", fixef.rm = "singleton", ...) {
     if (inherits(formula, c("design_matrix", "dm_remote"))) {
         if (!missing(data) || !missing(subset) || !missing(na.action) || !is.null(contrasts))
             stop("With a design matrix, give the response as `y`; `data`, `subset`, ",
                  "`na.action` and `contrasts` do not apply.", call. = FALSE)
         if (...length()) stop("Unknown arguments: ", paste(names(list(...)), collapse = ", "), call. = FALSE)
+        if (!identical(vcov, "iid"))
+            stop("`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", call. = FALSE)
         w <- if (missing(weights)) NULL else weights
         if (inherits(formula, "dm_remote")) {
             ## a remote design (see remote_lm.R): `y` and `weights` name columns
@@ -144,6 +146,12 @@ design_lm <- function(formula, data, subset, weights, na.action, offset,
         return(fit)
     }
     if (!is.null(y)) stop("`y` applies only when the first argument is a design matrix.", call. = FALSE)
+    ## fixed effects (fe.R)
+    if (dm_fe_has_bar(formula))
+        return(dm_fe_lm(match.call(), parent.frame(), formula, contrasts, compress, tol, missing(tol),
+                        model, vcov, fixef.rm, list(...)))
+    if (!identical(vcov, "iid"))
+        stop("`vcov` other than \"iid\" requires fixed effects (y ~ x | fe).", call. = FALSE)
     dmfit_check_compress(compress)
     checkmate::assert_number(tol, lower = 0, finite = TRUE)
     checkmate::assert_flag(model)

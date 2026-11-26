@@ -43,6 +43,11 @@ static const R_CallMethodDef CallEntries[] = {
     {"dm_fe_gsum", (DL_FUNC) &dm_fe_gsum, 3},
     {"dm_fe_crosstab", (DL_FUNC) &dm_fe_crosstab, 5},
     {"dm_fe_components", (DL_FUNC) &dm_fe_components, 4},
+    {"dm_fe_struct_gsum", (DL_FUNC) &dm_fe_struct_gsum, 7},
+    {"dm_fe_code_int", (DL_FUNC) &dm_fe_code_int, 2},
+    {"dm_fe_singletons", (DL_FUNC) &dm_fe_singletons, 2},
+    {"dm_fe_ichol", (DL_FUNC) &dm_fe_ichol, 4},
+    {"dm_fe_pcg", (DL_FUNC) &dm_fe_pcg, 9},
     {"dm_omp_max_threads", (DL_FUNC) &dm_omp_max_threads, 0},
     {NULL, NULL, 0}
 };

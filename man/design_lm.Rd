@@ -17,6 +17,8 @@ design_lm(
   tol = 1e-07,
   model = TRUE,
   y = NULL,
+  vcov = "iid",
+  fixef.rm = "singleton",
   ...
 )
 

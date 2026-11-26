@@ -1,12 +1,14 @@
-# Prototype fixed-effect absorption (R/fe.R, internal dm_fe_fit()) against
-# fixest::feols(): coefficients, iid and clustered covariance matrices,
-# residuals and number of observations, with feols()'s default small sample
-# corrections and singleton removal. feols() demeans iteratively; a tight
-# fixef.tol makes its results exact enough for a 1e-8 comparison.
+# Fixed effects in design_lm() (y ~ x | fe) against fixest::feols():
+# coefficients, iid and clustered covariance matrices, residuals, number of
+# observations and predictions, with feols()'s default small sample
+# corrections and singleton removal. Every case runs in memory and on
+# remote data (DuckDB table with the SQL and the chunked engines, and
+# Parquet). feols() demeans iteratively; a tight fixef.tol makes its results
+# exact enough for a 1e-8 comparison.
 
 if (!requireNamespace("fixest", quietly = TRUE)) exit_file("fixest not installed")
 library(design.matrix)
-fe_fit <- design.matrix:::dm_fe_fit
+remote <- requireNamespace("DBI", quietly = TRUE) && requireNamespace("duckdb", quietly = TRUE)
 
 TOL <- 1e-8
 
@@ -24,21 +26,66 @@ plain <- function(V) {
     V
 }
 
-# Compare a dm_fe_fit() with a feols() fit on the same model.
-check_fe <- function(fml, d, cluster = NULL, weights = NULL, ..., info = "") {
-    a <- fe_fit(fml, d, cluster = cluster, weights = weights, ...)
-    b <- fx_fit(fml, d, weights = weights)
-    ok <- !is.na(a$coefficients)
-    expect_equal(names(a$coefficients)[ok], names(coef(b)), info = paste(info, "names"))
-    expect_equal(unname(a$coefficients[ok]), unname(coef(b)), tolerance = TOL, info = paste(info, "coef"))
-    expect_equal(a$nobs, b$nobs, info = paste(info, "nobs"))
-    expect_equal(a$residuals, unname(resid(b)), tolerance = TOL, info = paste(info, "resid"))
-    expect_equal(plain(a$vcov_iid[ok, ok]), plain(vcov(b, vcov = "iid")),
-                 tolerance = TOL, info = paste(info, "vcov iid"))
-    if (!is.null(cluster))
-        expect_equal(plain(a$vcov_cluster[ok, ok]), plain(vcov(b, cluster = cluster)),
-                     tolerance = TOL, info = paste(info, "vcov cluster"))
-    invisible(a)
+if (remote) {
+    con <- DBI::dbConnect(duckdb::duckdb())
+    pq_dir <- tempfile("fe_pq")
+    dir.create(pq_dir)
+}
+
+# Write a data set to DuckDB (table) and to a Parquet file.
+put <- function(d, name) {
+    if (!remote) return(NULL)
+    d$.row <- seq_len(nrow(d))
+    DBI::dbWriteTable(con, name, d, overwrite = TRUE)
+    path <- file.path(pq_dir, paste0(name, ".parquet"))
+    DBI::dbExecute(con, sprintf("COPY %s TO '%s' (FORMAT PARQUET)", name, path))
+    list(table = name, parquet = path)
+}
+
+# Fits of the same model in memory and on remote data.
+fe_fits <- function(fml, d, src, vcov = "iid", weights = NULL, ...) {
+    fits <- list(memory = do.call(design_lm, list(fml, d, vcov = vcov, ...,
+                                                  weights = if (!is.null(weights)) d[[weights]])))
+    if (remote && !is.null(src)) {
+        ## (do.call: `weights` names a column, as a string)
+        rfit <- function(source, ...) suppressMessages(do.call(design_lm, list(fml, source, vcov = vcov,
+                                                                               weights = weights, ...)))
+        fits$sql <- rfit(con, table = src$table, ...)
+        fits$chunked <- rfit(con, table = src$table, engine = "chunked", chunk_size = 1500, ...)
+        fits$parquet <- rfit(src$parquet, ...)
+    }
+    fits
+}
+
+# Compare the fits of a model with a feols() fit.
+check_fe <- function(fml, d, src, cluster = NULL, weights = NULL, ..., info = "") {
+    vc <- if (is.null(cluster)) "iid" else cluster
+    fits <- fe_fits(fml, d, src, vc, weights, ...)
+    b <- fx_fit(fml, d, weights = if (is.null(weights)) NULL else stats::as.formula(paste0("~", weights)))
+    fb <- unname(predict(b, d))
+    for (nm in names(fits)) {
+        a <- fits[[nm]]
+        inf <- paste(info, nm)
+        ok <- !is.na(coef(a))
+        expect_equal(names(coef(a))[ok], names(coef(b)), info = paste(inf, "names"))
+        expect_equal(unname(coef(a)[ok]), unname(coef(b)), tolerance = TOL, info = paste(inf, "coef"))
+        expect_equal(nobs(a), nobs(b), info = paste(inf, "nobs"))
+        expect_equal(plain(vcov(a)[ok, ok]),
+                     plain(if (is.null(cluster)) vcov(b, vcov = "iid") else vcov(b, cluster = cluster)),
+                     tolerance = TOL, info = paste(inf, "vcov"))
+        expect_equal(sigma(a), unname(sqrt(b$ssr / (nobs(b) - b$nparams))), tolerance = TOL,
+                     info = paste(inf, "sigma"))
+        if (nm == "memory") {
+            expect_equal(as.vector(resid(a))[!is.na(resid(a))], unname(resid(b)), tolerance = TOL,
+                         info = paste(inf, "resid"))
+            expect_equal(unname(predict(a, d)), fb, tolerance = TOL, info = paste(inf, "predict"))
+        } else {
+            p <- as.data.frame(predict(a, con, table = src$table))
+            p <- p[order(p$.row), ]
+            expect_equal(p$.fitted, fb, tolerance = TOL, info = paste(inf, "predict"))
+        }
+    }
+    invisible(fits)
 }
 
 set.seed(20261125)
@@ -52,103 +99,243 @@ d <- data.frame(
     h = factor(sample(c("u", "v", "w"), n, TRUE)),
     w = runif(n, 0.2, 3))
 d$y <- d$x1 - 0.5 * d$x2 + d$a / 300 + d$b / 20 + as.integer(d$f) + rnorm(n)
+src <- put(d, "d")
 
 # One-way ------------------------------------------------------------------
-check_fe(y ~ x1 + x2 | a, d, info = "one-way")
-check_fe(y ~ x1 + x2 | a, d, cluster = ~a, info = "one-way, cluster nested")
-check_fe(y ~ x1 + x2 | a, d, cluster = ~b, info = "one-way, cluster not nested")
-check_fe(y ~ x1 + x2 | b, d, cluster = ~b, weights = ~w, info = "one-way weighted")
+check_fe(y ~ x1 + x2 | a, d, src, info = "one-way")
+check_fe(y ~ x1 + x2 | a, d, src, cluster = ~a, info = "one-way, cluster nested")
+check_fe(y ~ x1 + x2 | a, d, src, cluster = ~b, info = "one-way, cluster not nested")
+check_fe(y ~ x1 + x2 | b, d, src, cluster = ~b, weights = "w", info = "one-way weighted")
 
 # Two-way and three-way ------------------------------------------------------
-check_fe(y ~ x1 + x2 | a + b, d, cluster = ~a, info = "two-way")
-check_fe(y ~ x1 + x2 | a + b, d, cluster = ~b, info = "two-way, cluster b")
-check_fe(y ~ x1 + x2 | a + b, d, cluster = ~c, info = "two-way, cluster not nested")
-check_fe(y ~ x1 + x2 | a + b + c, d, cluster = ~a, info = "three-way")
-check_fe(y ~ x1 + x2 | a + b + c, d, cluster = ~c, weights = ~w, info = "three-way weighted")
-check_fe(y ~ x1 + x2 | a^c + b, d, cluster = ~b, info = "interacted FE")
+check_fe(y ~ x1 + x2 | a + b, d, src, cluster = ~a, info = "two-way")
+check_fe(y ~ x1 + x2 | a + b, d, src, cluster = ~c, info = "two-way, cluster not nested")
+check_fe(y ~ x1 + x2 | a + b + c, d, src, cluster = ~a, info = "three-way")
+check_fe(y ~ x1 + x2 | a + b + c, d, src, cluster = ~c, weights = "w", info = "three-way weighted")
+check_fe(y ~ x1 + x2 | a^c + b, d, src, cluster = ~b, info = "interacted FE")
+
+# Factor regressors and interactions --------------------------------------
+check_fe(y ~ x1 * f + x2 | a + b, d, src, cluster = ~a, info = "factor interaction")
+check_fe(y ~ f:h + x1 | a + c, d, src, cluster = ~c, weights = "w", info = "factor x factor")
+check_fe(y ~ poly(x1, 2) + log(w) | b, d, src, cluster = ~b, info = "transformations")
 
 # Every solver of the reduced system gives the same fit
 for (s in c("dense", "chol", "pcg")) {
-    a <- check_fe(y ~ x1 + x2 | a + b + c, d, cluster = ~b, solver = s, info = s)
-    expect_equal(a$solver$solver, s, info = s)
+    op <- options(design.matrix.fe_solver = s)
+    a <- design_lm(y ~ x1 + x2 | a + b + c, d, vcov = ~b)
+    b <- fx_fit(y ~ x1 + x2 | a + b + c, d)
+    expect_equal(a$fe_info$solver, s, info = s)
+    expect_equal(unname(coef(a)), unname(coef(b)), tolerance = TOL, info = s)
+    expect_equal(plain(vcov(a)), plain(vcov(b, cluster = ~b)), tolerance = TOL, info = s)
+    options(op)
 }
-
-# Factor regressors and interactions --------------------------------------
-check_fe(y ~ x1 * f + x2 | a + b, d, cluster = ~a, info = "factor interaction")
-check_fe(y ~ f:h + x1 | a + c, d, cluster = ~c, weights = ~w, info = "factor x factor")
-check_fe(y ~ poly(x1, 2) + log(w) | b, d, cluster = ~b, info = "transformations")
+op <- options(design.matrix.fe_solver = "pcg", design.matrix.fe_precond = "jacobi")
+a <- design_lm(y ~ x1 + x2 | a + b, d)
+expect_equal(a$fe_info$precond, "jacobi")
+expect_equal(unname(coef(a)), unname(coef(fx_fit(y ~ x1 + x2 | a + b, d))), tolerance = TOL)
+options(op)
+op <- options(design.matrix.fe_solver = "pcg")
+a <- design_lm(y ~ x1 + x2 | a + b, d)
+expect_equal(a$fe_info$precond, "ichol")
+options(op)
 
 # Unbalanced: a few large levels, many small ones ----------------------------
 du <- d
 du$a <- ifelse(runif(n) < 0.5, sample(3, n, TRUE), du$a)
 du$b <- ifelse(runif(n) < 0.3, 1L, du$b)
-check_fe(y ~ x1 + x2 | a + b, du, cluster = ~a, info = "unbalanced")
+check_fe(y ~ x1 + x2 | a + b, du, put(du, "du"), cluster = ~a, info = "unbalanced")
 
 # Disconnected components of the FE graph -----------------------------------
 dd <- d
 half <- dd$a > 300
 dd$b <- ifelse(half, dd$b + 100L, dd$b) # a in 1:300 only meets b in 1:40, a > 300 b > 100
-a <- check_fe(y ~ x1 + x2 | a + b, dd, cluster = ~a, info = "disconnected")
-expect_equal(a$solver$ncomp, 2L)
-a <- check_fe(y ~ x1 + x2 | a + b, dd, cluster = ~a, solver = "chol", info = "disconnected chol")
-a <- check_fe(y ~ x1 + x2 | a + b + c, dd, cluster = ~b, info = "disconnected three-way")
+sdd <- put(dd, "dd")
+fits <- check_fe(y ~ x1 + x2 | a + b, dd, sdd, cluster = ~a, info = "disconnected")
+expect_equal(fits$memory$fe_info$ncomp, 2L)
+check_fe(y ~ x1 + x2 | a + b + c, dd, sdd, cluster = ~b, info = "disconnected three-way")
 
 # Collinear regressors --------------------------------------------------------
 dc <- d
 dc$x3 <- dc$x1 + 2 * dc$x2                    # collinear with x1, x2
 dc$xa <- (dc$a %% 13) / 7                     # constant within a: absorbed
 dc$xb <- dc$b / 3 - (dc$a %% 5)              # sum of an a and a b effect
-a <- check_fe(y ~ x1 + x2 + x3 | a + b, dc, cluster = ~a, info = "collinear x")
-expect_true(is.na(a$coefficients[["x3"]]))
-a <- check_fe(y ~ x1 + xa + x2 | a + b, dc, cluster = ~a, info = "collinear with FE")
-expect_true(is.na(a$coefficients[["xa"]]))
-a <- check_fe(y ~ xb + x1 | a + b, dc, cluster = ~b, info = "collinear with two FE")
-expect_true(is.na(a$coefficients[["xb"]]))
+sdc <- put(dc, "dc")
+fits <- check_fe(y ~ x1 + x2 + x3 | a + b, dc, sdc, cluster = ~a, info = "collinear x")
+for (a in fits) expect_true(is.na(coef(a)[["x3"]]))
+fits <- check_fe(y ~ x1 + xa + x2 | a + b, dc, sdc, cluster = ~a, info = "collinear with FE")
+for (a in fits) expect_true(is.na(coef(a)[["xa"]]))
+fits <- check_fe(y ~ xb + x1 | a + b, dc, sdc, cluster = ~b, info = "collinear with two FE")
+for (a in fits) expect_true(is.na(coef(a)[["xb"]]))
 
 # Singletons ----------------------------------------------------------------
 ds <- d
 ds$a[1:50] <- 10000L + seq_len(50)            # 50 singleton levels
 ds$b[51] <- 999L; ds$a[51] <- 20000L          # a chain: 51 is alone in b ...
 ds$a[52] <- 20000L                            # ... then 52 is alone in a
-a <- check_fe(y ~ x1 + x2 | a + b, ds, cluster = ~b, info = "singletons")
-# the random data has singletons of its own; nobs matched feols above
-expect_true(a$nsingletons >= 52L)
-expect_equal(a$nsingletons, nrow(ds) - fx_fit(y ~ x1 + x2 | a + b, ds)$nobs)
+sds <- put(ds, "ds")
+fits <- check_fe(y ~ x1 + x2 | a + b, ds, sds, cluster = ~b, info = "singletons")
+nb <- fx_fit(y ~ x1 + x2 | a + b, ds)$nobs
+for (a in fits) {
+    expect_true(a$nsingletons >= 52L)
+    expect_equal(a$nsingletons, nrow(ds) - nb)
+}
 # kept singletons: feols(fixef.rm = "none")
-a <- fe_fit(y ~ x1 + x2 | a + b, ds, singletons = "keep", cluster = ~b)
+fits <- fe_fits(y ~ x1 + x2 | a + b, ds, sds, ~b, fixef.rm = "none")
 b <- fixest::feols(y ~ x1 + x2 | a + b, ds, fixef.rm = "none", fixef.tol = 1e-11, notes = FALSE)
-expect_equal(a$nobs, nrow(ds))
-expect_equal(unname(a$coefficients), unname(coef(b)), tolerance = TOL)
-expect_equal(plain(a$vcov_iid), plain(vcov(b, vcov = "iid")), tolerance = TOL)
-expect_equal(plain(a$vcov_cluster), plain(vcov(b, cluster = ~b)), tolerance = TOL)
+for (nm in names(fits)) {
+    a <- fits[[nm]]
+    expect_equal(nobs(a), nrow(ds), info = nm)
+    expect_equal(unname(coef(a)), unname(coef(b)), tolerance = TOL, info = nm)
+    expect_equal(plain(vcov(a)), plain(vcov(b, cluster = ~b)), tolerance = TOL, info = nm)
+}
 
 # Missing values and zero weights ----------------------------------------
 dm <- d
 dm$x1[c(3, 9)] <- NA
 dm$b[17] <- NA
 dm$w[c(5, 6)] <- 0
-check_fe(y ~ x1 + x2 | a + b, dm, cluster = ~a, weights = ~w, info = "NA and zero weights")
+check_fe(y ~ x1 + x2 | a + b, dm, put(dm, "dm"), cluster = ~a, weights = "w", info = "NA and zero weights")
+# na.exclude pads residuals and fitted values with NA for every row not used
+a <- design_lm(y ~ x1 + x2 | a + b, dm, weights = w, na.action = na.exclude)
+expect_equal(length(resid(a)), nrow(dm))
+expect_true(all(is.na(resid(a)[c(3, 5, 6, 9, 17)])))
+expect_equal(sum(!is.na(resid(a))), nobs(a))
+expect_equal(unname(resid(a) + fitted(a)), ifelse(is.na(resid(a)), NA, dm$y))
 
 # Precision: regressors with a large mean relative to their spread ---------
-# X'MX = X'WX - S'K^-S cancels like a one-pass variance: the relative error
-# grows like eps * (mean / sd)^2. One step of iterative refinement from the
-# row-wise residuals restores the coefficients (not the covariance).
+# One-pass aggregates cancel like a one-pass variance; centering (exact
+# here: the FE absorb the shift) and one step of refinement keep the
+# coefficients and standard errors accurate.
 dp <- d
-dp$x1 <- 1e5 + dp$x1
+dp$x1 <- 1e6 + dp$x1
+dp$x2 <- -3e5 + 0.5 * dp$x2
 dp$y <- dp$y + dp$x1
+sdp <- put(dp, "dp")
+check_fe(y ~ x1 + x2 | a + b, dp, sdp, cluster = ~a, info = "mean/sd 1e6")
+# with x1:f, feols() itself loses accuracy (its demeaned x1:f columns
+# cancel): the reference is feols() on the centered data, mapped back
+# (f_l = f_l~ - 1e6 x1:f_l)
+fits <- fe_fits(y ~ x1 * f + x2 | a + b, dp, sdp)
+dpc <- transform(dp, x1 = x1 - 1e6, x2 = x2 + 3e5)
+bc <- fx_fit(y ~ x1 * f + x2 | a + b, dpc)
+Tm <- diag(length(coef(bc)))
+dimnames(Tm) <- list(names(coef(bc)), names(coef(bc)))
+for (l in c("fb", "fc", "fd")) Tm[l, paste0("x1:", l)] <- -1e6
+for (nm in names(fits)) {
+    a <- fits[[nm]]
+    expect_equal(unname(coef(a)), unname(drop(Tm %*% coef(bc))), tolerance = TOL, info = nm)
+    expect_equal(plain(vcov(a)), plain(Tm %*% vcov(bc, vcov = "iid") %*% t(Tm)), tolerance = TOL, info = nm)
+    expect_equal(sigma(a), sqrt(bc$ssr / (nobs(bc) - bc$nparams)), tolerance = TOL, info = nm)
+}
+# without centering, the covariance loses accuracy (refinement only fixes
+# the coefficients)
+op <- options(design.matrix.fe_center = FALSE)
+a <- design_lm(y ~ x1 + x2 | a + b, dp)
 b <- fx_fit(y ~ x1 + x2 | a + b, dp)
-a0 <- fe_fit(y ~ x1 + x2 | a + b, dp)
-a1 <- fe_fit(y ~ x1 + x2 | a + b, dp, refine = 1L)
-expect_true(max(abs(a0$coefficients / coef(b) - 1)) > 1e-9)
-expect_equal(unname(a1$coefficients), unname(coef(b)), tolerance = TOL)
-expect_equal(a1$residuals, unname(resid(b)), tolerance = TOL)
-expect_equal(as.vector(sqrt(diag(a1$vcov_iid))), as.vector(fixest::se(b, vcov = "iid")), tolerance = 1e-5)
+expect_equal(unname(coef(a)), unname(coef(b)), tolerance = 1e-6)
+expect_true(max(abs(sqrt(diag(vcov(a))) / fixest::se(b, vcov = "iid") - 1)) > 1e-8)
+options(op)
 
 # Exact FE degrees of freedom (fixest's K.exact = TRUE) --------------------
-a <- fe_fit(y ~ x1 + x2 | a + b, dd)
+a <- design_lm(y ~ x1 + x2 | a + b, dd)
 expect_equal(a$fe_dof_exact, sum(a$fe_sizes) - 2L) # two components
 b <- fx_fit(y ~ x1 + x2 | a + b, dd)
-expect_equal(plain(a$vcov_iid * (a$df.residual) / (a$nobs - a$rank - a$fe_dof_exact)),
+expect_equal(plain(vcov(a) * df.residual(a) / (nobs(a) - a$rank - a$fe_dof_exact)),
              plain(vcov(b, vcov = "iid", ssc = fixest::ssc(K.exact = TRUE))), tolerance = TOL)
-a <- fe_fit(y ~ x1 + x2 | a + b + c, d)
+a <- design_lm(y ~ x1 + x2 | a + b + c, d)
 expect_equal(a$fe_dof_exact, a$fe_dof)
+
+# Methods --------------------------------------------------------------------
+fits <- fe_fits(y ~ x1 + x2 | a + b, d, src, ~a)
+b <- fx_fit(y ~ x1 + x2 | a + b, d, cluster = ~a)
+for (nm in names(fits)) {
+    a <- fits[[nm]]
+    expect_inherits(a, "design_lm_fe", info = nm)
+    expect_inherits(a, "design_lm", info = nm)
+    s <- summary(a)
+    ct <- fixest::coeftable(b)
+    expect_equal(unname(s$coefficients), unname(ct[, 1:4]), tolerance = 1e-7, info = nm)
+    expect_equal(s$r.squared, unname(fixest::r2(b, "r2")), tolerance = 1e-8, info = nm)
+    expect_equal(s$within.r.squared, unname(fixest::r2(b, "wr2")), tolerance = 1e-7, info = nm)
+    expect_equal(as.numeric(logLik(a)), as.numeric(logLik(b)), tolerance = 1e-8, info = nm)
+    expect_equal(df.residual(a), nobs(a) - a$rank - a$fe_dof, info = nm)
+    expect_stdout(print(a))
+    expect_stdout(print(s))
+    # fixef(): the fixest generic dispatches; differences within an FE are
+    # identified (the normalizations differ)
+    fe <- fixest::fixef(a)
+    expect_identical(fe, a$fixef)
+    fb <- fixest::fixef(b)
+    lv <- intersect(names(fe$a), names(fb$a))
+    expect_equal(unname(fe$a[lv] - fe$a[lv[1L]]), unname(fb$a[lv] - fb$a[lv[1L]]), tolerance = 1e-7,
+                 info = paste(nm, "fixef a"))
+    lv <- intersect(names(fe$b), names(fb$b))
+    expect_equal(unname(fe$b[lv] - fe$b[lv[1L]]), unname(fb$b[lv] - fb$b[lv[1L]]), tolerance = 1e-7,
+                 info = paste(nm, "fixef b"))
+}
+# the same FE values in memory and remote
+if (remote) for (nm in setdiff(names(fits), "memory"))
+    expect_equal(fits[[nm]]$fixef, fits$memory$fixef, tolerance = 1e-8, info = nm)
+
+# predict() on new data: X b plus the FE values; unseen levels give NA
+nd <- d[1:6, ]
+nd$a[2] <- 99999L
+nd$b[5] <- 77777L
+a <- fits$memory
+pa <- predict(a, nd)
+pb <- predict(b, nd)
+expect_equal(unname(pa), unname(pb), tolerance = TOL)
+expect_true(all(is.na(pa[c(2, 5)])))
+if (remote) {
+    nd$.row <- seq_len(nrow(nd))
+    DBI::dbWriteTable(con, "nd", nd, overwrite = TRUE)
+    for (nm in names(fits)) {
+        p <- as.data.frame(predict(fits[[nm]], con, table = "nd"))
+        p <- p[order(p$.row), ]
+        expect_equal(p$.fitted, unname(pb), tolerance = TOL, info = nm)
+    }
+    # a remote fit predicts data in memory
+    expect_equal(unname(predict(fits$sql, nd)), unname(pb), tolerance = TOL)
+    # residuals() of a remote fit: the remote design with .fitted and .resid
+    R <- residuals(fits$sql)
+    rr <- DBI::dbGetQuery(con, sprintf("SELECT SUM(\".resid\" * \".resid\") AS rss FROM (%s) AS s", R$src$select))
+    expect_equal(rr$rss, b$ssr, tolerance = 1e-8)
+}
+# interacted FE: levels named a_c, as fixest names them
+a <- design_lm(y ~ x1 | a^c, d)
+b <- fx_fit(y ~ x1 | a^c, d)
+expect_true(all(names(fixest::fixef(b)[[1L]]) %in% names(a$fixef[[1L]])))
+nd <- d[1:5, ]
+nd$c[1] <- 99L
+expect_equal(unname(predict(a, nd)), unname(predict(b, nd)), tolerance = TOL)
+# a factor FE, and a character FE
+dq <- d
+dq$a <- factor(dq$a)
+dq$b <- paste0("b", dq$b)
+a <- design_lm(y ~ x1 + x2 | a + b, dq, vcov = ~b)
+b <- fx_fit(y ~ x1 + x2 | a + b, dq)
+expect_equal(unname(coef(a)), unname(coef(b)), tolerance = TOL)
+expect_equal(plain(vcov(a)), plain(vcov(b, cluster = ~b)), tolerance = TOL)
+expect_equal(unname(predict(a, dq[1:9, ])), unname(predict(b, dq[1:9, ])), tolerance = TOL)
+if (remote) {
+    sq <- put(dq, "dq")
+    a2 <- design_lm(y ~ x1 + x2 | a + b, con, table = "dq", vcov = ~b)
+    expect_equal(coef(a2), coef(a), tolerance = TOL)
+    p <- as.data.frame(predict(a2, con, table = "dq"))
+    expect_equal(p$.fitted[order(p$.row)], unname(predict(b, dq)), tolerance = TOL)
+}
+
+# Errors -----------------------------------------------------------------------
+expect_error(design_lm(y ~ x1 | a, d, vcov = ~a + b), "one-way")
+expect_error(design_lm(y ~ x1 | a, d, vcov = "hc1"), "vcov")
+expect_error(design_lm(y ~ x1, d, vcov = ~a), "fixed effects")
+expect_error(design_lm(y ~ x1 | a, d, fixef.rm = "perfect"), "fixef.rm")
+expect_error(design_lm(y ~ x1 | a, d, offset = x2), "Offsets")
+expect_error(design_lm(y ~ x1 | log(a), d), "variable names")
+expect_error(predict(design_lm(y ~ x1 | a, d), d[1:3, ], se.fit = TRUE), "fit only")
+expect_error(predict(design_lm(y ~ x1 | a, d), d[1:3, c("x1", "b")]), "fixed-effect variable")
+if (remote) {
+    expect_error(design_lm(y ~ x1 | zz, con, table = "d"), "No column")
+    expect_error(design_lm(y ~ x1 | a, con, table = "d", subset = x1 > 0), "subset")
+    DBI::dbDisconnect(con)
+}

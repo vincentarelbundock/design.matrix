@@ -45,5 +45,10 @@ SEXP dm_str_unique(SEXP);
 SEXP dm_fe_gsum(SEXP, SEXP, SEXP);
 SEXP dm_fe_crosstab(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_fe_components(SEXP, SEXP, SEXP, SEXP);
+SEXP dm_fe_struct_gsum(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP dm_fe_code_int(SEXP, SEXP);
+SEXP dm_fe_singletons(SEXP, SEXP);
+SEXP dm_fe_ichol(SEXP, SEXP, SEXP, SEXP);
+SEXP dm_fe_pcg(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP dm_omp_max_threads(void);
 #endif
