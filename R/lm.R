@@ -256,7 +256,9 @@ dmfit_response <- function(mf) {
 }
 
 ## Response minus offset, and checks of the response, weights and offset.
+## Columns: numeric vectors in memory, remote columns (primitives.R).
 dmfit_check <- function(n, y, weights, offset) {
+    if (dm_is_rcols(y)) return(dmfit_check_remote(n, y, weights, offset))
     if (n == 0L) stop("0 (non-NA) cases", call. = FALSE)
     if (is.null(y) || length(y) != n)
         stop(sprintf("The response must have %d values.", n), call. = FALSE)
@@ -269,6 +271,47 @@ dmfit_check <- function(n, y, weights, offset) {
         if (all(weights == 0)) stop("0 (non-NA) cases", call. = FALSE)
     }
     z
+}
+
+## The same checks on remote columns, in one query.
+dmfit_check_remote <- function(n, y, weights, offset) {
+    z <- if (is.null(offset)) y else y - offset
+    fr <- unclass(z)$frame
+    if (!is.null(weights)) fr <- dm_frame_later(fr, unclass(weights)$frame)
+    zs <- unclass(z)$sql
+    items <- c("COUNT(*) AS n",
+               sprintf("SUM(CASE WHEN (%s) IS NULL OR isnan(%s) OR isinf(%s) THEN 1 ELSE 0 END) AS bad_y", zs, zs, zs))
+    if (!is.null(weights)) {
+        w <- unclass(weights)$sql
+        items <- c(items,
+                   sprintf("SUM(CASE WHEN (%s) IS NULL OR isnan(%s) OR %s < 0 THEN 1 ELSE 0 END) AS bad_w", w, w, w),
+                   sprintf("SUM(CASE WHEN isinf(%s) THEN 1 ELSE 0 END) AS inf_w", w),
+                   sprintf("SUM(CASE WHEN %s <> 0 THEN 1 ELSE 0 END) AS nz", w))
+    }
+    ck <- dm_query(fr, sprintf("SELECT %s FROM (%s) AS s WHERE %s", paste(items, collapse = ", "),
+                               fr$src$select, fr$filter))
+    if (as.numeric(ck$n) == 0) stop("0 (non-NA) cases", call. = FALSE)
+    if (as.numeric(ck$bad_y) > 0) stop("NA/NaN/Inf in 'y'", call. = FALSE)
+    if (!is.null(weights)) {
+        if (as.numeric(ck$bad_w) > 0) stop("missing or negative weights not allowed", call. = FALSE)
+        if (as.numeric(ck$inf_w) > 0) stop("NA/NaN/Inf in 'weights'", call. = FALSE)
+        if (as.numeric(ck$nz) == 0) stop("0 (non-NA) cases", call. = FALSE)
+    }
+    z
+}
+
+## Number of observations (non-zero weights) and sum of the log weights.
+dmfit_wstats <- function(n, weights) {
+    if (is.null(weights)) return(list(nobs = n, sumlogw = 0))
+    if (!dm_is_rcols(weights))
+        return(list(nobs = sum(weights != 0), sumlogw = sum(log(weights[weights != 0]))))
+    s <- dm_colsum(dm_rcols(unclass(weights)$frame,
+                            c(sprintf("CASE WHEN %s <> 0 THEN 1 ELSE 0 END", unclass(weights)$sql),
+                              sprintf("CASE WHEN %s <> 0 THEN ln(%s) ELSE 0 END", unclass(weights)$sql,
+                                      unclass(weights)$sql))))
+    nobs <- s[1L]
+    if (nobs < .Machine$integer.max) nobs <- as.integer(nobs)
+    list(nobs = nobs, sumlogw = s[2L])
 }
 
 ## Groups of rows that share a design pattern, or NULL when the fit should
@@ -319,28 +362,25 @@ dmfit_lm <- function(x, y, weights = NULL, offset = NULL, compress = "auto",
                      tol = 1e-07, intercept = TRUE) {
     n <- nrow(x)
     z <- dmfit_check(n, y, weights, offset)
-    nobs <- if (is.null(weights)) n else sum(weights != 0)
-    sumlogw <- if (is.null(weights)) 0 else sum(log(weights[weights != 0]))
-    g <- dmfit_groups(x, compress)
+    st <- dmfit_wstats(n, weights)
+    nobs <- st$nobs
+    ## integers, as in lm() (remote counts are doubles)
+    if (is.double(nobs) && nobs < .Machine$integer.max) nobs <- as.integer(nobs)
+    sumlogw <- st$sumlogw
+    g <- dmp_patterns(x, z, weights, compress)
     if (!is.null(g)) {
-        ss <- dmfit_suffstats(z, weights, g$map, length(g$first))
-        ## sums that overflow (w * z beyond the range of doubles) where the
-        ## fit on the rows is finite: fit on the rows instead
-        if (!all(is.finite(ss$w), is.finite(ss$mean), is.finite(ss$within))) g <- NULL
-    }
-    if (!is.null(g)) {
-        keep <- ss$w > 0
-        xs <- x[g$first[keep], ]
-        zs <- ss$mean[keep]
-        ws <- ss$w[keep]
-        within <- ss$within
-        if (is.null(weights) && all(ws == 1)) ws <- NULL
+        xs <- g$x
+        zs <- g$z
+        ws <- g$w
+        within <- g$within
+        n <- g$rows
     } else {
         xs <- x
         zs <- z
         ws <- weights
         within <- 0
-        if (!is.null(ws) && any(ws == 0)) {
+        ## (remotely, rows with zero weight count for nothing in the sums)
+        if (!is.null(ws) && !dm_is_rcols(ws) && any(ws == 0)) {
             ok <- ws != 0
             xs <- x[ok, ]
             zs <- z[ok]
@@ -374,24 +414,58 @@ dmfit_ls <- function(x, z, w, tol, intercept) {
     p <- ncol(x)
     cn <- colnames(x)
     if (p == 0L) {
-        rss <- if (is.null(w)) sum(z^2) else sum(w * z^2)
+        rss <- if (is.null(w)) dm_colsum(z^2) else dm_colsum(w * z^2)
         return(list(coefficients = numeric(0),
                     rank = 0L, pivot = integer(0), R = matrix(0, 0, 0),
                     tol = tol, rss = rss, mss = 0, intercept = intercept))
     }
+    ## (the primitives of primitives.R: columns are numeric vectors in
+    ## memory, remote columns for a remote design)
     sw <- if (is.null(w)) NULL else sqrt(w)
-    q <- qr(if (is.null(sw)) x else sw * x, tol = tol)
-    b <- dmqr_coef(q, matrix(if (is.null(sw)) z else sw * z, ncol = 1L))
+    q <- qr(dmp_scale(x, sw), tol = tol)
+    Y <- if (is.null(sw)) z else sw * z
+    b <- dmqr_coef(q, if (dm_is_rcols(Y)) Y else matrix(Y, ncol = 1L))
     beta <- dmqr_full(q, b)[, 1L]
-    f <- drop(x %*% beta)
+    f <- dmp_mult(x, beta, along = list(z, w))
+    if (!dm_is_rcols(f)) f <- drop(f)
     r <- z - f
     ww <- if (is.null(w)) 1 else w
-    rss <- sum(ww * r^2)
-    mss <- if (intercept) {
-        fbar <- if (is.null(w)) mean(f) else sum(w * f) / sum(w)
-        sum(ww * (f - fbar)^2)
+    mo <- attr(b, "moments")
+    rss <- NULL
+    if (dm_is_rcols(f) && !is.null(mo)) {
+        ## remotely, from the moments of the solution (no pass over its
+        ## products): rss = z'Wz - b.h, mss = b'Gb - (sum w f)^2 / sum w, with
+        ## the intercept column of G giving sum w f; an exact pass when
+        ## cancellation would cost accuracy
+        zz <- dm_colsum(dmc_cbind(ww * z^2, ww + 0 * z))
+        bh <- sum(mo$b * mo$h)
+        rss_m <- zz[1L] - bh
+        ic <- match(which(colnames(x) == "(Intercept)"), q$pivot[seq_len(q$rank)])
+        if (rss_m > 1e-6 * zz[1L] && (!intercept || !is.na(ic))) {
+            rss <- rss_m
+            mss <- if (intercept) bh - sum(mo$b * mo$G[, ic])^2 / zz[2L] else bh
+            mss <- max(mss, 0)
+        }
+    }
+    if (!is.null(rss)) {
+        ## done
+    } else if (dm_is_rcols(f)) {
+        ## remotely, one pass: sums of w r^2, w f, w f^2 and w
+        s <- dm_colsum(dmc_cbind(ww * r^2, ww * f, ww * f^2, ww + 0 * f))
+        rss <- s[1L]
+        mss <- if (intercept) max(s[3L] - s[2L]^2 / s[4L], 0) else s[3L]
     } else {
-        sum(ww * f^2)
+    rss <- dm_colsum(ww * r^2)
+    mss <- if (intercept) {
+        fbar <- if (is.null(w)) {
+            if (dm_is_rcols(f)) dm_colsum(f) / dm_nrows(f) else mean(f)
+        } else {
+            dm_colsum(w * f) / dm_colsum(w)
+        }
+        dm_colsum(ww * (f - fbar)^2)
+    } else {
+        dm_colsum(ww * f^2)
+    }
     }
     coef <- beta
     coef[setdiff(seq_len(p), q$pivot[seq_len(q$rank)])] <- NA_real_
@@ -438,9 +512,9 @@ dmfit_data <- function(object, what) {
 }
 
 ## X b for a design, without the offset.
-dmfit_linpred <- function(object, D) {
-    if (ncol(D) == 0L) return(rep(0, nrow(D)))
-    drop(D %*% dmfit_beta(object))
+dmfit_linpred <- function(object, D, along = list()) {
+    if (ncol(D) == 0L) return(if (inherits(D, "dm_remote")) dmc_const(D, 0) else rep(0, nrow(D)))
+    dmp_mult(D, dmfit_beta(object), along)
 }
 
 #' @export
@@ -522,14 +596,9 @@ residuals.design_lm <- function(object, ...) {
 
 #' @export
 fitted.design_lm <- function(object, ...) {
-    ## a remote fit: a table with .fitted and .resid
-    if (isTRUE(object$remote)) return(dm_remote_lm_table(object, resid = TRUE))
-    dat <- dmfit_data(object, "fitted()")
-    D <- dat$design
-    f <- dmfit_linpred(object, D)
-    if (!is.null(dat$offset)) f <- f + dat$offset
-    names(f) <- dimnames(D)[[1L]]
-    stats::napredict(object$na.action, f)
+    ## (one implementation with predict(): a vector in memory; a table with
+    ## .fitted and .resid for a remote fit)
+    dmfit_predict(object, resid = isTRUE(object$remote), what = "fitted()")
 }
 
 #' @param object A `"design_lm"` object.
@@ -554,84 +623,128 @@ predict.design_lm <- function(object, newdata, se.fit = FALSE,
     checkmate::assert_flag(se.fit)
     checkmate::assert_number(level, lower = 0, upper = 1)
     no_data <- missing(newdata) || is.null(newdata)
-    ## a remote fit: a table of predictions on its rows
-    if (no_data && isTRUE(object$remote))
-        return(dm_remote_lm_table(object, se.fit = se.fit, interval = interval, level = level))
-    if (no_data) {
-        dat <- dmfit_data(object, "predict() without `newdata`")
-        D <- dat$design
-        off <- dat$offset
-        na_act <- object$na.action
-    } else {
-        if (dm_is_remote_source(newdata))
-            return(dm_remote_lm_table(object, newdata, na.action, list(...), se.fit = se.fit,
-                                      interval = interval, level = level, rankdeficient = rankdeficient,
-                                      tol = tol))
-        if (is.null(object$spec))
-            stop("This design cannot be applied to new data.", call. = FALSE)
-        D <- design_matrix(object$spec, newdata, na.action = na.action)
-        off <- dmfit_new_offset(object, newdata, D)
-        na_act <- NULL
+    dmfit_predict(object, if (no_data) NULL else newdata, na.action, list(...), se.fit = se.fit,
+                  interval = interval, level = level, rankdeficient = rankdeficient, tol = tol)
+}
+
+## The rows to predict on: the design D (in memory or remote), its offset
+## (a column, or NULL), the weights of the training rows (for prediction
+## intervals) and, for a remote fit on its rows, the response minus offsets
+## (for residuals). One description for both backends.
+dmfit_predict_rows <- function(object, newdata, na.action, dots, what) {
+    if (is.null(newdata)) {
+        if (isTRUE(object$remote)) {
+            D <- object$remote_design
+            return(list(D = D, off = dmp_column(D, object$remote_offset), w = dmp_column(D, object$remote_w),
+                        z = dmp_column(D, object$remote_z), training = TRUE, na_act = NULL))
+        }
+        dat <- dmfit_data(object, what)
+        return(list(D = dat$design, off = dat$offset, w = dat$weights, z = NULL, training = TRUE,
+                    na_act = object$na.action))
     }
-    fit <- dmfit_linpred(object, D)
-    if (!is.null(off)) fit <- fit + off
-    names(fit) <- dimnames(D)[[1L]]
+    if (is.null(object$spec)) stop("This design cannot be applied to new data.", call. = FALSE)
+    if (dm_is_remote_source(newdata)) {
+        D <- do.call(design_matrix, c(list(object$spec, newdata, na.action = na.action), dots))
+        no <- dm_remote_new_offset(object, D)
+        return(list(D = no$D, off = dmp_column(no$D, no$off), w = NULL, z = NULL, training = FALSE, na_act = NULL))
+    }
+    D <- design_matrix(object$spec, newdata, na.action = na.action)
+    list(D = D, off = dmfit_new_offset(object, newdata, D), w = NULL, z = NULL, training = FALSE, na_act = NULL)
+}
+
+## Predictions, standard errors, intervals and non-estimable cases of a
+## linear fit, computed once on the primitives (primitives.R); the result is
+## a vector, matrix or list in memory (as predict.lm()), a table remotely.
+dmfit_predict <- function(object, newdata = NULL, na.action = stats::na.pass, dots = list(),
+                          se.fit = FALSE, interval = "none", level = 0.95,
+                          rankdeficient = "warnif", tol = 1e-06, resid = FALSE, what = "predict() without `newdata`") {
+    rw <- dmfit_predict_rows(object, newdata, na.action, dots, what)
+    D <- dm_remote_unscaled_or(rw$D)
+    no_data <- is.null(newdata)
+    fit <- dmfit_linpred(object, D, along = list(rw$off, rw$w, rw$z))
+    xb <- fit
+    if (!is.null(rw$off)) fit <- fit + rw$off
+    nonest <- NULL
     ## as predict.lm(), only predictions on new data are checked
     if (!no_data && object$rank < length(object$coefficients)) {
         msg <- gettext("prediction from rank-deficient fit")
         if (rankdeficient == "simple") {
-            warning(gettextf("%s; consider predict(., rankdeficient=\"NA\")", msg),
-                    call. = FALSE)
+            warning(gettextf("%s; consider predict(., rankdeficient=\"NA\")", msg), call. = FALSE)
         } else {
             checkmate::assert_number(tol, lower = 0)
-            nonest <- dmfit_nonestimable(object, D, tol)
+            nonest <- dmfit_nonestimable(object, D, tol, along = list(fit))
+            k <- if (dm_is_rcols(nonest)) dm_colsum(dmc_ifelse(nonest, 1, 0)) else sum(nonest, na.rm = TRUE)
             if (startsWith(rankdeficient, "NA")) {
-                fit[nonest] <- NA
-                if (rankdeficient == "NAwarn" && length(nonest))
-                    warning(gettextf("%s: NAs produced for non-estimable cases", msg),
-                            call. = FALSE)
+                fit <- if (dm_is_rcols(nonest)) dmc_ifelse(nonest, NA_real_, fit) else replace(fit, which(nonest), NA)
+                if (rankdeficient == "NAwarn" && k > 0)
+                    warning(gettextf("%s: NAs produced for non-estimable cases", msg), call. = FALSE)
+                nonest <- NULL
             } else {
-                if (rankdeficient == "warnif" && length(nonest))
-                    warning(gettextf("%s; attr(*, \"non-estim\") has doubtful cases", msg),
-                            call. = FALSE)
-                if (rankdeficient == "non-estim" || length(nonest))
-                    attr(fit, "non-estim") <- nonest
+                if (rankdeficient == "warnif" && k > 0)
+                    warning(gettextf("%s; attr(*, \"non-estim\") has doubtful cases", msg), call. = FALSE)
+                if (rankdeficient != "non-estim" && k == 0) nonest <- NULL
             }
         }
     }
+    se <- lwr <- upr <- NULL
+    if (se.fit || interval != "none") {
+        ## the unscaled covariance with aliased rows and columns zeroed, then
+        ## the residual variance (NaN for a saturated fit, as in predict.lm())
+        res_var <- object$sigma^2
+        V <- dmfit_vcov(object, 1)
+        V[is.na(V)] <- 0
+        ip <- if (ncol(D) == 0L) dmc_const(fit, 0) else dmp_quad(D, V, along = list(fit))
+        se <- sqrt(ip * res_var)
+        if (interval != "none") {
+            pred_var <- res_var
+            if (interval == "prediction") {
+                ## the warnings and weights of predict.lm()
+                if (no_data) {
+                    warning("predictions on current data refer to _future_ responses\n", call. = FALSE)
+                    if (!is.null(rw$w)) {
+                        pred_var <- res_var / rw$w
+                        warning("assuming prediction variance inversely proportional to weights used for fitting\n",
+                                call. = FALSE)
+                    }
+                } else if (object$weighted) {
+                    warning("Assuming constant prediction variance even though model fit is weighted\n",
+                            call. = FALSE)
+                }
+            }
+            tq <- stats::qt((1 - level) / 2, object$df.residual)
+            hw <- tq * if (interval == "confidence") se else sqrt(se^2 + pred_var)
+            lwr <- fit + hw
+            upr <- fit - hw
+        }
+    }
+    if (inherits(D, "dm_remote")) {
+        cols <- list(.fitted = fit)
+        if (resid) cols$.resid <- rw$z - xb
+        if (!is.null(se) && se.fit) cols$.se.fit <- se
+        if (!is.null(lwr)) cols$.lwr <- lwr
+        if (!is.null(upr)) cols$.upr <- upr
+        if (!is.null(nonest)) cols$.nonestim <- nonest
+        out <- dmp_output(rw$D, cols)
+        if (rw$training && identical(object$remote_na, "exclude")) out <- dm_remote_pad(out, object$remote_design)
+        if (se.fit) {
+            attr(out, "df") <- object$df.residual
+            attr(out, "residual.scale") <- object$sigma
+        }
+        return(out)
+    }
+    ## in memory: as predict.lm()
+    names(fit) <- dimnames(D)[[1L]]
+    if (!is.null(nonest)) {
+        ne <- which(nonest)
+        names(ne) <- dimnames(D)[[1L]][ne]
+        attr(fit, "non-estim") <- ne
+    }
+    na_act <- rw$na_act
     if (!se.fit && interval == "none") {
         return(if (is.null(na_act)) fit else stats::napredict(na_act, fit))
     }
-    ## the unscaled covariance with aliased rows and columns zeroed, then the
-    ## residual variance (NaN for a saturated fit, as in predict.lm())
-    res_var <- object$sigma^2
-    V <- dmfit_vcov(object, 1)
-    V[is.na(V)] <- 0
-    ip <- if (ncol(D) == 0L) rep(0, nrow(D)) else quadratic_diagonal(D, V)
-    se <- sqrt(ip * res_var)
     names(se) <- names(fit)
-    res <- fit
-    if (interval != "none") {
-        pred_var <- res_var
-        if (interval == "prediction") {
-            ## the warnings and weights of predict.lm()
-            if (no_data) {
-                warning("predictions on current data refer to _future_ responses\n",
-                        call. = FALSE)
-                if (!is.null(dat$weights)) {
-                    pred_var <- res_var / dat$weights
-                    warning("assuming prediction variance inversely proportional to weights used for fitting\n",
-                            call. = FALSE)
-                }
-            } else if (object$weighted) {
-                warning("Assuming constant prediction variance even though model fit is weighted\n",
-                        call. = FALSE)
-            }
-        }
-        tq <- stats::qt((1 - level) / 2, object$df.residual)
-        hw <- tq * if (interval == "confidence") se else sqrt(se^2 + pred_var)
-        res <- cbind(fit = fit, lwr = fit + hw, upr = fit - hw)
-    }
+    res <- if (interval != "none") cbind(fit = fit, lwr = lwr, upr = upr) else fit
     if (!is.null(na_act)) {
         res <- stats::napredict(na_act, res)
         se <- stats::napredict(na_act, se)
@@ -646,7 +759,7 @@ predict.design_lm <- function(object, newdata, se.fit = FALSE,
 ## Rows of D whose predictions are not estimable from a rank-deficient fit:
 ## rows with a component, relative to their norm, in the null space of the
 ## design (as predict.lm() determines them).
-dmfit_nonestimable <- function(object, D, tol) {
+dmfit_nonestimable <- function(object, D, tol, along = list()) {
     p <- length(object$coefficients)
     k <- object$rank
     tR <- t(object$R)
@@ -654,12 +767,11 @@ dmfit_nonestimable <- function(object, D, tol) {
     nb <- qr.Q(base::qr(tR))[, (k + 1L):p, drop = FALSE]
     B <- matrix(0, p, p - k)
     B[object$pivot, ] <- nb
-    Xb <- D %*% B
-    Xb_norm <- sqrt(rowSums(Xb^2))
-    X_norm <- sqrt(quadratic_diagonal(D, diag(1, p)))
-    nonest <- which(tol * X_norm <= Xb_norm)
-    names(nonest) <- dimnames(D)[[1L]][nonest]
-    nonest
+    ## (a logical vector in memory, a logical column remotely)
+    Xb <- dmp_mult(D, B, along)
+    Xb_norm <- sqrt(dmc_rowsums(Xb * Xb))
+    X_norm <- sqrt(dmp_quad(D, diag(1, p), along = list(Xb_norm)))
+    tol * X_norm <= Xb_norm
 }
 
 ## The offset of new data: offset() terms of the formula and the `offset`

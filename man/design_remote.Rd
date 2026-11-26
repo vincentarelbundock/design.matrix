@@ -4,12 +4,18 @@
 \alias{design_remote}
 \alias{colSums,dm_remote-method}
 \alias{colMeans,dm_remote-method}
+\alias{rowSums,dm_remote-method}
+\alias{rowMeans,dm_remote-method}
 \alias{summary.dm_remote}
 \title{Out-of-core designs on DuckDB}
 \usage{
 \S4method{colSums}{dm_remote}(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE)
 
 \S4method{colMeans}{dm_remote}(x, na.rm = FALSE, dims = 1, ..., group = NULL, reorder = TRUE)
+
+\S4method{rowSums}{dm_remote}(x, na.rm = FALSE, dims = 1, ...)
+
+\S4method{rowMeans}{dm_remote}(x, na.rm = FALSE, dims = 1, ...)
 
 \method{summary}{dm_remote}(object, sql = FALSE, ...)
 }
@@ -194,12 +200,15 @@ refuses). Compression stays exact, since the computed values are columns
 of that table. \code{na.action} can be \code{\link[=na.omit]{na.omit()}} (default), \code{\link[=na.exclude]{na.exclude()}},
 \code{\link[=na.fail]{na.fail()}} or \code{\link[=na.pass]{na.pass()}}, with the results or errors of \code{\link[=lm]{lm()}}.
 
-With few design patterns, the fit is compressed (see \emph{Compression});
-otherwise it is computed from \verb{X'WX}, \verb{X'Wy} and \verb{y'Wy} with \code{\link[=lm]{lm()}}'s
-column selection, numeric variables centered when that is an exact
-transform of the design. Coefficients, covariance, residual standard
-error, degrees of freedom, \code{logLik()}, \code{AIC()}, \code{BIC()} and \code{summary()}
-are those of \code{\link[=lm]{lm()}} on the same rows, up to rounding.
+The fit is the same algorithm as in memory, on remote primitives: with
+few design patterns it is compressed (see \emph{Compression}); otherwise it
+runs \link[=design_qr]{qr()} of the remote design (\verb{X'WX} in the database,
+columns judged with \code{\link[=lm]{lm()}}'s rule, suspect columns from products with
+the data), with the factor's values computed with numeric variables
+shifted when that is an exact transform of the design (so that \code{x + 1e7}
+keeps its accuracy). Coefficients, aliased columns, covariance, residual
+standard error, degrees of freedom, \code{logLik()}, \code{AIC()}, \code{BIC()} and
+\code{summary()} are those of \code{\link[=lm]{lm()}} on the same rows, up to rounding.
 
 Results that have one value per row are tables in the database (names of
 temporary views, of class \code{dm_remote_table}, with all the columns of the
@@ -209,8 +218,8 @@ remote data): \code{fitted(fit)} (columns \code{.fitted} and \code{.resid}; with
 \code{.fitted}; with \code{se.fit = TRUE}, \code{.se.fit}, and the attributes \code{df} and
 \code{residual.scale}; with intervals, \code{.lwr} and \code{.upr}; for a rank-deficient
 fit, \code{.nonestim}, the non-estimable cases flagged by \code{rankdeficient} as in
-\code{\link[stats:predict.lm]{stats::predict.lm()}}, with its warnings). Standard errors, intervals and
-non-estimability are computed in batches of rows; the fit alone in SQL.
+\code{\link[stats:predict.lm]{stats::predict.lm()}}, with its warnings), computed by the same code as
+in memory, in SQL.
 \code{residuals(fit)} returns the remote design of the fit with two more
 columns, \code{.fitted} and \code{.resid}, which can scale its rows: for
 heteroskedasticity-consistent and clustered standard errors,
@@ -238,10 +247,6 @@ attribute \code{"non-estim"}), and \code{residuals()}, a remote design.
 its columns, which every table keeps.
 \item \code{compress = "auto"} decides from other evidence than in memory (see
 \emph{Compression}); the results are the same either way.
-\item Without compression, aliased columns are detected from the centered
-\verb{X'WX}, with \code{\link[=lm]{lm()}}'s rule but without a refinement from the data: the
-same columns as \code{\link[=lm]{lm()}} unless a column's residual is within rounding
-of \code{tol}.
 }
 }
 

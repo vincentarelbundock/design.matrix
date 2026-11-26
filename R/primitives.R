@@ -37,7 +37,9 @@
 ##   ==  !=  <  >  <=  >=  &  |  !
 ##   exp log sqrt abs log1p expm1 log2 log10 cos sin tan floor ceiling sign
 ##                         (Math group; log has one argument)
-##   dmc_pmin dmc_pmax dmc_ifelse dmc_rowsums
+##   dmc_pmin dmc_pmax dmc_ifelse dmc_rowsums dmc_cbind dmc_col(x, j)
+##   dmc_const(like, value) dmc_lgamma dmc_round (half to even)
+##   dmc_is_finite dmc_is_nan (NaN-safe) dmc_on(col, x) (same SQL, rows of x)
 ##   dmc_pnorm dmc_qnorm dmc_dnorm dmc_pcauchy
 ##                         (remotely the DuckDB macros of dm_sql_macros(), as
 ##                         R computes them: pnorm/dnorm/pcauchy to rounding,
@@ -72,18 +74,30 @@
 ##                            rowsum()'s warning): G x p matrix, groups sorted
 ##                            as rowsum() sorts them, row names the labels
 ##   dmp_groupsum(col, group) sums of a column (k columns) within groups:
-##                            G x k matrix, as rowsum(col, group)
+##                            G x k matrix, as rowsum(col, group) (NA for a
+##                            group with a missing value)
+##   dmc_codes(codes, G)      a grouping as integer codes 1..G: grouped sums
+##                            then return all G groups in code order, without
+##                            labels, from one-pass C kernels in memory
+##   dmp_colsums_groups(x, groups, extra)
+##                            several coded groupings at once: per grouping,
+##                            list(S = G x p, n = G sums of the scale, extra =
+##                            G x k sums of scale * extra); one pass of the
+##                            structured kernel in memory
 ##   dmp_crosstab(a, b, w)    for two grouping columns, the sums of w (counts
 ##                            without w) for each pair of groups: a
 ##                            Matrix::dgCMatrix, rows the sorted groups of a,
-##                            columns those of b
+##                            columns those of b (labels as.character() of
+##                            the values, as in memory); with dmc_codes(), the
+##                            Ga x Gb matrix in code order
 ##   dmp_mult(x, B, along)    X B (B a p-vector or p x k matrix) as a column
+##                            (in memory a vector for a vector B)
 ##   dmp_quad(x, V, along)    rowSums((X V) * X), V p x p symmetric positive
 ##                            semi-definite, as a column
 ##   dm_colsum(col)           sums over rows: a number per column
 ##   dmp_colnorms(col)        Euclidean norms of the columns
 ##   dm_nrows(x)              number of rows of a design or column
-##   dmp_patterns(x, z, w, compress)
+##   dmp_patterns(x, z, w, compress, keys = NULL)
 ##                            compressed least squares: when rows with the
 ##                            same design inputs are worth grouping, a list
 ##                            with x (the design of the patterns, in memory),
@@ -95,7 +109,19 @@
 ##                            "auto", TRUE or FALSE. A weighted least squares
 ##                            fit of z on x with weights w gives the fit on
 ##                            every row; its residual sum of squares plus
-##                            `within` is that of the fit on every row.
+##                            `within` is that of the fit on every row. With
+##                            `keys` (a column, k columns), patterns are also
+##                            split by their values, returned as `keys`
+##                            (one row per pattern).
+##   dmp_subset(x, keep)      the design of the rows where the logical column
+##                            keep is TRUE (remotely also a DBI::SQL()
+##                            predicate); a new remote design
+##   dmp_resolve(x, exprs, env, logical, data)
+##                            columns for the arguments of a fit (response,
+##                            weights, offset, subset): column names, SQL(),
+##                            R expressions (in SQL when translatable, else
+##                            evaluated in R into a temporary table); returns
+##                            list(x, cols, evaluated)
 ##   dmp_output(x, cols)      row-wise results of an algorithm: in memory a
 ##                            data frame of the columns (one row per row of x);
 ##                            remotely a temporary view with the columns of
@@ -125,30 +151,33 @@
 ##                                use a column or s * D
 ##   colSums/colMeans(s * D,      vectors / G x p matrices          done
 ##     group = col)
-##   rowSums/rowMeans(D)          table (column .rowsum / .rowmean) to do
-##   quadratic_diagonal(D, V)     table (column .quad), dmp_quad    to do
-##   qr(D)                        Cholesky of X'X with lm()'s rule, to do (WIP)
-##                                suspects judged from products
-##   qr.coef, qr.R, solve         numbers (as in memory)            to do
-##   qr.fitted, qr.resid, qr.qy,  tables (row-wise results)         to do
-##     qr.Q
-##   qr.qty                       as in memory (p values)           to do
-##   as(D, "CsparseMatrix")       collected, same guard as          to do
-##                                as.matrix
-##   D[i, ]                       i a logical remote column or a    to do
-##                                DBI::SQL() predicate: a remote
-##                                design over those rows; numeric
-##                                indices refused (no row order)
+##   rowSums/rowMeans(D)          table (column .rowsum / .rowmean) done
+##   quadratic_diagonal(D, V)     table (column .quad)              done
+##   qr(D)                        dmqr_chol on X'X with lm()'s      done
+##                                rule, suspects from products
+##   qr.coef, qr.qty, qr.R, solve numbers (as in memory)            done
+##   qr.fitted, qr.resid, qr.qy,  tables (.fitted, .resid, .qy,     done
+##     qr.Q                       .Q1...)
+##   as(D, "CsparseMatrix")       collected, same guard as          done
+##                                as.matrix (option to raise)
+##   D[i, ]                       i a logical remote column or a    done
+##                                DBI::SQL() predicate; numeric or
+##                                logical vectors refused
 ##   s * D, D / s, -D             row scaling (number, column       done
 ##                                name, SQL(), column)
-##   D1 + D2, D1 - D2             proposal: refused (combinations of to decide
-##                                two remote designs)
-##   finite_rows(D) (internal)    a logical column                  to do
+##   D1 + D2, D1 - D2             refused (operator decision)       done (error)
+##   finite_rows(D) (internal)    a logical column                  done
+##
+## Tests: test_primitives.R (the layer), test_parity_ops.R (every operation
+## above on the same data, in memory and remote: SQL, chunked, Parquet).
 
 ## ---- remote columns ----
 
 dm_rcols <- function(frame, sql) {
-    structure(list(frame = frame, sql = as.character(sql)), class = "dm_rcols")
+    ## (parenthesized, so that expressions compose with any operator)
+    sql <- as.character(sql)
+    sql <- sprintf("(%s)", sql)
+    structure(list(frame = frame, sql = sql), class = "dm_rcols")
 }
 
 dm_is_rcols <- function(x) inherits(x, "dm_rcols")
@@ -177,7 +206,8 @@ dm_rcols_frame <- function(...) {
 ## SQL of an operand (a remote column, or a number)
 dm_rcols_operand <- function(x) {
     if (dm_is_rcols(x)) return(unclass(x)$sql)
-    if (is.logical(x) && length(x) == 1L && !is.na(x)) return(if (x) "TRUE" else "FALSE")
+    if (length(x) == 1L && is.na(x)) return("CAST(NULL AS DOUBLE)")
+    if (is.logical(x) && length(x) == 1L) return(if (x) "TRUE" else "FALSE")
     if (is.numeric(x) && length(x) == 1L) return(dm_sql_double(x))
     stop("Remote columns combine only with numbers and other remote columns.", call. = FALSE)
 }
@@ -239,6 +269,14 @@ dmc_ifelse <- function(test, yes, no) {
     if (is.null(f)) return(ifelse(test, yes, no))
     dm_rcols(f, sprintf("(CASE WHEN %s THEN %s ELSE %s END)", dm_rcols_operand(test),
                         dm_rcols_operand(yes), dm_rcols_operand(no)))
+}
+
+## Columns side by side (cbind).
+dmc_cbind <- function(...) {
+    args <- list(...)
+    f <- do.call(dm_rcols_frame, args)
+    if (is.null(f)) return(do.call(cbind, args))
+    dm_rcols(f, unlist(lapply(args, dm_rcols_operand)))
 }
 
 dmc_rowsums <- function(x) {
@@ -369,33 +407,40 @@ dmp_colsums <- function(x, group = NULL) {
 
 ## SQL GROUP BY over the frame of columns: list(groups (a data frame of the
 ## group values, sorted as rowsum() sorts them), sums (matrix)).
-dm_group_query <- function(groups, values) {
+dm_group_query <- function(groups, values, nulls = FALSE) {
     fr <- do.call(dm_rcols_frame, c(groups, values))
     gs <- vapply(groups, function(g) unclass(g)$sql, "")
     vs <- unlist(lapply(values, function(v) unclass(v)$sql))
     items <- c(sprintf("%s AS g%d", gs, seq_along(gs)),
-               if (length(vs)) sprintf("SUM(CAST(%s AS DOUBLE)) AS v%d", vs, seq_along(vs)) else "COUNT(*) AS v1")
+               if (length(vs)) sprintf("SUM(CAST(%s AS DOUBLE)) AS v%d", vs, seq_along(vs)) else "COUNT(*) AS v1",
+               if (nulls && length(vs)) sprintf("SUM(CASE WHEN (%s) IS NULL THEN 1 ELSE 0 END) AS n%d", vs, seq_along(vs)))
     res <- dm_query(fr, sprintf("SELECT %s FROM (%s) AS s WHERE %s GROUP BY ALL",
                                 paste(items, collapse = ", "), fr$src$select, fr$filter))
     res
 }
 
 dmp_groupsum <- function(col, group) {
+    if (dm_is_codes(group)) return(dmp_groupsum_codes(col, group))
     if (!dm_is_rcols(col) && !dm_is_rcols(group)) {
-        out <- rowsum(if (is.matrix(col)) col else matrix(col, ncol = 1L), group, reorder = TRUE)
-        return(out)
+        return(rowsum(if (is.matrix(col)) col else matrix(col, ncol = 1L), group, reorder = TRUE))
     }
-    res <- dm_group_query(list(group), list(col))
+    res <- dm_group_query(list(group), list(col), nulls = TRUE)
     ug <- sort(unique(res$g1), na.last = TRUE, method = "quick")
     if (anyNA(ug)) warning("missing values for 'group'", call. = FALSE)
     i <- match(res$g1, ug)
     k <- length(col)
     out <- matrix(0, length(ug), k, dimnames = list(as.character(ug), NULL))
-    for (j in seq_len(k)) out[i, j] <- as.double(res[[paste0("v", j)]])
+    for (j in seq_len(k)) {
+        v <- as.double(res[[paste0("v", j)]])
+        ## a group with a missing value sums to NA, as rowsum() gives
+        v[as.numeric(res[[paste0("n", j)]]) > 0] <- NA_real_
+        out[i, j] <- v
+    }
     out
 }
 
 dmp_crosstab <- function(a, b, w = NULL) {
+    if (dm_is_codes(a) && dm_is_codes(b)) return(dmp_crosstab_codes(a, b, w))
     if (!dm_is_rcols(a) && !dm_is_rcols(b) && !dm_is_rcols(w)) {
         ua <- sort(unique(a), na.last = TRUE, method = "quick")
         ub <- sort(unique(b), na.last = TRUE, method = "quick")
@@ -405,6 +450,7 @@ dmp_crosstab <- function(a, b, w = NULL) {
                                     dimnames = list(as.character(ua), as.character(ub))))
     }
     res <- dm_group_query(list(a, b), if (is.null(w)) list() else list(w))
+    ## the group values as in memory: sorted in R, labels as.character()
     ua <- sort(unique(res$g1), na.last = TRUE, method = "quick")
     ub <- sort(unique(res$g2), na.last = TRUE, method = "quick")
     Matrix::sparseMatrix(i = match(res$g1, ua), j = match(res$g2, ub), x = as.double(res$v1),
@@ -413,7 +459,7 @@ dmp_crosstab <- function(a, b, w = NULL) {
 }
 
 dmp_mult <- function(x, B, along = list()) {
-    if (!inherits(x, "dm_remote")) return(x %*% B)
+    if (!inherits(x, "dm_remote")) return(if (is.matrix(B)) x %*% B else drop(x %*% B))
     x <- dm_along_frame(x, along)
     B <- if (is.matrix(B)) B else matrix(B, ncol = 1L)
     nm <- paste0("__dm_p", substr(dm_tmp_name("p"), 3L, 10L), "_", seq_len(ncol(B)))
@@ -444,10 +490,18 @@ dmp_quad <- function(x, V, along = list()) {
 
 ## Compressed least squares (see the header); the in-memory method groups
 ## identical rows (lm.R), the remote one is one GROUP BY (remote_compress.R).
-dmp_patterns <- function(x, z, w = NULL, compress = "auto") {
+dmp_patterns <- function(x, z, w = NULL, compress = "auto", keys = NULL) {
     if (inherits(x, "dm_remote")) {
         mode <- if (isTRUE(compress)) TRUE else if (isFALSE(compress)) FALSE else dm_compress_mode()
-        pt <- dm_remote_patterns(x, unclass(z)$sql, if (!is.null(w)) unclass(w)$sql, within = TRUE, mode = mode)
+        if (!is.null(keys)) {
+            ## extra key columns: added to the source, and to the GROUP BY
+            nm <- paste0("__dm_key", seq_along(keys))
+            x <- dm_with_columns(x, keys, nm)
+            z <- dm_rcols(x, unclass(z)$sql)
+            if (!is.null(w)) w <- dm_rcols(x, unclass(w)$sql)
+        }
+        pt <- dm_remote_patterns(x, unclass(z)$sql, if (!is.null(w)) unclass(w)$sql, within = TRUE,
+                                 mode = mode, group = if (!is.null(keys)) nm)
         if (is.null(pt)) return(NULL)
         pd <- dm_pattern_design(x, pt$P[dm_compress_keys(x)])
         k <- pd$keep
@@ -456,17 +510,27 @@ dmp_patterns <- function(x, z, w = NULL, compress = "auto") {
         ws <- sw[pos]
         if (is.null(w) && all(ws == 1)) ws <- NULL
         return(list(x = pd$design[pos, ], z = pt$sy[k, 1L][pos] / sw[pos], w = ws,
-                    within = sum(pt$within[k]), rows = sum(pt$n[k])))
+                    within = sum(pt$within[k]), rows = sum(pt$n[k]),
+                    keys = if (!is.null(keys)) as.matrix(pt$P[k[pos], nm, drop = FALSE])))
     }
     g <- dmfit_groups(x, compress)
     if (is.null(g)) return(NULL)
+    if (!is.null(keys)) {
+        ## patterns within the values of the key columns
+        K <- if (is.matrix(keys)) keys else matrix(keys, ncol = 1L)
+        key <- do.call(paste, c(list(g$map), lapply(seq_len(ncol(K)), function(j) sprintf("%a", K[, j])), sep = "\r"))
+        map <- match(key, unique(key))
+        g <- list(map = map, first = match(seq_len(max(map)), map))
+        if (length(g$first) == nrow(x) || (!isTRUE(compress) && length(g$first) > 0.5 * nrow(x))) return(NULL)
+    }
     ss <- dmfit_suffstats(z, w, g$map, length(g$first))
     ## sums that overflow (w * z beyond the range of doubles): no compression
     if (!all(is.finite(ss$w), is.finite(ss$mean), is.finite(ss$within))) return(NULL)
     keep <- ss$w > 0
     ws <- ss$w[keep]
     if (is.null(w) && all(ws == 1)) ws <- NULL
-    list(x = x[g$first[keep], ], z = ss$mean[keep], w = ws, within = ss$within, rows = nrow(x))
+    list(x = x[g$first[keep], ], z = ss$mean[keep], w = ws, within = ss$within, rows = nrow(x),
+         keys = if (!is.null(keys)) (if (is.matrix(keys)) keys else matrix(keys, ncol = 1L))[g$first[keep], , drop = FALSE])
 }
 
 ## Row-wise results: a data frame in memory, a remote table remotely.
@@ -555,4 +619,249 @@ dm_sql_macros <- function(D) {
         dm_execute(D, sprintf("CREATE OR REPLACE TEMP MACRO %s(%s) AS (%s)", m[1L], m[2L], m[3L]))
     D$src$holder$dm_macros <- TRUE
     invisible()
+}
+
+
+## ---- coded groups, multi-group sums (the kernels of the fixed effects) ----
+
+## A grouping given as integer codes 1..G (no missing values): `codes` an
+## integer vector in memory, a remote column of integer codes remotely.
+## Grouped sums with coded groups return all G groups in code order
+## (zeros for empty groups), without labels, and use one-pass C kernels in
+## memory (src/fe.c).
+dmc_codes <- function(codes, G) {
+    if (!dm_is_rcols(codes)) codes <- as.integer(codes)
+    structure(list(codes = codes, G = as.integer(G)), class = "dm_codes")
+}
+
+dm_is_codes <- function(x) inherits(x, "dm_codes")
+
+## sums of columns within coded groups: G x k
+dmp_groupsum_codes <- function(col, group) {
+    G <- group$G
+    if (!dm_is_rcols(col) && !dm_is_rcols(group$codes)) {
+        W <- if (is.matrix(col)) col else matrix(col, ncol = 1L)
+        storage.mode(W) <- "double"
+        return(.Call(C_dm_fe_gsum, group$codes, G, W))
+    }
+    res <- dm_group_query(list(group$codes), list(col), nulls = TRUE)
+    k <- length(col)
+    out <- matrix(0, G, k)
+    i <- as.integer(res$g1)
+    for (j in seq_len(k)) {
+        v <- as.double(res[[paste0("v", j)]])
+        v[as.numeric(res[[paste0("n", j)]]) > 0] <- NA_real_
+        out[i, j] <- v
+    }
+    out
+}
+
+## weighted counts by pair of coded groups: Ga x Gb dgCMatrix
+dmp_crosstab_codes <- function(a, b, w = NULL) {
+    if (!dm_is_rcols(a$codes) && !dm_is_rcols(b$codes) && !dm_is_rcols(w)) {
+        ## (the kernel returns the transpose of the crosstab of its first
+        ## two arguments, and is fastest when the first is sorted)
+        ct <- .Call(C_dm_fe_crosstab, b$codes, a$codes, if (is.null(w)) NULL else as.double(w), b$G, a$G)
+        return(methods::new("dgCMatrix", i = ct[[2L]], p = ct[[1L]], x = ct[[3L]], Dim = c(a$G, b$G)))
+    }
+    res <- dm_group_query(list(a$codes, b$codes), if (is.null(w)) list() else list(w))
+    Matrix::sparseMatrix(i = as.integer(res$g1), j = as.integer(res$g2), x = as.double(res$v1),
+                         dims = c(a$G, b$G), repr = "C")
+}
+
+## Column sums of a design within several coded groups at once:
+## dmp_colsums_groups(x, groups, extra = NULL), x possibly scaled (s * x),
+## groups a list of dmc_codes(), extra a column (k columns) or NULL. Returns
+## one list(S = G x p sums of the scaled design, n = G sums of the scale (the
+## counts without one), extra = G x k sums of scale * extra) per grouping.
+## In memory: one pass of the structured kernel for all groupings when it
+## applies (dm_fe_struct_gsum), else the row kernels; remotely, one GROUP BY
+## per grouping.
+dmp_colsums_groups <- function(x, groups, extra = NULL) {
+    if (inherits(x, "dm_remote")) {
+        s <- x$scale
+        one <- dm_rcols(dm_remote_unscaled(x), if (is.null(s)) "CAST(1 AS DOUBLE)" else s)
+        return(lapply(groups, function(g) {
+            gc <- g$codes
+            S <- matrix(0, g$G, ncol(x))
+            cs <- dmp_colsums(x, group = gc)
+            S[as.integer(rownames(cs)), ] <- unname(cs)
+            ns <- dmp_groupsum_codes(if (is.null(extra)) one else dmc_cbind(one, one * extra), g)
+            list(S = S, n = ns[, 1L], extra = if (!is.null(extra)) ns[, -1L, drop = FALSE])
+        }))
+    }
+    ## in memory: the plain design and its row scale
+    w <- NULL
+    D <- x
+    if (dm_is_comb(x)) {
+        if (!is.null(x$design2)) stop("A combination of two designs has no grouped sums here.", call. = FALSE)
+        D <- x$design
+        w <- if (is.null(x$scale)) NULL else rep_len(as.double(x$scale), nrow(D))
+    }
+    G <- vapply(groups, function(g) g$G, 1L)
+    codes <- lapply(groups, function(g) g$codes)
+    Y <- if (is.null(extra)) NULL else { E <- if (is.matrix(extra)) extra else matrix(extra, ncol = 1L); storage.mode(E) <- "double"; E }
+    if (dm_colsums_struct_ok(D, G)) {
+        M <- .Call(C_dm_fe_struct_gsum, D$setup, D$vars, w, codes, as.integer(G), Y, TRUE)
+        info <- dm_struct_info(D)
+        icpt <- isTRUE(D$setup$intercept > 0L)
+        p <- ncol(D)
+        return(lapply(seq_along(groups), function(k) {
+            m <- M[[k]]
+            S <- matrix(0, G[k], p)
+            q <- 1L
+            for (t in seq_along(info)) {
+                Tt <- info[[t]]
+                if (t == 1L && icpt) {
+                    S[, Tt$cols[1L, 1L]] <- m[1L, ]
+                    next
+                }
+                L <- nrow(Tt$C)
+                ns <- nrow(Tt$cols)
+                for (u in seq_len(ns)) {
+                    rows <- q + (u - 1L) * L + seq_len(L)
+                    S[, Tt$cols[u, ]] <- crossprod(m[rows, , drop = FALSE], Tt$C)
+                }
+                q <- q + L * ns
+            }
+            list(S = S, n = m[1L, ], extra = if (is.null(Y)) NULL else t(m[q + seq_len(ncol(Y)), , drop = FALSE]))
+        }))
+    }
+    one <- if (is.null(w)) rep(1, nrow(D)) else w
+    lapply(seq_along(groups), function(k) {
+        J <- as_jac(D)
+        W <- matrix(one, ncol = 1L)
+        S <- if (jac_kernel_ok(J)) t(dm_crossprod_kernel(J, W, codes[[k]], G[k]))
+             else .Call(C_dm_fe_gsum, codes[[k]], G[k], one * as.matrix(D))
+        ns <- .Call(C_dm_fe_gsum, codes[[k]], G[k], cbind(one, if (!is.null(Y)) one * Y))
+        list(S = S, n = ns[, 1L], extra = if (!is.null(Y)) ns[, -1L, drop = FALSE])
+    })
+}
+
+dm_colsums_struct_ok <- function(D, G) {
+    if (!isTRUE(getOption("design.matrix.structured", TRUE))) return(FALSE)
+    if (!dm_struct_ok(D)) return(FALSE)
+    info <- dm_struct_info(D)
+    Q <- 2 + sum(vapply(info, function(Tt) nrow(Tt$C) * nrow(Tt$cols), 0))
+    all(Q * as.double(G) <= 2^25)
+}
+
+## ---- more column functions (requested by the GLM work) ----
+
+## one column of a multi-column column
+dmc_col <- function(x, j) {
+    if (!dm_is_rcols(x)) return(if (is.matrix(x)) x[, j] else x)
+    dm_rcols(unclass(x)$frame, unclass(x)$sql[j])
+}
+
+## a constant column over the rows of a column's frame (or a design)
+dmc_const <- function(like, value) {
+    if (inherits(like, "dm_remote")) return(dm_rcols(like, dm_sql_double(value)))
+    if (!dm_is_rcols(like)) return(rep(as.double(value), NROW(like)))
+    dm_rcols(unclass(like)$frame, dm_sql_double(value))
+}
+
+dmc_lgamma <- function(x) {
+    if (!dm_is_rcols(x)) return(lgamma(x))
+    dm_rcols(unclass(x)$frame, sprintf("lgamma(%s)", unclass(x)$sql))
+}
+
+## round half to even, as R's round(x)
+dmc_round <- function(x) {
+    if (!dm_is_rcols(x)) return(round(x))
+    dm_rcols(unclass(x)$frame, sprintf("round_even(%s, 0)", unclass(x)$sql))
+}
+
+## is.finite and is.nan, NaN-safe (in DuckDB, NaN = NaN and NaN > 0 are true)
+dmc_is_finite <- function(x) {
+    if (!dm_is_rcols(x)) return(is.finite(x))
+    dm_rcols(unclass(x)$frame, sprintf("COALESCE(isfinite(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql))
+}
+
+dmc_is_nan <- function(x) {
+    if (!dm_is_rcols(x)) return(is.nan(x))
+    dm_rcols(unclass(x)$frame, sprintf("COALESCE(isnan(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql))
+}
+
+## ---- rows of a design ----
+
+## The design of the rows where `keep` (a logical column, NA counting as
+## FALSE) is TRUE: x[keep, ] in memory; remotely, the same design with its
+## filter restricted (a new design: columns of x must be re-made on it,
+## for instance with dmc_on()).
+dmp_subset <- function(x, keep) {
+    if (!inherits(x, "dm_remote")) {
+        if (dm_is_rcols(keep)) stop("A remote column cannot select rows of a design in memory.", call. = FALSE)
+        return(x[!is.na(keep) & keep, ])
+    }
+    if (inherits(keep, "SQL")) keep <- dm_rcols(x, as.character(keep))
+    if (!dm_is_rcols(keep))
+        stop("Rows of a remote design are selected by a logical remote column or a DBI::SQL() predicate.",
+             call. = FALSE)
+    fr <- unclass(keep)$frame
+    if (dm_frame_depth(x) > dm_frame_depth(fr)) fr <- x
+    out <- dm_rebase(x, fr)
+    out$filter <- sprintf("(%s) AND COALESCE(%s, FALSE)", out$filter, unclass(keep)$sql)
+    out$n <- as.numeric(dm_query(out, sprintf("SELECT COUNT(*) AS n FROM (%s) AS s WHERE %s",
+                                              out$src$select, out$filter))$n)
+    out$cache <- new.env(parent = emptyenv())
+    out$id <- dm_tmp_name("dm")
+    out
+}
+
+## The same column (its SQL) over the rows of design x (remote; in memory,
+## the column itself). Valid when its expressions read columns of the
+## source of x.
+dmc_on <- function(col, x) {
+    if (!dm_is_rcols(col)) return(col)
+    dm_rcols(x, unclass(col)$sql)
+}
+
+## ---- arguments of a fit (round 7 of 2hba) ----
+
+## Columns for the arguments of a fit over the rows of a remote design:
+## exprs, a named list of unevaluated arguments (each a column name, a
+## DBI::SQL() expression, or an R expression over the columns, evaluated in
+## env); logical: the names of logical arguments (a subset). R expressions
+## with a SQL translation run in the database; others are evaluated in R,
+## batch by batch, into a temporary table (dm_materialize()), which then is
+## the source of the design. Returns list(x = the design (possibly on that
+## new source), cols = named list of columns (NULL for NULL arguments),
+## evaluated = names evaluated in R, with their reasons).
+## In memory, the arguments are evaluated in `data` (a data frame, the rows
+## of x) and returned as vectors.
+dmp_resolve <- function(x, exprs, env, logical = character(), data = NULL) {
+    if (!inherits(x, "dm_remote")) {
+        cols <- lapply(exprs, function(e) {
+            if (is.null(e)) return(NULL)
+            if (is.character(e) && length(e) == 1L) return(data[[e]])
+            eval(e, data, env)
+        })
+        return(list(x = x, cols = cols, evaluated = list()))
+    }
+    con <- dm_con(x)
+    items <- list()
+    later <- list()
+    sqls <- list()
+    for (nm in names(exprs)) {
+        e <- exprs[[nm]]
+        if (is.null(e)) next
+        a <- dm_resolve_or_eval(e, env, x$src$types, con, nm, bool = nm %in% logical)
+        if (!is.null(a$expr)) {
+            items[[nm]] <- a
+            later[[paste0("__dm_arg_", nm)]] <- a$expr
+        } else {
+            sqls[[nm]] <- a$sql
+        }
+    }
+    if (length(later)) {
+        x$src <- dm_materialize(x$src, later, env, logical = paste0("__dm_arg_", logical), chunk_size = x$chunk_size)
+        for (nm in names(items)) {
+            col <- DBI::dbQuoteIdentifier(con, paste0("__dm_arg_", nm))
+            sqls[[nm]] <- if (nm %in% logical) sprintf("s.%s", col) else sprintf("CAST(s.%s AS DOUBLE)", col)
+        }
+    }
+    cols <- lapply(names(exprs), function(nm) if (is.null(sqls[[nm]])) NULL else dm_rcols(x, sqls[[nm]]))
+    names(cols) <- names(exprs)
+    list(x = x, cols = cols, evaluated = items)
 }
