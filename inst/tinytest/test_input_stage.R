@@ -23,9 +23,10 @@
 # column types (remotely the types first).
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
+source("helpers.R")
 library(design.matrix)
 
-con <- DBI::dbConnect(duckdb::duckdb())
+con <- test_con()
 set.seed(1)
 n <- 40
 d <- data.frame(y = rnorm(n), x = rnorm(n), z = runif(n, 1, 2),

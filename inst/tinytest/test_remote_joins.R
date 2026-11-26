@@ -6,9 +6,10 @@
 ## ENUM type, and missing values.
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
+source("helpers.R")
 library(design.matrix)
 
-con <- DBI::dbConnect(duckdb::duckdb())
+con <- test_con()
 same <- function(a, b, tol = 1e-8) isTRUE(all.equal(unname(a), unname(b), tolerance = tol))
 rd <- function(tab) {
     x <- as.data.frame(tab)
@@ -91,4 +92,4 @@ expect_true(same(colSums(X), colSums(Xm)))
 expect_true(same(colSums(X, group = "g"), rowsum(Xm, mc$g)))
 expect_true(same(colMeans(X, group = "h"), rowsum(Xm, mc$h) / as.vector(table(mc$h))))
 
-DBI::dbDisconnect(con, shutdown = TRUE)
+test_con_done(con)

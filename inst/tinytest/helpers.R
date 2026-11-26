@@ -5,14 +5,64 @@
 # backend). DESIGN_MATRIX_TESTS=full runs the full tier: also on Parquet
 # files, every case of the parity loops remotely (both compression modes,
 # all fixed-effect cases), the random-formula sweeps at full length and the
-# slow regression tests. Run it before every merge:
+# slow regression tests. Run it before every merge, the files in parallel
+# (4 worker processes, each limited to a share of the threads):
+#   DESIGN_MATRIX_TESTS=full Rscript -e 'cl <- parallel::makeCluster(4); invisible(parallel::clusterEvalQ(cl, { library(design.matrix); options(design.matrix.threads = max(1L, parallel::detectCores() %/% 4L)) })); tinytest::run_test_dir(normalizePath("inst/tinytest"), cluster = cl)'
+# or one file after another (slower):
 #   DESIGN_MATRIX_TESTS=full Rscript -e 'tinytest::run_test_dir("inst/tinytest")'
+# tests/tinytest.R (R CMD check) runs the files in parallel the same way;
+# see there for the number of processes (DESIGN_MATRIX_TEST_NCPU).
 # Files shorten their loops with `full_tests` and `remote_modes`; a file
 # that only belongs to the full tier starts with
 #   if (!full_tests) exit_file("full tier only: set DESIGN_MATRIX_TESTS=full")
 full_tests <- identical(Sys.getenv("DESIGN_MATRIX_TESTS"), "full")
 # remote data sources a test runs on: a DuckDB table, plus Parquet in full
 remote_modes <- if (full_tests) c("sql", "parquet") else "sql"
+
+# Shared DuckDB fixture. test_con() returns the one in-memory DuckDB
+# connection of this R process (opened on first use, closed when the process
+# exits), switched to a new, empty database (ATTACH ':memory:'; USE), so the
+# tables a file writes (d, nd, ...) never meet those of another file run
+# earlier in the same process. Each call starts a new database and drops the
+# previous one, also when a file stopped before test_con_done(con), which
+# switches back and drops it, with the temporary tables (the package's, named
+# per process, in the connection's temp catalog). A
+# file that needs a connection of its own (test_query_counts.R counts every
+# statement) opens one with DBI::dbConnect().
+if (!exists(".dm_test_db", envir = globalenv(), inherits = FALSE)) {
+    assign(".dm_test_db", new.env(), envir = globalenv())
+    reg.finalizer(get(".dm_test_db", envir = globalenv()), function(e) {
+        if (!is.null(e$con) && DBI::dbIsValid(e$con)) DBI::dbDisconnect(e$con)
+    }, onexit = TRUE)
+}
+test_con <- function() {
+    st <- get(".dm_test_db", envir = globalenv())
+    if (is.null(st$con) || !DBI::dbIsValid(st$con)) {
+        st$con <- DBI::dbConnect(duckdb::duckdb())
+        st$home <- DBI::dbGetQuery(st$con, "SELECT current_database() AS db")$db
+        st$db <- NULL
+        st$i <- 0L
+    }
+    test_con_done(st$con)
+    st$i <- st$i + 1L
+    st$db <- sprintf("dm_test_%d", st$i)
+    DBI::dbExecute(st$con, sprintf("ATTACH ':memory:' AS %s", st$db))
+    DBI::dbExecute(st$con, sprintf("USE %s", st$db))
+    st$con
+}
+test_con_done <- function(con) {
+    st <- get(".dm_test_db", envir = globalenv())
+    if (is.null(st$db)) return(invisible())
+    DBI::dbExecute(con, sprintf("USE %s", DBI::dbQuoteIdentifier(con, st$home)))
+    DBI::dbExecute(con, sprintf("DETACH DATABASE IF EXISTS %s", st$db))
+    st$db <- NULL
+    ## temporary tables hold data: drop the file's (temporary views are only
+    ## queries; data frames registered with duckdb_register() stay)
+    tmp <- DBI::dbGetQuery(con, "SELECT table_name FROM duckdb_tables() WHERE temporary")$table_name
+    for (tn in tmp)
+        DBI::dbExecute(con, sprintf("DROP TABLE IF EXISTS temp.main.%s", DBI::dbQuoteIdentifier(con, tn)))
+    invisible()
+}
 
 strict_identical <- function(a, b) {
     identical(a, b, num.eq = FALSE, single.NA = FALSE, attrib.as.set = FALSE)

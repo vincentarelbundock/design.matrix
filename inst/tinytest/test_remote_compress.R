@@ -3,9 +3,10 @@
 ## same results as the scan over the rows and as the dense computation.
 if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quietly = TRUE))
     exit_file("duckdb is not installed")
+source("helpers.R")
 library(design.matrix)
 
-con <- DBI::dbConnect(duckdb::duckdb())
+con <- test_con()
 same <- function(a, b, tol = 1e-9) isTRUE(all.equal(unname(a), unname(b), tolerance = tol))
 with_opts <- function(expr, ...) {
     op <- options(...)
@@ -176,4 +177,4 @@ M2 <- as.matrix(design_matrix(~ xc + f, d))
 expect_true(same(with_opts(crossprod(D2), design.matrix.remote_compress = TRUE), crossprod(M2)))
 expect_null(design.matrix:::dm_sql_moments(D2, cap = 10))
 
-DBI::dbDisconnect(con, shutdown = TRUE)
+test_con_done(con)

@@ -8,7 +8,7 @@ if (!requireNamespace("duckdb", quietly = TRUE) || !requireNamespace("DBI", quie
 source("helpers.R")
 library(design.matrix)
 
-con <- DBI::dbConnect(duckdb::duckdb())
+con <- test_con()
 same <- function(a, b, tol = 1e-7) isTRUE(all.equal(unname(a), unname(b), tolerance = tol))
 
 set.seed(11)
@@ -73,4 +73,4 @@ for (nm in names(cases)) {
     }
 }
 
-DBI::dbDisconnect(con)
+test_con_done(con)

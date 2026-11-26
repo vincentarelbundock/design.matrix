@@ -1,5 +1,6 @@
 ## Lookup columns (R/primitives_lookup.R): dmc_lookup(), dmc_cbind() and
 ## dmc_const(), in memory against base R, and remotely against memory.
+source("helpers.R")
 library(design.matrix)
 dmc_lookup <- design.matrix:::dmc_lookup
 dmc_cbind <- design.matrix:::dmc_cbind
@@ -44,7 +45,7 @@ expect_identical(design.matrix:::dmp_materialize(Dm), Dm)
 expect_identical(design.matrix:::dmc_freeze(d$x, table = TRUE), d$x)
 
 if (requireNamespace("duckdb", quietly = TRUE)) {
-    con <- DBI::dbConnect(duckdb::duckdb())
+    con <- test_con()
     d$.row <- seq_len(n)
     DBI::dbWriteTable(con, "d", d)
     D <- design_matrix(~ x, con, table = "d", na.action = na.pass)
@@ -158,5 +159,5 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     expect_equal(design.matrix:::dm_frame_later(unclass(nopath(lk))$frame, unclass(nopath(lk3))$frame)$depth,
                  unclass(lk3)$frame$depth)
     expect_true(is.null(design.matrix:::dm_frame_later(unclass(nopath(lk))$frame, unclass(lk2)$frame)$path))
-    DBI::dbDisconnect(con)
+    test_con_done(con)
 }

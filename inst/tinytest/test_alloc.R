@@ -182,7 +182,7 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     wp[is.na(wp)] <- 0
     df <- data.frame(zz = zz, xb = xb, w = wp, pw = Wp, eta = eta, mu = mu, y = y, v = v, me = me,
                      tr = tr, yb = yb, p = p)
-    con <- DBI::dbConnect(duckdb::duckdb())
+    con <- test_con()
     DBI::dbWriteTable(con, "fz", df)
     R <- design_matrix(~ 1, con, table = "fz")
     rc <- function(nm) ns$dmp_column(R, sprintf('CAST(s."%s" AS DOUBLE)', nm))
@@ -223,7 +223,7 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     expect_identical(lapply(lr, function(v) as.logical(ns$dmp_collect(v))), lf)
     fa <- ns$dmc_freeze_all(rc("y") + 1, rc("mu"))
     expect_equal(ns$dmp_collect(fa[[1L]] * fa[[2L]]), (y + 1) * mu, tolerance = 1e-14)
-    DBI::dbDisconnect(con, shutdown = TRUE)
+    test_con_done(con)
 }
 
 ## unused factor levels, and ALTREP variables copied once
