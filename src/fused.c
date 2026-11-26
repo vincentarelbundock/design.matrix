@@ -42,8 +42,8 @@ SEXP dm_ifelse(SEXP test_, SEXP yes_, SEXP no_)
     return out;
 }
 
-/* dmc_notnan() in memory: TRUE where x is present, NA where it is NA or
-   NaN (as is.finite(x) | abs(x) == Inf gives). */
+/* dmc_notnan() in memory: TRUE where x is present, FALSE where it is NA
+   or NaN (as !is.na(x) gives). */
 SEXP dm_notnan(SEXP x_)
 {
     R_xlen_t n = XLENGTH(x_);
@@ -51,10 +51,10 @@ SEXP dm_notnan(SEXP x_)
     int *o = LOGICAL(out);
     if (TYPEOF(x_) == REALSXP) {
 	const double *x = REAL_RO(x_);
-	for (R_xlen_t i = 0; i < n; i++) o[i] = ISNAN(x[i]) ? NA_LOGICAL : 1;
+	for (R_xlen_t i = 0; i < n; i++) o[i] = !ISNAN(x[i]);
     } else if (TYPEOF(x_) == INTSXP || TYPEOF(x_) == LGLSXP) {
 	const int *x = TYPEOF(x_) == INTSXP ? INTEGER_RO(x_) : LOGICAL_RO(x_);
-	for (R_xlen_t i = 0; i < n; i++) o[i] = x[i] == NA_INTEGER ? NA_LOGICAL : 1;
+	for (R_xlen_t i = 0; i < n; i++) o[i] = x[i] != NA_INTEGER;
     } else {
 	error("internal error: dm_notnan() of a non-numeric vector");
     }
@@ -181,8 +181,8 @@ SEXP dm_fe_moments(SEXP z_, SEXP w_)
    good = W > 0 & me != 0 (NA as R's & gives it), w2 = W me me / v and
    z = (eta - off) + (y - mu) / me where good (0 where not, NA where good
    is NA), and the counts of the checks of dmglm_working(), as its R code
-   gives them in memory: 0, W > 0 and v == 0, 0, good, and rows where w2
-   or z is not finite.  list(w2, z, counts). */
+   gives them: W > 0 and v missing, W > 0 and v == 0, W > 0 and me
+   missing, good, and rows where w2 or z is not finite.  list(w2, z, counts). */
 SEXP dm_glm_working(SEXP W_, SEXP eta_, SEXP mu_, SEXP y_, SEXP off_, SEXP v_, SEXP me_)
 {
     R_xlen_t n = XLENGTH(eta_);
@@ -199,16 +199,17 @@ SEXP dm_glm_working(SEXP W_, SEXP eta_, SEXP mu_, SEXP y_, SEXP off_, SEXP v_, S
     double *w2 = REAL(SET_VECTOR_ELT(out, 0, allocVector(REALSXP, n)));
     double *zz = REAL(SET_VECTOR_ELT(out, 1, allocVector(REALSXP, n)));
     double *cnt = REAL(SET_VECTOR_ELT(out, 2, allocVector(REALSXP, 5)));
-    double c1 = 0, c3 = 0, c4 = 0;
+    double c0 = 0, c1 = 0, c2 = 0, c3 = 0, c4 = 0;
     for (R_xlen_t i = 0; i < n; i++) {
 	double Wi = W[sW ? i : 0], mei = me[sme ? i : 0], vi = v[sv ? i : 0];
 	/* W > 0 and me != 0 as logicals: 1, 0 or NA */
 	int wpos = ISNAN(Wi) ? NA_LOGICAL : (Wi > 0);
 	int menz = ISNAN(mei) ? NA_LOGICAL : (mei != 0);
 	int good = (wpos == 0 || menz == 0) ? 0 : ((wpos == NA_LOGICAL || menz == NA_LOGICAL) ? NA_LOGICAL : 1);
-	/* (as in R: (W > 0) & !dmc_notnan(v) is never TRUE, dmc_notnan()
-	   being TRUE or NA, so that the first and third counts stay 0) */
+	/* (W > 0) & !dmc_notnan(v), (W > 0) & v == 0, (W > 0) & !dmc_notnan(me) */
+	if (wpos == 1 && ISNAN(vi)) c0++;
 	if (wpos == 1 && !ISNAN(vi) && vi == 0) c1++;
+	if (wpos == 1 && ISNAN(mei)) c2++;
 	double a, b;
 	if (good == NA_LOGICAL) {
 	    a = NA_REAL;
@@ -230,7 +231,7 @@ SEXP dm_glm_working(SEXP W_, SEXP eta_, SEXP mu_, SEXP y_, SEXP off_, SEXP v_, S
 	zz[i] = b;
 	if (!R_FINITE(a) || !R_FINITE(b)) c4++;
     }
-    cnt[0] = 0; cnt[1] = c1; cnt[2] = 0; cnt[3] = c3; cnt[4] = c4;
+    cnt[0] = c0; cnt[1] = c1; cnt[2] = c2; cnt[3] = c3; cnt[4] = c4;
     UNPROTECT(1);
     return out;
 }

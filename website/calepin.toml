@@ -30,6 +30,9 @@ fold = true
   [[sidebar.section.item]]
   target = "operations.typ"
 
+  [[sidebar.section.item]]
+  target = "architecture.typ"
+
 [[sidebar.section]]
 title = "Recipes"
 
@@ -41,6 +44,12 @@ title = "Recipes"
 
   [[sidebar.section.item]]
   target = "recipes/out-of-core.typ"
+
+[[sidebar.section]]
+title = "Benchmarks"
+
+  [[sidebar.section.item]]
+  target = "benchmarks/fixed_effects.typ"
 
 [[sidebar.section]]
 title = "Reference"

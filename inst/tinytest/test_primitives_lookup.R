@@ -92,5 +92,44 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     ref <- rowsum(d$y, d$b)
     expect_equal(unname(gs[, 1]), unname(ref[, 1]))
     expect_equal(dmc_const(lk, 3) |> dm_colsum(), 3 * n)
+    ## integer codes stay integer remotely
+    colname <- function(v) gsub("^\\(s\\.|\"|\\)$", "", unclass(v)$sql)
+    ci <- dmc_lookup(1:7, rc("s.code + 1"))
+    expect_equal(unname(unclass(ci)$frame$src$types[colname(ci)]), "integer")
+    ## dmc_groupsums(): several coded groupings and a total in one query,
+    ## as dmp_groupsum() and dm_colsum() (NA for a group with a missing value)
+    dmc_codes <- design.matrix:::dmc_codes
+    dmc_groupsums <- design.matrix:::dmc_groupsums
+    g1 <- dmc_codes(rc("s.code + 1"), 7L)
+    g2 <- dmc_codes(rc("s.b"), 4L)
+    m1 <- dmc_codes(d$code + 1L, 7L)
+    m2 <- dmc_codes(d$b, 4L)
+    yy <- dmc_cbind(rc("s.y"), rc("s.x * s.y"))
+    r <- dmc_groupsums(yy, list(g1, g2), total = rc("s.x"))
+    m <- dmc_groupsums(cbind(d$y, d$x * d$y), list(m1, m2), total = d$x)
+    expect_equal(r, m)
+    expect_equal(m$groups[[2]], unname(rowsum(cbind(d$y, d$x * d$y), d$b)), check.attributes = FALSE)
+    expect_equal(m$total, sum(d$x))
+    ## without a total; missing values
+    r <- dmc_groupsums(dmc_lookup(vals, rc("s.code")), list(g1, g2))
+    m <- dmc_groupsums(ref_codes, list(m1, m2))
+    expect_equal(r, m)
+    expect_true(is.na(dmc_groupsums(lk, list(g1), total = lk)$total))
+    ## coded crosstabs: the remote one as in memory
+    dmp_crosstab <- design.matrix:::dmp_crosstab
+    expect_equal(dmp_crosstab(g1, g2, rc("s.x")), dmp_crosstab(m1, m2, d$x))
+    expect_equal(dmp_crosstab(g2, g1), dmp_crosstab(m2, m1))
+    ## dmp_materialize(x, cols): the data columns and the internal columns
+    ## that the design or `cols` read
+    lkc <- dmc_lookup(vals, rc("s.code"), along = list(lk2))
+    Dl <- design.matrix:::dm_rebase(D, unclass(lkc)$frame)
+    Dk <- design.matrix:::dmp_materialize(Dl, cols = list(lkc))
+    nm <- names(Dk$src$types)
+    expect_true(all(names(d) %in% nm))
+    expect_true(colname(lkc) %in% nm)
+    expect_false(colname(lk2) %in% nm)
+    got <- dmp_collect(dmc_cbind(design.matrix:::dmc_on(row, Dk), design.matrix:::dmc_on(lkc, Dk)))
+    expect_equal(got[order(got[, 1]), 2], ref_codes)
+    expect_equal(crossprod(Dk), crossprod(D))
     DBI::dbDisconnect(con)
 }

@@ -99,3 +99,15 @@ fuzz_contrasts <- function(d) {
     if ("f2" %in% keep && stats::runif(1) < 0.5) out$f2 <- stats::contr.poly(nlevels(d$f2))
     out
 }
+
+# Remote fixture of the fixed-effects suites (test_fe.R, test_fe_glm.R):
+# write `d`, with a `.row` column (its row order), to table `name` of the
+# DuckDB connection `con` and to `name`.parquet in directory `dir`; return
+# the two sources, list(table, parquet).
+write_fe_source <- function(con, dir, d, name) {
+    d$.row <- seq_len(nrow(d))
+    DBI::dbWriteTable(con, name, d, overwrite = TRUE)
+    path <- file.path(dir, paste0(name, ".parquet"))
+    DBI::dbExecute(con, sprintf("COPY %s TO '%s' (FORMAT PARQUET)", name, path))
+    list(table = name, parquet = path)
+}
