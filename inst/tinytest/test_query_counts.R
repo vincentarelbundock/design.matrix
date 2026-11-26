@@ -20,11 +20,15 @@ DBI::dbWriteTable(con, "d", d)
 nq <- function(expr) count_queries(expr)$count
 
 ## LM
-expect_equal(nq(design_lm(y ~ x1 + f, con, table = "d", compress = FALSE)), 12L, info = "lm")
+## (uncompressed LM and weighted LM: 1 fewer since nh9e, the fitted values
+## X b were a view made at once and never read: the sums of squares come
+## from the moments of the factorization; products are now made at their
+## first use)
+expect_equal(nq(design_lm(y ~ x1 + f, con, table = "d", compress = FALSE)), 11L, info = "lm")
 expect_equal(nq(design_lm(y ~ xd + f, con, table = "d", compress = TRUE)), 9L, info = "lm compressed")
 expect_equal(nq(design_lm(y ~ xd + f, con, table = "d")), 10L, info = "lm auto")
 ## weighted LM
-expect_equal(nq(design_lm(y ~ x1 + f, con, table = "d", weights = "w", compress = FALSE)), 14L,
+expect_equal(nq(design_lm(y ~ x1 + f, con, table = "d", weights = "w", compress = FALSE)), 13L,
              info = "weighted lm")
 expect_equal(nq(design_lm(y ~ xd + f, con, table = "d", weights = "w", compress = TRUE)), 11L,
              info = "weighted lm compressed")

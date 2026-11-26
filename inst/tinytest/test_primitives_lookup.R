@@ -80,9 +80,10 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     expect_equal(dm_colsum(fz), sum(d$x[d$code > 2] + 1))
     expect_true(grepl("^SELECT \\* FROM", unclass(fz)$frame$src$select))
     ## chained on a product: the lookup keeps the columns of the later frame
+    ## (both pending: bound one on the other at the first use)
     b <- c(0.5, 2)
     xb <- dmp_mult(D, b)
-    f <- xb + dmc_lookup(vals, rc("s.code"), along = list(xb))
+    f <- xb + dmc_lookup(vals, rc("s.code"))
     got <- dmp_collect(dmc_cbind(row, f))
     expect_equal(got[order(got[, 1]), 2], 0.5 + 2 * d$x + ref_codes)
     ## sums of lookup columns: NA as sum() gives it, grouped sums
@@ -96,7 +97,8 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     ## integer codes stay integer remotely
     colname <- function(v) gsub("^\\(s\\.|\"|\\)$", "", unclass(v)$sql)
     ci <- dmc_lookup(1:7, rc("s.code + 1"))
-    expect_equal(unname(unclass(ci)$frame$src$types[colname(ci)]), "integer")
+    bound_frame <- function(v) design.matrix:::dm_frame_bind(unclass(v)$frame)
+    expect_equal(unname(bound_frame(ci)$src$types[colname(ci)]), "integer")
     ## dmc_groupsums(): several coded groupings and a total in one query,
     ## as dmp_groupsum() and dm_colsum() (NA for a group with a missing value)
     dmc_codes <- design.matrix:::dmc_codes
@@ -122,8 +124,9 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     expect_equal(dmp_crosstab(g2, g1), dmp_crosstab(m2, m1))
     ## dmp_materialize(x, cols): the data columns and the internal columns
     ## that the design or `cols` read
-    lkc <- dmc_lookup(vals, rc("s.code"), along = list(lk2))
-    Dl <- design.matrix:::dm_rebase(D, unclass(lkc)$frame)
+    lkc <- dmc_lookup(vals, rc("s.code"))
+    ## (lkc bound on top of lk2, already bound: the frame of their sum)
+    Dl <- design.matrix:::dm_rebase(D, unclass(lk2 + lkc)$frame)
     Dk <- design.matrix:::dmp_materialize(Dl, cols = list(lkc))
     nm <- names(Dk$src$types)
     expect_true(all(names(d) %in% nm))
@@ -133,31 +136,106 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     expect_equal(got[order(got[, 1]), 2], ref_codes)
     expect_equal(crossprod(Dk), crossprod(D))
     ## frame lineage: columns built one on the other combine on the
-    ## descendant frame; columns on two branches of the same design (two
-    ## lookups, products or freezes from one frame) cannot be combined
+    ## descendant frame; columns settled on two branches of the same design
+    ## (two lookups, products or freezes, each bound from one frame before
+    ## they are combined: lk and lk2 were read above) cannot be combined
     sib <- "two different branches of the same remote design"
     expect_error(lk + lk2, sib)
     expect_error(dmc_cbind(lk, lk2), sib)
-    lk3 <- dmc_lookup(vals, rc("s.code"), along = list(lk2))
+    ## a lookup not read yet binds on top of the settled one
+    lk3 <- dmc_lookup(vals, rc("s.code"))
     expect_equal(dmp_collect(lk2 + lk3), ref_lv + ref_codes)
     expect_equal(dmp_collect(lk3 + lk2 + rc("s.x")), ref_codes + ref_lv + d$x)
-    p1 <- dmp_mult(D, c(0, 2), along = list(lk))
+    p1 <- dmp_mult(D, c(0, 2))
     expect_equal(dmp_collect(p1 - 2 * rc("s.x") + lk), ref_codes)
+    ## (p1 is now settled on top of lk)
     expect_error(p1 + lk2, sib)
-    expect_error(dmp_mult(D, c(0, 1), along = list(lk, lk2)), sib)
+    expect_error(dmp_collect(dmp_mult(D, c(0, 1)) + lk + lk2), sib)
     f1 <- design.matrix:::dmc_freeze(rc("s.x") + 1)
     f2 <- design.matrix:::dmc_freeze(rc("s.x") + 2)
     expect_error(f1 + f2, sib)
     f12 <- design.matrix:::dmc_freeze(dmc_cbind(rc("s.x") + 1, rc("s.x") + 2))
     expect_equal(dmp_collect(design.matrix:::dmc_col(f12, 2) - design.matrix:::dmc_col(f12, 1)), rep(1, n))
     ## (frames without a lineage, from older objects: the deeper one)
-    nopath <- function(v) {
-        v <- unclass(v)
-        v$frame$path <- NULL
-        structure(v, class = "design_column")
+    nopath <- function(f) {
+        f$path <- NULL
+        f
     }
-    expect_equal(design.matrix:::dm_frame_later(unclass(nopath(lk))$frame, unclass(nopath(lk3))$frame)$depth,
-                 unclass(lk3)$frame$depth)
-    expect_true(is.null(design.matrix:::dm_frame_later(unclass(nopath(lk))$frame, unclass(lk2)$frame)$path))
+    expect_equal(design.matrix:::dm_frame_later(nopath(bound_frame(lk)), nopath(bound_frame(lk3)))$depth,
+                 bound_frame(lk3)$depth)
+    expect_true(is.null(design.matrix:::dm_frame_later(nopath(bound_frame(lk)), bound_frame(lk2))$path))
+
+    ## ---- pending columns (nh9e): products and lookups bound at first use ----
+    dmc_bind <- design.matrix:::dmc_bind
+    dmc_freeze <- design.matrix:::dmc_freeze
+    pending <- function(v) length(unclass(v)$frame$pend) > 0L
+    ## a product is pending until read; arithmetic keeps it pending; it is
+    ## bound once (later uses read the same view)
+    pa <- dmp_mult(D, c(1, 1))
+    expect_true(pending(pa))
+    expect_true(pending(2 * pa + 1))
+    nviews <- function() nrow(DBI::dbGetQuery(con, "SELECT * FROM duckdb_views() WHERE temporary AND NOT internal"))
+    v0 <- nviews()
+    expect_equal(dm_colsum(pa), sum(1 + d$x))
+    expect_equal(nviews(), v0 + 1L)
+    expect_equal(dm_colsum(pa * 2), 2 * sum(1 + d$x))
+    expect_equal(nviews(), v0 + 1L)
+    ## two products and a lookup, none read: one chain, in argument order
+    pb <- dmp_mult(D, c(0, 3))
+    pc <- dmp_mult(D, c(2, 0))
+    lk4 <- dmc_lookup(vals, rc("s.code"))
+    got <- dmp_collect(dmc_cbind(row, pb - pc + lk4))
+    expect_equal(got[order(got[, 1]), 2], 3 * d$x - 2 + ref_codes)
+    ## a lookup + product + freeze chain: the frozen column combines with the
+    ## columns it was made from, and with a new product bound on top of it
+    pe <- dmp_mult(D, c(0.5, -1))
+    lk5 <- dmc_lookup(vals, rc("s.code"))
+    fz5 <- dmc_freeze(pe * lk5)
+    expect_false(pending(fz5))
+    got <- dmp_collect(dmc_cbind(row, fz5 - pe * lk5))
+    expect_equal(got[order(got[, 1]), 2], ifelse(is.na(ref_codes), NA_real_, 0))
+    pf <- dmp_mult(D, c(1, 0))
+    got <- dmp_collect(dmc_cbind(row, fz5 + pf + lk5))
+    ref5 <- (0.5 - d$x) * ref_codes + 1 + ref_codes
+    expect_equal(got[order(got[, 1]), 2], ref5)
+    ## the same chain as a table (compute): a product made later binds on it
+    fzt <- dmc_freeze(pe * lk5 + pf, table = TRUE)
+    pg <- dmp_mult(D, c(0, 1))
+    got <- dmp_collect(dmc_cbind(row, fzt + pg))
+    expect_equal(got[order(got[, 1]), 2], (0.5 - d$x) * ref_codes + 1 + d$x)
+    ## a lookup keyed by a pending lookup (codes of codes) binds after it
+    lk6 <- dmc_lookup(c(5L, 4L, 3L, 2L, 1L), rc("s.code"))
+    lk7 <- dmc_lookup(vals, lk6)
+    got <- dmp_collect(dmc_cbind(row, lk7))
+    ref7 <- ifelse(d$code >= 1 & d$code <= 5, vals[6L - pmin(pmax(d$code, 1), 5)], NA)
+    expect_equal(got[order(got[, 1]), 2], ref7)
+    ## dmc_bind(): columns used one by one, which still combine afterwards
+    q1 <- dmc_lookup(vals, rc("s.code"))
+    q2 <- dmp_mult(D, c(0, 1))
+    qq <- dmc_bind(list(a = q1, b = list(q2, NULL)))
+    expect_identical(names(qq), c("a", "b"))
+    expect_false(pending(qq$a) || pending(qq$b[[1L]]))
+    expect_true(is.null(qq$b[[2L]]))
+    expect_true(is.na(dm_colsum(qq$a)))
+    expect_equal(dm_colsum(qq$b[[1L]]), sum(d$x))
+    got <- dmp_collect(dmc_cbind(row, qq$a + qq$b[[1L]]))
+    expect_equal(got[order(got[, 1]), 2], ref_codes + d$x)
+    expect_identical(dmc_bind(list(1:3, NULL)), list(1:3, NULL))
+    ## without dmc_bind(), the same two columns read one by one sit on two
+    ## branches: the error says how to avoid it
+    r1 <- dmc_lookup(vals, rc("s.code"))
+    r2 <- dmp_mult(D, c(0, 1))
+    dm_colsum(r2)
+    expect_true(is.na(dm_colsum(r1)))
+    expect_error(r1 + r2, sib)
+    expect_error(r1 + r2, "combine the columns before reading either")
+    ## dmc_on() refuses a column whose recipes are not bound
+    expect_error(design.matrix:::dmc_on(dmp_mult(D, c(1, 0)), D), "pending column")
+    ## dmp_materialize(x, cols) binds the pending columns it is given
+    lk8 <- dmc_lookup(vals, rc("s.code"))
+    Dm8 <- design.matrix:::dmp_materialize(D, cols = list(lk8))
+    expect_true(colname(lk8) %in% names(Dm8$src$types))
+    got <- dmp_collect(dmc_cbind(design.matrix:::dmc_on(row, Dm8), design.matrix:::dmc_on(lk8, Dm8)))
+    expect_equal(got[order(got[, 1]), 2], ref_codes)
     test_con_done(con)
 }
