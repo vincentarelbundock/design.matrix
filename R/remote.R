@@ -907,6 +907,8 @@ crossprod.dm_remote <- function(x, y = NULL, ...) {
         ## X' diag(s_x s_y) X
         if (!is.null(y) && !dm_remote_same(x, y))
             stop("`crossprod(x, y)` of remote designs needs the same design, possibly with scaled rows.", call. = FALSE)
+        ## (scales can read columns of a later frame: the products of the fit)
+        if (!is.null(y) && dm_frame_depth(y) > dm_frame_depth(x)) x <- dm_rebase(x, y)
         sy <- if (is.null(y)) x$scale else y$scale
         dw <- dm_remote_weights(x, sy)
         if (is.null(dw$w)) {
@@ -917,6 +919,8 @@ crossprod.dm_remote <- function(x, y = NULL, ...) {
         }
         return(dm_remote_moments(dw$D, NULL, dw$w)$xtx)
     }
+    ## columns of the fitting core (primitives.R): X' c, on their frame
+    if (dm_is_rcols(y)) return(dmp_crossprod(x, y))
     if (inherits(y, "SQL")) {
         D <- dm_remote_extend(dm_remote_unscaled(x), c(`__dm_y` = as.character(y)), "y")
         D$scale <- x$scale

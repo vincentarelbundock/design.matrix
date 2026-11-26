@@ -37,7 +37,7 @@
 ##   ==  !=  <  >  <=  >=  &  |  !
 ##   exp log sqrt abs log1p expm1 log2 log10 cos sin tan floor ceiling sign
 ##                         (Math group; log has one argument)
-##   dmc_pmin dmc_pmax dmc_ifelse dmc_rowsums
+##   dmc_pmin dmc_pmax dmc_ifelse dmc_rowsums dmc_cbind
 ##   dmc_pnorm dmc_qnorm dmc_dnorm dmc_pcauchy
 ##                         (remotely the DuckDB macros of dm_sql_macros(), as
 ##                         R computes them: pnorm/dnorm/pcauchy to rounding,
@@ -148,7 +148,10 @@
 ## ---- remote columns ----
 
 dm_rcols <- function(frame, sql) {
-    structure(list(frame = frame, sql = as.character(sql)), class = "dm_rcols")
+    ## (parenthesized, so that expressions compose with any operator)
+    sql <- as.character(sql)
+    sql <- sprintf("(%s)", sql)
+    structure(list(frame = frame, sql = sql), class = "dm_rcols")
 }
 
 dm_is_rcols <- function(x) inherits(x, "dm_rcols")
@@ -239,6 +242,14 @@ dmc_ifelse <- function(test, yes, no) {
     if (is.null(f)) return(ifelse(test, yes, no))
     dm_rcols(f, sprintf("(CASE WHEN %s THEN %s ELSE %s END)", dm_rcols_operand(test),
                         dm_rcols_operand(yes), dm_rcols_operand(no)))
+}
+
+## Columns side by side (cbind).
+dmc_cbind <- function(...) {
+    args <- list(...)
+    f <- do.call(dm_rcols_frame, args)
+    if (is.null(f)) return(do.call(cbind, args))
+    dm_rcols(f, unlist(lapply(args, dm_rcols_operand)))
 }
 
 dmc_rowsums <- function(x) {

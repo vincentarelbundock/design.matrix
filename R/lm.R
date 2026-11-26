@@ -248,7 +248,9 @@ dmfit_response <- function(mf) {
 }
 
 ## Response minus offset, and checks of the response, weights and offset.
+## Columns: numeric vectors in memory, remote columns (primitives.R).
 dmfit_check <- function(n, y, weights, offset) {
+    if (dm_is_rcols(y)) return(dmfit_check_remote(n, y, weights, offset))
     if (n == 0L) stop("0 (non-NA) cases", call. = FALSE)
     if (is.null(y) || length(y) != n)
         stop(sprintf("The response must have %d values.", n), call. = FALSE)
@@ -261,6 +263,47 @@ dmfit_check <- function(n, y, weights, offset) {
         if (all(weights == 0)) stop("0 (non-NA) cases", call. = FALSE)
     }
     z
+}
+
+## The same checks on remote columns, in one query.
+dmfit_check_remote <- function(n, y, weights, offset) {
+    z <- if (is.null(offset)) y else y - offset
+    fr <- unclass(z)$frame
+    if (!is.null(weights)) fr <- dm_frame_later(fr, unclass(weights)$frame)
+    zs <- unclass(z)$sql
+    items <- c("COUNT(*) AS n",
+               sprintf("SUM(CASE WHEN (%s) IS NULL OR isnan(%s) OR isinf(%s) THEN 1 ELSE 0 END) AS bad_y", zs, zs, zs))
+    if (!is.null(weights)) {
+        w <- unclass(weights)$sql
+        items <- c(items,
+                   sprintf("SUM(CASE WHEN (%s) IS NULL OR isnan(%s) OR %s < 0 THEN 1 ELSE 0 END) AS bad_w", w, w, w),
+                   sprintf("SUM(CASE WHEN isinf(%s) THEN 1 ELSE 0 END) AS inf_w", w),
+                   sprintf("SUM(CASE WHEN %s <> 0 THEN 1 ELSE 0 END) AS nz", w))
+    }
+    ck <- dm_query(fr, sprintf("SELECT %s FROM (%s) AS s WHERE %s", paste(items, collapse = ", "),
+                               fr$src$select, fr$filter))
+    if (as.numeric(ck$n) == 0) stop("0 (non-NA) cases", call. = FALSE)
+    if (as.numeric(ck$bad_y) > 0) stop("NA/NaN/Inf in 'y'", call. = FALSE)
+    if (!is.null(weights)) {
+        if (as.numeric(ck$bad_w) > 0) stop("missing or negative weights not allowed", call. = FALSE)
+        if (as.numeric(ck$inf_w) > 0) stop("NA/NaN/Inf in 'weights'", call. = FALSE)
+        if (as.numeric(ck$nz) == 0) stop("0 (non-NA) cases", call. = FALSE)
+    }
+    z
+}
+
+## Number of observations (non-zero weights) and sum of the log weights.
+dmfit_wstats <- function(n, weights) {
+    if (is.null(weights)) return(list(nobs = n, sumlogw = 0))
+    if (!dm_is_rcols(weights))
+        return(list(nobs = sum(weights != 0), sumlogw = sum(log(weights[weights != 0]))))
+    s <- dm_colsum(dm_rcols(unclass(weights)$frame,
+                            c(sprintf("CASE WHEN %s <> 0 THEN 1 ELSE 0 END", unclass(weights)$sql),
+                              sprintf("CASE WHEN %s <> 0 THEN ln(%s) ELSE 0 END", unclass(weights)$sql,
+                                      unclass(weights)$sql))))
+    nobs <- s[1L]
+    if (nobs < .Machine$integer.max) nobs <- as.integer(nobs)
+    list(nobs = nobs, sumlogw = s[2L])
 }
 
 ## Groups of rows that share a design pattern, or NULL when the fit should
@@ -311,28 +354,25 @@ dmfit_lm <- function(x, y, weights = NULL, offset = NULL, compress = "auto",
                      tol = 1e-07, intercept = TRUE) {
     n <- nrow(x)
     z <- dmfit_check(n, y, weights, offset)
-    nobs <- if (is.null(weights)) n else sum(weights != 0)
-    sumlogw <- if (is.null(weights)) 0 else sum(log(weights[weights != 0]))
-    g <- dmfit_groups(x, compress)
+    st <- dmfit_wstats(n, weights)
+    nobs <- st$nobs
+    ## integers, as in lm() (remote counts are doubles)
+    if (is.double(nobs) && nobs < .Machine$integer.max) nobs <- as.integer(nobs)
+    sumlogw <- st$sumlogw
+    g <- dmp_patterns(x, z, weights, compress)
     if (!is.null(g)) {
-        ss <- dmfit_suffstats(z, weights, g$map, length(g$first))
-        ## sums that overflow (w * z beyond the range of doubles) where the
-        ## fit on the rows is finite: fit on the rows instead
-        if (!all(is.finite(ss$w), is.finite(ss$mean), is.finite(ss$within))) g <- NULL
-    }
-    if (!is.null(g)) {
-        keep <- ss$w > 0
-        xs <- x[g$first[keep], ]
-        zs <- ss$mean[keep]
-        ws <- ss$w[keep]
-        within <- ss$within
-        if (is.null(weights) && all(ws == 1)) ws <- NULL
+        xs <- g$x
+        zs <- g$z
+        ws <- g$w
+        within <- g$within
+        n <- g$rows
     } else {
         xs <- x
         zs <- z
         ws <- weights
         within <- 0
-        if (!is.null(ws) && any(ws == 0)) {
+        ## (remotely, rows with zero weight count for nothing in the sums)
+        if (!is.null(ws) && !dm_is_rcols(ws) && any(ws == 0)) {
             ok <- ws != 0
             xs <- x[ok, ]
             zs <- z[ok]
@@ -366,24 +406,58 @@ dmfit_ls <- function(x, z, w, tol, intercept) {
     p <- ncol(x)
     cn <- colnames(x)
     if (p == 0L) {
-        rss <- if (is.null(w)) sum(z^2) else sum(w * z^2)
+        rss <- if (is.null(w)) dm_colsum(z^2) else dm_colsum(w * z^2)
         return(list(coefficients = numeric(0),
                     rank = 0L, pivot = integer(0), R = matrix(0, 0, 0),
                     tol = tol, rss = rss, mss = 0, intercept = intercept))
     }
+    ## (the primitives of primitives.R: columns are numeric vectors in
+    ## memory, remote columns for a remote design)
     sw <- if (is.null(w)) NULL else sqrt(w)
-    q <- qr(if (is.null(sw)) x else sw * x, tol = tol)
-    b <- dmqr_coef(q, matrix(if (is.null(sw)) z else sw * z, ncol = 1L))
+    q <- qr(dmp_scale(x, sw), tol = tol)
+    Y <- if (is.null(sw)) z else sw * z
+    b <- dmqr_coef(q, if (dm_is_rcols(Y)) Y else matrix(Y, ncol = 1L))
     beta <- dmqr_full(q, b)[, 1L]
-    f <- drop(x %*% beta)
+    f <- dmp_mult(x, beta, along = list(z, w))
+    if (!dm_is_rcols(f)) f <- drop(f)
     r <- z - f
     ww <- if (is.null(w)) 1 else w
-    rss <- sum(ww * r^2)
-    mss <- if (intercept) {
-        fbar <- if (is.null(w)) mean(f) else sum(w * f) / sum(w)
-        sum(ww * (f - fbar)^2)
+    mo <- attr(b, "moments")
+    rss <- NULL
+    if (dm_is_rcols(f) && !is.null(mo)) {
+        ## remotely, from the moments of the solution (no pass over its
+        ## products): rss = z'Wz - b.h, mss = b'Gb - (sum w f)^2 / sum w, with
+        ## the intercept column of G giving sum w f; an exact pass when
+        ## cancellation would cost accuracy
+        zz <- dm_colsum(dmc_cbind(ww * z^2, ww + 0 * z))
+        bh <- sum(mo$b * mo$h)
+        rss_m <- zz[1L] - bh
+        ic <- match(which(colnames(x) == "(Intercept)"), q$pivot[seq_len(q$rank)])
+        if (rss_m > 1e-6 * zz[1L] && (!intercept || !is.na(ic))) {
+            rss <- rss_m
+            mss <- if (intercept) bh - sum(mo$b * mo$G[, ic])^2 / zz[2L] else bh
+            mss <- max(mss, 0)
+        }
+    }
+    if (!is.null(rss)) {
+        ## done
+    } else if (dm_is_rcols(f)) {
+        ## remotely, one pass: sums of w r^2, w f, w f^2 and w
+        s <- dm_colsum(dmc_cbind(ww * r^2, ww * f, ww * f^2, ww + 0 * f))
+        rss <- s[1L]
+        mss <- if (intercept) max(s[3L] - s[2L]^2 / s[4L], 0) else s[3L]
     } else {
-        sum(ww * f^2)
+    rss <- dm_colsum(ww * r^2)
+    mss <- if (intercept) {
+        fbar <- if (is.null(w)) {
+            if (dm_is_rcols(f)) dm_colsum(f) / dm_nrows(f) else mean(f)
+        } else {
+            dm_colsum(w * f) / dm_colsum(w)
+        }
+        dm_colsum(ww * (f - fbar)^2)
+    } else {
+        dm_colsum(ww * f^2)
+    }
     }
     coef <- beta
     coef[setdiff(seq_len(p), q$pivot[seq_len(q$rank)])] <- NA_real_
