@@ -57,7 +57,9 @@ and on a database table.
 \itemize{
 \item Arithmetic and comparisons (\code{+}, \code{-}, \code{*}, \code{/}, \code{^}, \code{==}, \code{<}, ...,
 \code{&}, \code{|}, \code{!}), \code{\link[=is.na]{is.na()}}, \code{\link[=is.nan]{is.nan()}}, \code{\link[=is.finite]{is.finite()}}, \code{\link[=is.infinite]{is.infinite()}}
-and the \code{Math} functions \code{exp()}, \code{log()} (one argument), \code{sqrt()},
+and the \code{Math} functions \code{exp()}, \code{log()} (\code{log(x, base)}: \code{base} a
+number or a column of the design, R's \code{log(x, 1)} and negative bases
+included), \code{sqrt()},
 \code{abs()}, \code{log1p()}, \code{expm1()}, \code{log2()}, \code{log10()}, \code{cos()}, \code{sin()},
 \code{tan()}, \code{floor()}, \code{ceiling()}, \code{sign()}, \code{trunc()}, \code{round(x, digits)} (R's algorithm: \code{round(2.5)} is 2, \code{round(0.15, 1)} is 0.1),
 \code{signif(x, digits)}, \code{gamma()} and \code{lgamma()} build a new column,

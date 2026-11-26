@@ -42,7 +42,8 @@
 ##                         (NA where either side is NA or NaN, as in R)
 ##   is.na is.nan is.finite is.infinite (R's semantics; never NA)
 ##   exp log sqrt abs log1p expm1 log2 log10 cos sin tan floor ceiling sign
-##                         (Math group; log has one argument)
+##                         (Math group; log(x, base) with a number or a
+##                         column as base, as R: dm_column_log())
 ##   dmc_pmin dmc_pmax dmc_ifelse dmc_rowsums dmc_cbind dmc_col(x, j) dm_ncols
 ##   dmc_const(like, value) dmc_lgamma dmc_round (half to even)
 ##   dmc_is_finite (NaN-safe) dmc_present (not NA or NaN: !is.na)
@@ -695,17 +696,61 @@ is.infinite.design_column <- function(x)
 
 #' @export
 Math.design_column <- function(x, ...) {
+    if (.Generic == "log") return(dm_column_log(x, ...))
+    ## (log2 and log10 as R: -Inf at 0, NaN below, where DuckDB refuses)
+    if (.Generic == "log2") return(dm_column_log(x, 2))
+    if (.Generic == "log10") return(dm_column_log(x, 10))
     a <- unclass(x)$sql
     sql <- switch(.Generic,
-        exp = sprintf("exp(%s)", a), log = sprintf("ln(%s)", a), sqrt = sprintf("sqrt(%s)", a),
+        exp = sprintf("exp(%s)", a), sqrt = sprintf("sqrt(%s)", a),
         abs = sprintf("abs(%s)", a), log1p = sprintf("ln(1 + %s)", a), expm1 = sprintf("(exp(%s) - 1)", a),
-        log2 = sprintf("log2(%s)", a), log10 = sprintf("log10(%s)", a),
         cos = sprintf("cos(%s)", a), sin = sprintf("sin(%s)", a), tan = sprintf("tan(%s)", a),
         floor = sprintf("floor(%s)", a), ceiling = sprintf("ceil(%s)", a),
         ## (DuckDB's sign(NaN) is 0, R's NaN)
         sign = sprintf("CASE WHEN isnan(CAST(%s AS DOUBLE)) THEN CAST('NaN' AS DOUBLE) ELSE sign(%s) END", a, a),
         ## (round, signif, trunc, gamma, lgamma and the errors: R/columns_public.R)
         dm_math_sql(x, .Generic, ...))
+    dm_column(unclass(x)$frame, sql)
+}
+
+## log(x) and log(x, base) of a remote column, as R computes them (nm8t):
+## R_log(v) is ln(v) for v > 0, -Inf for 0 and NaN for v < 0 (DuckDB's ln()
+## refuses 0 and negative numbers: it is reached only for v > 0, NaN or
+## NULL, which it propagates); log(x, base) is log10(x) where base is 10,
+## log2(x) where it is 2, else R_log(x) / R_log(base) (R's logbase()), so
+## that base 1 gives x / 0 (Inf, -Inf or NaN), base 0 R_log(x) / -Inf and a
+## negative base NaN; NA (NULL) in x or base gives NA, else NaN gives NaN.
+## `base`: a number (its R_log() computed in R) or a column of the design
+## (one column, or as many as x).
+dm_column_log <- function(x, base) {
+    rlog <- function(v, fun = "ln")
+        sprintf("(CASE WHEN %1$s = 0 THEN CAST('-Infinity' AS DOUBLE) WHEN %1$s < 0 THEN CAST('NaN' AS DOUBLE) ELSE %2$s(%1$s) END)",
+                v, fun)
+    xv <- sprintf("CAST(%s AS DOUBLE)", unclass(x)$sql)
+    if (missing(base)) return(dm_column(unclass(x)$frame, rlog(xv)))
+    if (dm_is_column(base)) {
+        f <- dm_column_frame(x, base)
+        bv <- sprintf("CAST(%s AS DOUBLE)", unclass(base)$sql)
+        k <- max(length(xv), length(bv))
+        if (!(length(xv) %in% c(1L, k)) || !(length(bv) %in% c(1L, k)))
+            stop("log() of remote columns with different numbers of columns.", call. = FALSE)
+        xv <- rep_len(xv, k)
+        bv <- rep_len(bv, k)
+        sql <- sprintf("(CASE WHEN %1$s = 10 THEN %2$s WHEN %1$s = 2 THEN %3$s ELSE %4$s / %5$s END)",
+                       bv, rlog(xv, "log10"), rlog(xv, "log2"), rlog(xv), rlog(bv))
+        return(dm_column(f, sql))
+    }
+    if (!(is.numeric(base) || is.logical(base)) || length(base) != 1L || !is.null(dim(base)))
+        stop("log() of a remote column: `base` must be one number or a column of the same design.", call. = FALSE)
+    base <- as.double(base)
+    sql <- if (!is.na(base) && base == 10) rlog(xv, "log10")
+           else if (!is.na(base) && base == 2) rlog(xv, "log2")
+           else {
+               ## R_log(base), in R (NA is NULL: the result is NA)
+               den <- if (is.na(base) && !is.nan(base)) "CAST(NULL AS DOUBLE)"
+                      else dm_sql_double(if (is.nan(base)) NaN else if (base > 0) log(base) else if (base == 0) -Inf else NaN)
+               sprintf("(%s / %s)", rlog(xv), den)
+           }
     dm_column(unclass(x)$frame, sql)
 }
 

@@ -108,7 +108,9 @@ dm_summary_aggregates <- function(args, what) {
 #' @section Base generics on remote columns:
 #' * Arithmetic and comparisons (`+`, `-`, `*`, `/`, `^`, `==`, `<`, ...,
 #'   `&`, `|`, `!`), [is.na()], [is.nan()], [is.finite()], [is.infinite()]
-#'   and the `Math` functions `exp()`, `log()` (one argument), `sqrt()`,
+#'   and the `Math` functions `exp()`, `log()` (`log(x, base)`: `base` a
+#'   number or a column of the design, R's `log(x, 1)` and negative bases
+#'   included), `sqrt()`,
 #'   `abs()`, `log1p()`, `expm1()`, `log2()`, `log10()`, `cos()`, `sin()`,
 #'   `tan()`, `floor()`, `ceiling()`, `sign()`, `trunc()`, `round(x,
 #'   digits)` (R's algorithm: `round(2.5)` is 2, `round(0.15, 1)` is 0.1),

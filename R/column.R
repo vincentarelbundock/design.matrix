@@ -48,7 +48,7 @@
 #' * Arithmetic: `+`, `-`, `*`, `/`, `^` with numbers and other columns of
 #'   the same design, comparisons, `&`, `|`, `!`, [is.na()], [is.nan()],
 #'   [is.finite()], [is.infinite()] and the functions of the `Math` group
-#'   (`exp()`, `log()` with one argument, `sqrt()`, `abs()`, ...), with R's
+#'   (`exp()`, `log()` with a base (a number or a column), `sqrt()`, `abs()`, ...), with R's
 #'   missing values (SQL `NULL` is `NA`, and `NaN` stays `NaN`).
 #'   `col_ifelse()`, `col_pmin()` and `col_pmax()` combine columns, and
 #'   `sum()`, `mean()`, `min()`, `range()`, `any()`, ... and `col_sums()`

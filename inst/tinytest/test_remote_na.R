@@ -154,6 +154,36 @@ for (k in list(1, 0, -1, -2.5, 2, Inf, -Inf)) check(k^b, k^d$b, paste(format(k),
 checkm(NA^b, NA^d$b, is.nan(d$b), "NA ^")
 checkm(NaN^b, NaN^d$b, is.na(d$b) & !is.nan(d$b), "NaN ^")
 
+## log (nm8t): log(x) is -Inf at 0 and NaN below, log(x, base) is R's
+## logbase(): log10/log2 for base 10/2, else log(x) / log(base), so base 1
+## gives x / 0 (Inf, -Inf, NaN), base 0 log(x) / -Inf, a negative base
+## NaN; NA propagates, then NaN. (Base R warns for NaN: suppressed.) Where
+## x and the base are both missing, R's result can depend on the platform:
+## only missingness compared there.
+lg <- function(...) suppressWarnings(log(...))
+check(log(a), lg(d$a), "log")
+check(log2(a), suppressWarnings(log2(d$a)), "log2")
+check(log10(a), suppressWarnings(log10(d$a)), "log10")
+for (k in list(10, 2, 1, 0.5, 3, exp(1), 0, -1, -2.5, Inf, -Inf)) {
+    check(log(a, k), lg(d$a, k), paste("log base", format(k)))
+    check(log(b, base = k), lg(d$b, base = k), paste("log(b, base =", format(k), ")"))
+}
+checkm(log(a, NA), lg(d$a, NA), is.na(d$a), "log base NA")
+checkm(log(a, NaN), lg(d$a, NaN), is.na(d$a), "log base NaN")
+expect_true(all(is.na(get(log(a, NA)))))
+## a column as base, one value per row (10 and 2 rows: log10 and log2 as R)
+checkm(log(a, b), lg(d$a, d$b), pm, "log column base")
+checkm(log(b, a), lg(d$b, d$a), pm, "log column base swapped")
+tens <- col("id") * 0 + 10
+check(log(a, tens), lg(d$a, 10), "log column base 10")
+check(log(a, tens - 8), lg(d$a, 2), "log column base 2")
+## a multi-column column: one column each
+m <- dmp_collect(dmc_cbind(id, log(ab, 2), log(ab)))
+m <- m[order(m[, 1]), -1]
+expect_identical(unname(m), unname(cbind(lg(d$a, 2), lg(d$b, 2), lg(d$a), lg(d$b))))
+expect_error(log(a, c(2, 3)), "one number or a column")
+expect_error(log(a, "2"), "one number or a column")
+
 ## ifelse and counts: a NA test gives NA (ifelse) and does not count
 check(dmc_ifelse(a > 0, a, 7), dmc_ifelse(d$a > 0, d$a, 7), "ifelse")
 check(dmc_ifelse(a == b, 1, 0), dmc_ifelse(d$a == d$b, 1, 0), "ifelse ==")

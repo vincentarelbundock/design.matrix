@@ -106,7 +106,7 @@ with \code{k} columns).
 \item Arithmetic: \code{+}, \code{-}, \code{*}, \code{/}, \code{^} with numbers and other columns of
 the same design, comparisons, \code{&}, \code{|}, \code{!}, \code{\link[=is.na]{is.na()}}, \code{\link[=is.nan]{is.nan()}},
 \code{\link[=is.finite]{is.finite()}}, \code{\link[=is.infinite]{is.infinite()}} and the functions of the \code{Math} group
-(\code{exp()}, \code{log()} with one argument, \code{sqrt()}, \code{abs()}, ...), with R's
+(\code{exp()}, \code{log()} with a base (a number or a column), \code{sqrt()}, \code{abs()}, ...), with R's
 missing values (SQL \code{NULL} is \code{NA}, and \code{NaN} stays \code{NaN}).
 \code{col_ifelse()}, \code{col_pmin()} and \code{col_pmax()} combine columns, and
 \code{sum()}, \code{mean()}, \code{min()}, \code{range()}, \code{any()}, ... and \code{col_sums()}
