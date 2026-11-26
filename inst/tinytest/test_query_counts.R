@@ -20,15 +20,11 @@ DBI::dbWriteTable(con, "d", d)
 nq <- function(expr) count_queries(expr)$count
 
 ## LM
-## (uncompressed LM and weighted LM: 1 fewer since nh9e, the fitted values
-## X b were a view made at once and never read: the sums of squares come
-## from the moments of the factorization; products are now made at their
-## first use)
-expect_equal(nq(design_lm(y ~ x1 + f, con, table = "d", compress = FALSE)), 11L, info = "lm")
+## The uncompressed, unweighted fit reuses the response sum of squares
+## from the QR scan.
+expect_equal(nq(design_lm(y ~ x1 + f, con, table = "d", compress = FALSE)), 10L, info = "lm")
 expect_equal(nq(design_lm(y ~ xd + f, con, table = "d", compress = TRUE)), 9L, info = "lm compressed")
-## (12 since etg8 + nh9e: auto now runs its estimate and declines at 4%
-## patterns (lm compresses only at <= 1e-3), and the unread fitted view is gone)
-expect_equal(nq(design_lm(y ~ xd + f, con, table = "d")), 12L, info = "lm auto")
+expect_equal(nq(design_lm(y ~ xd + f, con, table = "d")), 11L, info = "lm auto")
 ## weighted LM
 expect_equal(nq(design_lm(y ~ x1 + f, con, table = "d", weights = "w", compress = FALSE)), 13L,
              info = "weighted lm")
@@ -43,13 +39,11 @@ expect_equal(nq(design_glm(yb ~ x1 + f, binomial("probit"), con, table = "d", co
              info = "probit")
 expect_equal(nq(design_glm(yb ~ xd + f, binomial("probit"), con, table = "d", compress = TRUE)), 26L,
              info = "probit compressed")
-## FE-LM (two FE), with clustering; FE-GLM Poisson with clustering (FE fits
-## are never compressed; since etg8 their crossprod/colSums run no
-## compression decision query: 3 fewer statements each)
-expect_equal(nq(design_lm(y ~ x1 + xd | a + b, con, table = "d")), 31L, info = "FE-LM")
-expect_equal(nq(design_lm(y ~ x1 + xd | a + b, con, table = "d", vcov = ~a)), 36L,
+## Raw-key FE summaries and residual refinement.
+expect_equal(nq(design_lm(y ~ x1 + xd | a + b, con, table = "d")), 21L, info = "FE-LM")
+expect_equal(nq(design_lm(y ~ x1 + xd | a + b, con, table = "d", vcov = ~a)), 25L,
              info = "FE-LM cluster")
-expect_equal(nq(design_glm(yp ~ x1 + xd | a + b, poisson, con, table = "d", vcov = ~a)), 173L,
+expect_equal(nq(design_glm(yp ~ x1 + xd | a + b, poisson, con, table = "d", vcov = ~a)), 147L,
              info = "FE-GLM Poisson cluster")
 
 ## the counter sees statements dm_query() does not log

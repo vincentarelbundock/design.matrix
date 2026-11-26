@@ -408,6 +408,22 @@ for (vc in list("iid", ~b)) {
     }
 }
 
+# Raw keys retain their types when SQL summary rows are matched to FE levels.
+# These doubles have the same printed label; these tuples contain separators.
+if (remote) {
+    keys <- expand.grid(g = c(1, 1 + 2^-48, 5), a = c("A", "A:B"),
+                        b = c("B:C", "C"), rep = 1:8, stringsAsFactors = FALSE)
+    set.seed(765)
+    keys$x <- rnorm(nrow(keys))
+    keys$y <- keys$x + rnorm(nrow(keys))
+    DBI::dbWriteTable(con, "typed_keys", keys)
+    mem <- design_lm(y ~ x | g + a^b, keys, vcov = ~g)
+    sql <- design_lm(y ~ x | g + a^b, con, table = "typed_keys", vcov = ~g)
+    expect_equal(coef(sql), coef(mem), tolerance = TOL)
+    expect_equal(vcov(sql), vcov(mem), tolerance = TOL)
+    expect_equal(unname(sql$fixef), unname(mem$fixef), tolerance = TOL)
+}
+
 # Errors -----------------------------------------------------------------------
 expect_error(design_lm(y ~ x1 | a, d, vcov = ~a + b), "one-way")
 expect_error(design_lm(y ~ x1 | a, d, vcov = "hc1"), "vcov")

@@ -346,7 +346,7 @@ dm_sql_na_cols <- function(D) {
 ## Y'Y is then not computed). With sql_only, the queries instead. With
 ## `cap`, compressed (dm_sql_cells(), not with `wy`): NULL when there are
 ## more cells than that.
-dm_sql_moments <- function(D, ys = character(), w = NULL, gram = TRUE, sql_only = FALSE, wy = NULL, cap = NULL) {
+dm_sql_moments <- function(D, ys = character(), w = NULL, gram = TRUE, sql_only = FALSE, wy = NULL, cap = NULL, sum_y = FALSE) {
     st <- D$sql_terms
     p <- D$p
     K <- length(ys)
@@ -364,6 +364,7 @@ dm_sql_moments <- function(D, ys = character(), w = NULL, gram = TRUE, sql_only 
     id <- list(n = sc$add(u0, "1"), sw = sc$add(u0, paste0("CAST(1 AS DOUBLE)", wf)),
                naw = if (hasw) sc$add(u0, dm_sql_missing("__dm_w")),
                nay = vapply(yc$exprs, function(e) sc$add(u0, dm_sql_missing(e)), 1L))
+    if (sum_y) sy <- sc$add(u0, yprod(character(), yc$exprs[[1L]]))
     gid <- list()
     hid <- matrix(0L, length(st), K)
     if (!is.null(cap)) {
@@ -440,20 +441,23 @@ dm_sql_moments <- function(D, ys = character(), w = NULL, gram = TRUE, sql_only 
         if (!is.null(yty)) yty[] <- NA_real_
         sumw <- NA_real_
     }
-    list(xtx = xtx, xty = xty, yty = yty, n = sc$total(id$n), sumw = sumw)
+    out <- list(xtx = xtx, xty = xty, yty = yty, n = sc$total(id$n), sumw = sumw)
+    if (sum_y) out$sumy <- sc$total(sy)
+    out
 }
 
 ## Column sums (or means) of the design, within the values of `group` if
 ## given, with the weights `w` (SQL expressions over the source `s`): one
 ## scan (dm_sql_scan()). With `cap`, compressed (dm_sql_cells()): NULL
 ## when there are more cells than that.
-dm_sql_colsums <- function(D, group, w, mean, cap = NULL) {
+dm_sql_colsums <- function(D, group, w, mean, cap = NULL, group_totals = NULL) {
     st <- D$sql_terms
     hasw <- !is.null(w)
     grouped <- !is.null(group)
     bad <- dm_sql_na_terms(D)
     pbad <- dm_sql_na_parts(D)
-    extra <- c(`__dm_g` = group, `__dm_w` = w,
+    tn <- if (length(group_totals)) paste0("__dm_total", seq_along(group_totals))
+    extra <- c(`__dm_g` = group, `__dm_w` = w, stats::setNames(group_totals, tn),
                if (grouped && any(bad)) stats::setNames(
                    sprintf("CASE WHEN COALESCE(%s, FALSE) THEN 0 ELSE 1 END",
                            vapply(which(bad), function(k) dm_sql_term_ok(D, k), "")), paste0("__dm_bad", which(bad))))
@@ -462,6 +466,8 @@ dm_sql_colsums <- function(D, group, w, mean, cap = NULL) {
                       vapply(D$vars, function(v) max(1L, length(v$levels)), 1L),
                       by = c(if (grouped) "__dm_g", ck$by), limit = cap)
     u0 <- ck$S
+    total_ids <- vapply(tn, function(nm) sc$add(u0, nm), 1L)
+    null_ids <- vapply(tn, function(nm) sc$add(u0, sprintf("CASE WHEN %s IS NULL THEN 1 ELSE 0 END", nm)), 1L)
     idn <- sc$add(u0, "1")
     idw <- if (hasw) sc$add(u0, dm_sql_missing("__dm_w"))
     idb <- if (grouped) vapply(which(bad), function(k) sc$add(u0, sprintf("__dm_bad%d", k)), 1L)
@@ -508,7 +514,15 @@ dm_sql_colsums <- function(D, group, w, mean, cap = NULL) {
         A <- Matrix::sparseMatrix(i = match(res$`__dm_g`, ug), j = seq_len(nrow(X)), x = 1, dims = c(G, nrow(X)))
         out[] <- as.matrix(A %*% X)
     }
-    for (t in use[idt[use] > 0L]) {
+    terms <- use[idt[use] > 0L]
+    ## With only scalar numeric terms, the scan groups solely by __dm_g.
+    ## Every sum comes from the same result rows, one per output group.
+    direct <- length(terms) && all(vapply(st[terms], function(t)
+        !length(t$S) && length(t$cols) == 1L && identical(as.vector(t$C), 1), NA))
+    if (direct) {
+        rows <- match(ug, sc$get(idn)$res$`__dm_g`)
+        for (t in terms) out[, st[[t]]$cols] <- sc$get(idt[t])$m[rows]
+    } else for (t in terms) {
         Tt <- st[[t]]
         g <- sc$get(idt[t])
         a <- dm_sql_level(g$res, Tt$S, Tt$strides)
@@ -520,7 +534,20 @@ dm_sql_colsums <- function(D, group, w, mean, cap = NULL) {
     for (j in seq_along(idb)) out[by_group(idb[j]) > 0, which(D$assign == D$terms[[which(bad)[j]]]$index)] <- NA_real_
     if (naw) out[] <- NA_real_
     if (mean) out <- out / by_group(idn)
-    out
+    if (!length(tn)) return(out)
+    totals <- matrix(0, G, length(tn))
+    for (j in seq_along(tn)) {
+        if (direct) {
+            values <- sc$get(total_ids[j])$m[rows]
+            missing <- sc$get(null_ids[j])$m[rows] > 0
+        } else {
+            values <- by_group(total_ids[j])
+            missing <- by_group(null_ids[j]) > 0
+        }
+        values[missing] <- NA_real_
+        totals[, j] <- values
+    }
+    list(keys = ug, sums = out, totals = totals)
 }
 
 ## X B for the rows used, as a temporary view (name NULL) or the table

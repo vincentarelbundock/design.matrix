@@ -207,7 +207,8 @@ largest (differences within a connected set are those of fixest).
 \code{predict(fit, newdata)} is \verb{X b} plus the FE values of the rows' levels
 (\code{NA} for levels not in the fit). With remote data, \code{fitted()} and
 \code{predict()} return tables and \code{residuals()} a remote design, as for
-remote fits without FE.
+remote fits without FE. These methods read the source rows when called;
+keep the training source available and unchanged for in-sample results.
 \item Offsets (the \code{offset} argument and \code{offset()} terms) are subtracted
 from the response, as in \code{\link[fixest:feols]{fixest::feols()}}; \code{fitted()} and \code{predict()}
 include them.

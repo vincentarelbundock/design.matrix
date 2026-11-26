@@ -164,7 +164,8 @@ clusters not counted in \code{K}).
 parameters; \code{fixef()} (the generic of fixest or nlme, when loaded)
 returns the FE values, also in \code{fit$fixef}, normalized as for
 \code{\link[=design_lm]{design_lm()}}; \code{predict()} gives the link or the response (\code{NA} for
-levels not in the fit); remotely, per-row results are tables.
+levels not in the fit); remotely, per-row results are tables. The in-sample
+methods read the training source when called.
 \code{fit$fe_iter} holds the iterations of conjugate gradients of each
 step (0 for a direct solve).
 \item Not supported with FE: \code{start}, \code{compress = TRUE} (compression is

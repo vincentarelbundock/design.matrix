@@ -787,6 +787,8 @@ dm_remote_gram_xty <- function(x, Y = NULL) {
     if (is.null(Y) || (!dm_is_column(Y) && !length(Y))) return(list(xtx = crossprod(x), xty = NULL))
     yc <- dm_remote_cols(x, Y, "y")
     sc <- yc$D$scale
+    if (is.null(sc) && length(yc$sql) == 1L)
+        return(lm_moments(yc$D, Y, NULL, centered = FALSE))
     dm_remote_moments(dm_remote_unscaled(yc$D), yc$sql, dm_sql_times(sc, sc), wy = sc, compress = FALSE)[c("xtx", "xty")]
 }
 

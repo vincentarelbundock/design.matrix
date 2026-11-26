@@ -96,6 +96,26 @@ dmc_binomial_ll <- function(m, y, w, mu) {
 
 ## ---- fixed effects (fe.R) ----
 
+## Weighted regression moments. Center the response in a separate pass to
+## retain accuracy when its mean is large relative to its variation.
+lm_moments <- function(x, z, w, n = NULL, centered = TRUE) {
+    if (inherits(x, "dm_remote") && is.null(x$scale) && dm_is_column(z) &&
+        (is.null(w) || dm_is_column(w))) {
+        x <- dmp_rebase(x, list(z, w))
+        y <- dm_remote_cols(x, z, "response")
+        weight <- if (!is.null(w)) dm_remote_cols(y$D, w, "weights")$sql
+        mo <- dm_sql_moments(y$D, y$sql, weight, sum_y = centered)
+        if (!centered) return(mo)
+        deviation2 <- (z - mo$sumy / mo$sumw)^2
+        mo$tss <- dm_colsum(if (is.null(w)) deviation2 else w * deviation2)
+        return(mo)
+    }
+    wz <- if (is.null(w)) z else w * z
+    sm <- dmc_moments(z, w, n)
+    list(xtx = if (is.null(w)) dmp_crossprod(x) else dmp_crossprod(x, dmp_scale(x, w)), xty = dmp_crossprod(x, wz),
+         yty = sm[1L], tss = sm[4L])
+}
+
 ## The moments of the response z of a fit with fixed effects, weights w
 ## (NULL for none), n rows: c(sum(w z z), sum(w), sum(w z), sum(w (z -
 ## zbar)^2)), zbar = sum(w z) / sum(w), without weights w = 1 (and then
