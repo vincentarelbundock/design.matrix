@@ -65,6 +65,9 @@ case_args <- function(cs) {
 for (cs in glm_cases) {
     b <- suppressWarnings(glm_ref(cs, dd))
     for (mode in modes) for (cp in list("auto", FALSE)) {
+        ## (the compressed path of the chunked engine is that of the SQL
+        ## engine: one GROUP BY)
+        if (mode$name == "chunked" && !isFALSE(cp)) next
         a <- suppressWarnings(do.call(fit_in, c(list(mode, cs[[2]], cs[[3]]), case_args(cs), compress = cp)))
         glm_same(a, b, paste(cs[[1]], mode$name, "compress", cp))
     }
@@ -79,13 +82,14 @@ for (cs in glm_cases) {
 
 for (mode in modes) {
     info <- mode$name
-    ## compression where rows share patterns; offsets are not compressed
+    ## compression where rows share patterns (and offset values)
     fit <- fit_in(mode, yb ~ xd * f + g, binomial)
     expect_true(fit$compressed, info = info)
     expect_equal(fit$patterns, 48L, info = info)
     expect_false(fit_in(mode, yb ~ xd * f + g, binomial, compress = FALSE)$compressed, info = info)
     fo <- fit_in(mode, yp ~ g + offset(log(xd)), poisson)
-    expect_false(fo$compressed, info = info)
+    expect_true(fo$compressed, info = info)
+    expect_equal(fo$patterns, 12L, info = info)
     glm_same(fo, glm(yp ~ g + offset(log(xd)), poisson, dd), paste("offset", info))
 
     ## warnings, as glm()
@@ -137,6 +141,24 @@ for (mode in modes) {
         expect_equal(a$iter, b$iter, info = paste("start", info, cp))
         expect_equal(coef(a), coef(b), info = paste("start", info, cp))
     }
+}
+
+## regression: nested expressions (probit: DuckDB expands the qnorm and
+## pnorm macros inline) once made queries so long that DuckDB hung; the
+## linear predictor, fitted means and working weights are computed once
+## (dmglm_freeze()), which bounds the queries
+if (length(modes) > 1L) {
+    qlen <- integer()
+    withCallingHandlers({
+        op <- options(design.matrix.remote_debug = TRUE)
+        fp <- design_glm(yb ~ xd + f, binomial("probit"), con, table = "d", compress = FALSE)
+        options(op)
+    }, message = function(m) {
+        qlen <<- c(qlen, nchar(conditionMessage(m)))
+        invokeRestart("muffleMessage")
+    })
+    expect_true(max(qlen) < 1e5)
+    glm_same(fp, glm(yb ~ xd + f, binomial("probit"), dd), "probit query size")
 }
 
 ## initialize's checks

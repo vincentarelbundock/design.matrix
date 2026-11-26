@@ -184,17 +184,15 @@ result has \code{NA}.
 \section{GLMs}{
 
 \code{\link[=design_glm]{design_glm()}} accepts remote data like \code{\link[=design_lm]{design_lm()}}:
-\code{design_glm(y ~ x + f, binomial, con, table = "d", weights = "w", offset = "o")},
-with \code{weights} and \code{offset} naming columns, \code{offset()} terms in the
-formula, and a remote design with \code{y} naming the response column (two
-columns for successes and failures). The response, weights and offset
-must have SQL translations. The fit is the same code as in memory, on
-the remote methods of the products: with few design patterns (see
-\emph{Compression}), the iterations run on the patterns; otherwise each
-iteration computes its products in the database or in batches.
-\code{predict(fit, newdata = con, table = ..., type = "response")}, \code{fitted()}
-and \code{residuals(fit, type = )} return the name of a temporary view with a
-\code{.fitted} (and \code{.resid}) column next to the columns of the remote data.
+\code{design_glm(y ~ x + f, binomial, con, table = "d", weights = w, offset = log(e))},
+with \code{weights} and \code{offset} column names, \code{DBI::SQL()} or R expressions
+over the columns, \code{offset()} terms in the formula, and a remote design
+with \code{y} naming the response column (two columns for successes and
+failures). The fit is the same code as in memory, on the remote methods
+of the products: with few design patterns (see \emph{Compression}), the
+iterations run on the patterns; otherwise each iteration computes its
+products in the database or in batches. \code{predict(fit, newdata = con, table = ..., type = "response")}, \code{fitted()} and \code{residuals(fit, type = )} return a temporary view with a \code{.fitted} (and \code{.resid}) column next to
+the columns of the remote data.
 }
 
 \section{Linear models}{
