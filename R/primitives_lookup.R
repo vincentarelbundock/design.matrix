@@ -112,7 +112,7 @@ dmc_key <- function(x, vars, data = NULL) {
 }
 
 dmc_not_na <- function(key) {
-    if (!dm_is_rcols(key)) return(stats::complete.cases(key))
+    if (!dm_is_rcols(key)) return(if (anyNA(key)) stats::complete.cases(key) else rep(TRUE, NROW(key)))
     sql <- unclass(key)$sql
     dm_rcols(unclass(key)$frame, sprintf("(%s)", paste(sprintf("(%s) IS NOT NULL", sql), collapse = " AND ")))
 }

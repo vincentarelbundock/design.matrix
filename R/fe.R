@@ -821,10 +821,11 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm) {
     rows <- base$rows
     keys <- base$keys$fe
     clkey <- base$keys$cl
-    if (!is.null(w) && dm_colsum(dmc_ifelse(dmc_is_finite(w) & w < 0, 1, 0)) > 0)
+    if (!is.null(w) && dm_colsum(dmc_is_finite(w) & w < 0) > 0)
         stop("missing or negative weights not allowed", call. = FALSE)
     restrict <- function(keep) {
-        nd <- dm_colsum(dmc_ifelse(keep, 0, 1))
+        ## (keep is never missing: the logical columns are NA-safe)
+        nd <- dm_colsum(!keep)
         if (nd == 0) return(0)
         x2 <- dmp_subset(x, keep)
         z <<- dmc_subset(z, keep, x2)
@@ -850,10 +851,12 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm) {
         }
         if (fixef.rm == "none") break
         one <- dmc_const(z, 1)
+        cnt <- lapply(cds, function(cd) dmp_groupsum(one, cd$codes)[, 1L])
+        ## no level with one row: no singleton
+        if (!any(vapply(cnt, function(v) any(v == 1), NA))) break
         single <- NULL
         for (k in seq_along(keys)) {
-            cnt <- dmp_groupsum(one, cds[[k]]$codes)[, 1L]
-            s <- dmc_lookup(cnt, cds[[k]]$codes, along = last) == 1
+            s <- dmc_lookup(cnt[[k]], cds[[k]]$codes, along = last) == 1
             single <- if (is.null(single)) s else single | s
             last <- list(single)
         }
@@ -874,7 +877,7 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm) {
         if (cl$G < 2L) stop("Clustered standard errors need at least two clusters.", call. = FALSE)
     }
     ## the design over the frame of the last columns (which keeps the others)
-    x <- dm_rebase(x, do.call(dm_rcols_frame, last))
+    x <- dm_rebase(x, if (length(last)) dm_rcols_frame(last[[1L]]))
     list(x = x, cols = list(z = z, w = w, codes = lapply(cds, `[[`, "codes"), cl = cl),
          levels = lapply(cds, `[[`, "levels"), nsingle = as.integer(nsingle), rows = rows)
 }
