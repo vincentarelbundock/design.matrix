@@ -151,20 +151,32 @@ or with \code{force = TRUE}.
 When the rows have few distinct \emph{design patterns} (the same factor levels
 and the same values of the numeric variables of the design, as with
 factors and discrete numeric variables), \code{crossprod()}, \code{colSums()},
-\code{colMeans()}, \code{\link[=design_lm]{design_lm()}} and \code{\link[=design_glm]{design_glm()}} compress: the one scan of
-the rows also groups by the numeric variables, which returns each pattern
-with its number of rows and the sums of the weights and responses, and
-the result is computed from the design of the patterns, in memory. The
-option \code{design.matrix.remote_compress}
-controls it. With \code{"auto"} (default), a design with a continuous
-numeric column (a \code{DOUBLE} column with many distinct values in a sample
-of the rows) is not compressed, at almost no cost; otherwise the number
-of patterns is estimated over all the rows (\code{approx_count_distinct()}),
-and the products are compressed when it is at most
-\code{getOption("design.matrix.remote_compress_ratio", 0.1)} times the number
-of rows and at most \code{getOption("design.matrix.remote_compress_max", 1e6)}.
+\code{colMeans()}, \code{\link[=design_lm]{design_lm()}} and \code{\link[=design_glm]{design_glm()}} can compress: the one scan
+of the rows also groups by the numeric variables, which returns each
+pattern with its number of rows and the sums of the weights and
+responses, and the result is computed from the design of the patterns,
+in memory. The option \code{design.matrix.remote_compress} controls it.
 \code{TRUE} always compresses (unless every row is distinct); \code{FALSE} never
-does. Designs that keep rows with missing values
+does. With \code{"auto"} (default), the choice depends on the operation:
+\itemize{
+\item \code{colSums()} and \code{colMeans()} are never compressed (grouping by the
+numeric variables costs more than it saves);
+\item \code{crossprod()} is compressed only for designs with many numeric columns
+(currently at least 8 distinct products of numeric variables; the
+threshold is provisional), where compression saves many per-row
+products, and when the patterns are at most 1\% of the rows. Other
+designs skip the decision entirely;
+\item \code{\link[=design_lm]{design_lm()}} and \code{\link[=design_glm]{design_glm()}} are compressed when the patterns are at
+most \code{getOption("design.matrix.remote_compress_ratio", 0.1)} times the
+number of rows.
+}
+
+In every case the number of patterns must also be at most
+\code{getOption("design.matrix.remote_compress_max", 1e6)}. To decide, a design
+with a continuous numeric column (a \code{DOUBLE} column with many distinct
+values in a sample of the rows) is not compressed, at almost no cost;
+otherwise the number of patterns is estimated over all the rows
+(\code{approx_count_distinct()}). Designs that keep rows with missing values
 (\code{na.action = na.pass}) are not compressed.
 
 Remote designs keep only the \emph{Algebra} promise of the package: results
