@@ -65,7 +65,7 @@ if (requireNamespace("fixest", quietly = TRUE)) {
 }
 ```
 
-`fe$fixef` (or `fixef(fe)` with fixest or nlme loaded) holds the values of the fixed effects, one named vector per fixed effect, and `predict(fe, newdata)` adds them to `X b`: levels absent from the fit give `NA`. `subset`, offsets, `se.fit` and intervals in `predict()`, and clustering by more than one variable are not supported with fixed effects.
+`fe$fixef` (or `fixef(fe)` with fixest or nlme loaded) holds the values of the fixed effects, one named vector per fixed effect, and `predict(fe, newdata)` adds them to `X b`: levels absent from the fit give `NA`. Offsets (`offset =` or `offset()` terms) are subtracted from the response, as in `feols()`. `subset`, `se.fit` and intervals in `predict()`, and clustering by more than one variable are not supported with fixed effects.
 
 ```r
 nd <- data.frame(id = c(1, 2, 999), t = c(1, 5, 2), x = 0, f = factor("a", levels = c("a", "b")))
@@ -94,6 +94,21 @@ When rows share a design pattern and an offset, they share their fitted value, a
 fit <- design_glm(k ~ f + offset(log(e)), poisson, dg)
 fit$patterns
 all.equal(deviance(fit), deviance(glm(k ~ f + offset(log(e)), poisson, dg)))
+```
+
+Fixed effects work in `design_glm()` as in `design_lm()`, with the results of `fixest::feglm()` and `fixest::fepois()`. The iterations are those of `glm.fit()`, with the fixed effects among the parameters: the weighted least squares problem of each iteration is solved by the fixed-effect estimator of linear models, from sums over rows. As fixest does by default, rows are dropped (iteratively) when their level of some fixed effect is a singleton or has an all-zero count (Poisson) or all-zero or all-one outcome (binomial), since its fixed effect would be infinite; `fit$nperfect` and `fit$nsingletons` count them. Offsets, weights and `vcov = ~cl` work as above. Both fits below are run to a tight convergence tolerance, so that they agree to many digits (the covariance matrix comes from the weights of the last iteration, which is one step behind the coefficients).
+
+```r
+panel$k <- rpois(1000, exp(0.3 * panel$x + panel$id / 200))
+panel$k[panel$id %% 25 == 0] <- 0
+fp <- design_glm(k ~ x + f | id + t, poisson, panel, vcov = ~id, control = list(epsilon = 1e-10))
+summary(fp)
+if (requireNamespace("fixest", quietly = TRUE)) {
+    fx <- fixest::fepois(k ~ x + f | id + t, panel, cluster = ~id, glm.tol = 1e-10, fixef.tol = 1e-11, notes = FALSE)
+    print(c(nobs(fp), nobs(fx)))
+    print(all.equal(coef(fp), coef(fx)))
+    print(all.equal(unclass(vcov(fp)), unclass(vcov(fx)), check.attributes = FALSE))
+}
 ```
 
 The families are those of `stats` (binomial, Poisson, Gaussian, Gamma, inverse Gaussian and the quasi families) with their standard links. Every option of `design_glm()` also works on remote data (see #link("out-of-core.html")[out-of-core data]), which is why `subset`, `etastart`, `mustart` and standard errors of predictions are not offered.

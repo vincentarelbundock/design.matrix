@@ -134,9 +134,14 @@ dm_fe_vcov_arg <- function(vcov) {
     stop(msg, call. = FALSE)
 }
 
-dm_fe_rm_arg <- function(fixef.rm) {
-    if (!checkmate::test_choice(fixef.rm, c("singleton", "none")))
-        stop("`fixef.rm` must be \"singleton\" or \"none\".", call. = FALSE)
+## fixef.rm: for linear models "singleton" (or "perfect_fit", the same
+## there) or "none"; for GLMs also "infinite_coef" and "perfect_fit"
+## (default: singletons and levels with an infinite FE, as fixest).
+dm_fe_rm_arg <- function(fixef.rm, glm = FALSE) {
+    ok <- if (glm) c("perfect_fit", "singleton", "infinite_coef", "none") else c("singleton", "perfect_fit", "none")
+    if (!checkmate::test_choice(fixef.rm, ok))
+        stop(sprintf("`fixef.rm` must be %s.", paste(sprintf("\"%s\"", ok), collapse = ", ")), call. = FALSE)
+    if (!glm && fixef.rm == "perfect_fit") fixef.rm <- "singleton"
     fixef.rm
 }
 
@@ -541,9 +546,15 @@ dm_fe_pivchol <- function(M, scale, tol) {
 ## Arguments of dm_fe_core(): the design x, and `cols`, the columns of the
 ## problem for that design: z (response), w (weights or NULL), codes (per
 ## FE, a dmc_codes() grouping) and, for clustered standard errors, cl (a
-## dmc_codes() grouping of the clusters).
+## dmc_codes() grouping of the clusters). `warm`: NULL, or an environment
+## that keeps the solution of the reduced system from one call to the next
+## (the weighted least squares steps of a GLM, whose solutions change
+## little: a warm start for the solver of the reduced system) and the
+## numbers of iterations. With resid_final = FALSE, the residuals after the
+## last refinement are not computed (no rss, `we`; for the steps of a GLM,
+## which need them only for the last step: see dm_fe_glm_estimate()).
 
-dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE) {
+dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_final = TRUE) {
     z <- cols$z
     w <- cols$w
     codes <- cols$codes
@@ -558,9 +569,10 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE) {
     wz <- if (is.null(w)) z else w * z
     xtx <- unname(if (is.null(w)) dmp_crossprod(x) else dmp_crossprod(x, dmp_scale(x, w)))
     xty <- unname(dmp_crossprod(x, wz))[, 1L]
-    yty <- dm_colsum(wz * z)
-    sw <- if (is.null(w)) n else dm_colsum(w)
-    ybar <- dm_colsum(wz) / sw
+    sm <- dmc_sums(wz * z, if (is.null(w)) 0 else w, wz)
+    yty <- sm[1L]
+    sw <- if (is.null(w)) n else sm[2L]
+    ybar <- sm[3L] / sw
     tss <- dm_colsum(if (is.null(w)) (z - ybar)^2 else w * (z - ybar)^2)
     if (!all(is.finite(xtx)) || !all(is.finite(xty))) stop("NA/NaN/Inf in 'x'", call. = FALSE)
     ## grouped sums and the FE system
@@ -572,7 +584,11 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE) {
     ## t(N_ab), G_b x G_a
     crosstab <- function(a, b) dmp_crosstab(codes[[b]], codes[[a]], w)
     sys <- dm_fe_system(G, nk, crosstab, opts)
-    ab <- dm_fe_apply(sys, B)
+    ab <- dm_fe_apply(sys, B, Z0 = if (!is.null(warm)) warm$Z)
+    if (!is.null(warm)) {
+        warm$Z <- ab$Z
+        warm$iter <- c(warm$iter, ab$info$iter %||% 0L)
+    }
     XtX <- xtx[xcols, xcols, drop = FALSE]
     Xty <- xty[xcols]
     Mfull <- rbind(cbind(XtX, Xty), c(Xty, yty)) - ab$Q
@@ -591,7 +607,8 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE) {
     resid <- function(b0, fe) {
         beta <- numeric(p)
         beta[xcols] <- b0
-        f <- dm_fe_fitted(x, beta, fe, codes)
+        ## (along z and w: remotely, on a frame that has their columns)
+        f <- dm_fe_fitted(x, beta, fe, codes, along = list(z, w))
         e <- z - f
         we <- if (is.null(w)) e else w * e
         list(xte = unname(dmp_crossprod(x, we))[, 1L],
@@ -602,6 +619,8 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE) {
     ## iterative refinement: the normal equations X'M e = 0 from residuals
     ## computed row by row correct the rounding of the one-pass aggregates
     for (it in seq_len(opts$refine)) {
+        ## (its right-hand side is at rounding level: the solver floors its
+        ## norm at that of the first solve with sys, see dm_fe_solve())
         Ae <- dm_fe_apply(sys, lapply(r$Be, function(v) matrix(v, ncol = 1L)))$A
         delta <- numeric(0)
         if (length(kp)) {
@@ -613,7 +632,7 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE) {
         }
         for (k in seq_len(nfe))
             fe[[k]] <- fe[[k]] + Ae[[k]][, 1L] - drop(ab$A[[k]][, kp, drop = FALSE] %*% delta)
-        r <- resid(b0, fe)
+        r <- if (resid_final || it < opts$refine) resid(b0, fe) else list(rss = NA_real_, we = NULL)
     }
     ## degrees of freedom (fixest: K.fixef = "nonnested", K.exact = FALSE)
     fe_dof <- sum(G) - (nfe - 1L)
@@ -634,37 +653,51 @@ dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE) {
     out <- list(b = b, kp = kp, xcols = xcols, bread = bread, rss = r$rss, fe = fe,
                 rank = rank, G = G, fe_dof = fe_dof, fe_dof_exact = fe_dof_exact,
                 df.residual = n - rank - fe_dof, nobs = n, tss = tss,
-                tss_within = max(Mfull[px + 1L, px + 1L], 0), info = ab$info)
-    if (cluster) {
-        cl <- cols$cl
-        Gc <- cl$G
-        U <- dmp_colsums_groups(dmp_scale(x, r$we), list(cl))[[1L]]$S[, xcols, drop = FALSE]
-        ## an FE is nested in the clusters when each of its levels is in one
-        ## cluster; otherwise its scores need a correction
-        nested <- vapply(seq_len(nfe), function(k) dmp_nested(cl, codes[[k]]), NA)
-        for (k in which(!nested)) {
-            E <- dmp_crosstab(codes[[k]], cl, r$we) # G_k x Gc
-            U <- U - as.matrix(Matrix::crossprod(E, ab$A[[k]][, seq_len(px), drop = FALSE]))
-        }
-        U <- U[, kp, drop = FALSE]
-        nn <- !nested
-        K_cl <- rank + if (any(nn)) sum(G[nn]) - (sum(nn) - 1L) else 1L
-        adj <- Gc / (Gc - 1) * (n - 1) / (n - K_cl)
-        Vc <- matrix(NA_real_, px, px)
-        if (rank) {
-            bk <- bread[kp, kp, drop = FALSE]
-            Vc[kp, kp] <- adj * bk %*% crossprod(U) %*% bk
-        }
-        out$vcov_cluster <- Vc
-        out$G_cluster <- Gc
-    }
+                tss_within = max(Mfull[px + 1L, px + 1L], 0), info = ab$info,
+                we = r$we, A = lapply(ab$A, function(Ak) Ak[, seq_len(px), drop = FALSE]))
+    if (cluster) out <- dm_fe_cluster(x, out, codes, cols$cl)
     out
+}
+
+## Clustered covariance of a fit of dm_fe_core() (`est`, which keeps the
+## weighted residuals `we` and Gamma = K^- S, `A`), clusters `cl` (a
+## dmc_codes() grouping): adds vcov_cluster and G_cluster to `est`.
+dm_fe_cluster <- function(x, est, codes, cl) {
+    xcols <- est$xcols
+    px <- length(xcols)
+    kp <- est$kp
+    rank <- est$rank
+    G <- est$G
+    nfe <- length(G)
+    n <- est$nobs
+    Gc <- cl$G
+    U <- dmp_colsums_groups(dmp_scale(x, est$we), list(cl))[[1L]]$S[, xcols, drop = FALSE]
+    ## an FE is nested in the clusters when each of its levels is in one
+    ## cluster; otherwise its scores need a correction
+    nested <- vapply(seq_len(nfe), function(k) dmp_nested(cl, codes[[k]]), NA)
+    for (k in which(!nested)) {
+        E <- dmp_crosstab(codes[[k]], cl, est$we) # G_k x Gc
+        U <- U - as.matrix(Matrix::crossprod(E, est$A[[k]]))
+    }
+    U <- U[, kp, drop = FALSE]
+    nn <- !nested
+    K_cl <- rank + if (any(nn)) sum(G[nn]) - (sum(nn) - 1L) else 1L
+    adj <- Gc / (Gc - 1) * (n - 1) / (n - K_cl)
+    Vc <- matrix(NA_real_, px, px)
+    if (rank) {
+        bk <- est$bread[kp, kp, drop = FALSE]
+        Vc[kp, kp] <- adj * bk %*% crossprod(U) %*% bk
+    }
+    est$vcov_cluster <- Vc
+    est$G_cluster <- Gc
+    est
 }
 
 ## X beta plus the FE values of the rows' levels, as a column (codes: per
 ## FE, integer codes, or, with `levels`, key columns matched to levels).
-dm_fe_fitted <- function(x, beta, fe, codes, levels = NULL) {
-    f <- dmp_mult(x, beta)
+## With beta a p x k matrix and each fe[[k]] a G_k x k matrix, k columns.
+dm_fe_fitted <- function(x, beta, fe, codes, levels = NULL, along = list()) {
+    f <- dmp_mult(x, beta, along = along)
     for (k in seq_along(fe))
         f <- f + dmc_lookup(fe[[k]], codes[[k]], levels[[k]], along = list(f))
     f
@@ -774,7 +807,10 @@ dm_fe_center <- function(mt, mf, contrasts) {
 #'   (`NA` for levels not in the fit). With remote data, `fitted()` and
 #'   `predict()` return tables and `residuals()` a remote design, as for
 #'   remote fits without FE.
-#' * Not supported with FE: `subset`, offsets, `compress = TRUE`, `se.fit`
+#' * Offsets (the `offset` argument and `offset()` terms) are subtracted
+#'   from the response, as in [fixest::feols()]; `fitted()` and `predict()`
+#'   include them.
+#' * Not supported with FE: `subset`, `compress = TRUE`, `se.fit`
 #'   and intervals in `predict()`, clustering by more than one variable.
 #'   For remote data, the response and `weights` are column names,
 #'   `DBI::SQL()` or R expressions, as without FE (expressions with no SQL
@@ -789,7 +825,8 @@ dm_fe_center <- function(mt, mf, contrasts) {
 #' @param vcov With fixed effects: `"iid"` or a one-sided formula naming a
 #'   cluster variable (`~firm`). Without fixed effects only `"iid"`.
 #' @param fixef.rm With fixed effects: `"singleton"` (drop singletons
-#'   iteratively, as [fixest::feols()]) or `"none"`.
+#'   iteratively, as [fixest::feols()]; `"perfect_fit"` is the same for a
+#'   linear model) or `"none"`.
 #' @examples
 #' ## fixed effects (examples below: without)
 #' set.seed(2)
@@ -808,7 +845,6 @@ NULL
 dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, model,
                      vcov, fixef.rm, dots) {
     if (isTRUE(compress)) stop("`compress = TRUE` is not supported with fixed effects.", call. = FALSE)
-    if (!is.null(call$offset)) stop("Offsets are not supported with fixed effects.", call. = FALSE)
     if (!is.null(call$subset)) stop("`subset` is not supported with fixed effects.", call. = FALSE)
     checkmate::assert_number(tol, lower = 0, finite = TRUE)
     checkmate::assert_flag(model)
@@ -822,11 +858,13 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     ## the design of the rows with complete model variables, with the
     ## response and weights as columns (as for fits without FE, the
     ## construction differs: a model frame, or a remote design)
-    base <- if (!is.null(data) && dm_is_remote_source(data)) {
-        dm_fe_base_remote(pf, data, call, env, contrasts, dots, clv)
-    } else {
-        if (length(dots)) stop("Unknown arguments: ", paste(names(dots), collapse = ", "), call. = FALSE)
-        dm_fe_base_memory(pf, call, env, contrasts, clv)
+    base <- dm_fe_base(pf, data, call, env, contrasts, dots, clv)
+    if (is.matrix(base$z)) stop("Multivariate responses are not supported.", call. = FALSE)
+    if (!is.numeric(base$z) && !dm_is_rcols(base$z)) stop("The response must be numeric.", call. = FALSE)
+    ## an offset: the fit is that of y - offset
+    if (!is.null(base$off)) {
+        base$z <- base$z - base$off
+        base$more <- list(off = base$off)
     }
     prob <- dm_fe_prepare(base, pf, clv, fixef.rm)
     est <- dm_fe_estimate(prob$x, prob$cols, tol, !is.null(clv))
@@ -836,12 +874,15 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     fit$sumlogw <- if (is.null(w)) 0 else dm_colsum(log(w))
     fit$x <- prob$x
     fit$cols <- prob$cols
+    fit$cols$off <- prob$more$off
+    fit$offset_call <- call$offset
+    fit$env <- env
     fit$terms <- base$terms
     fit$contrasts <- base$contrasts
     fit$xlevels <- base$xlevels
     fit$spec <- base$spec
     ## (remotely, na.exclude pads the results with every row not used)
-    fit$na.action <- if (isTRUE(base$exclude)) dm_remote_exclude(prob$x)
+    fit$na.action <- if (isTRUE(base$exclude)) dm_remote_exclude(prob$x_rows)
                      else dm_fe_na_action(base$na_act, prob$rows, base$nall)
     fit$method <- switch(dm_engine(prob$x), sql = "SQL aggregates", chunked = "aggregates computed in batches", NULL)
     ## (the data of a remote fit stay in the database: always kept)
@@ -856,15 +897,28 @@ dm_fe_lm <- function(call, env, formula, contrasts, compress, tol, tol_missing, 
     fit
 }
 
+## The design of the rows with complete model variables and the response,
+## weights and offset as columns: in memory or remotely (the construction
+## differs, as for fits without FE). `glm`: the response of a GLM (a
+## factor, a two-column response cbind(successes, failures)).
+dm_fe_base <- function(pf, data, call, env, contrasts, dots, clv, glm = FALSE) {
+    if (!is.null(data) && dm_is_remote_source(data))
+        return(dm_fe_base_remote(pf, data, call, env, contrasts, dots, clv, glm))
+    if (length(dots)) stop("Unknown arguments: ", paste(names(dots), collapse = ", "), call. = FALSE)
+    dm_fe_base_memory(pf, call, env, contrasts, clv)
+}
+
 ## In memory: the model frame of the main terms plus the FE and cluster
 ## variables (so that rows with a missing value in any of them are
 ## dropped), the design of the main terms (with the frame's predvars; the
-## design keeps the frame, FE variables included), response and weights.
+## design keeps the frame, FE variables included), response (as in the
+## frame: a vector, factor or matrix), weights and offset (offset() terms
+## and the `offset` argument).
 dm_fe_base_memory <- function(pf, call, env, contrasts, clv) {
     fe_vars <- unique(unlist(pf$fe, use.names = FALSE))
     aug <- dm_fe_augment(pf$main, unique(c(fe_vars, clv)))
     environment(aug) <- environment(pf$main)
-    mf <- dmfit_model_frame(call, c("weights", "na.action"), env, formula = aug)
+    mf <- dmfit_model_frame(call, c("weights", "na.action", "offset"), env, formula = aug)
     mt_aug <- attr(mf, "terms")
     labs <- attr(mt_aug, "term.labels")
     drop <- which(!labs %in% attr(stats::terms(pf$main), "term.labels"))
@@ -873,45 +927,60 @@ dm_fe_base_memory <- function(pf, call, env, contrasts, clv) {
     } else if (length(drop) < length(labs)) {
         stats::drop.terms(mt_aug, drop, keep.response = TRUE)
     } else {
-        ## no main term left: a formula with the response and the intercept
+        ## no main term left: a formula with the response, offset() terms
+        ## and the intercept
         tt <- stats::terms(pf$main)
-        attr(tt, "predvars") <- attr(mt_aug, "predvars")[1:2]
-        attr(tt, "dataClasses") <- attr(mt_aug, "dataClasses")[1L]
+        nv <- length(attr(tt, "variables"))
+        attr(tt, "predvars") <- attr(mt_aug, "predvars")[seq_len(nv)]
+        attr(tt, "dataClasses") <- attr(mt_aug, "dataClasses")[seq_len(nv - 1L)]
         tt
     }
     environment(mt) <- environment(pf$main)
-    y <- dmfit_response(mf)
-    if (is.null(y)) stop("The formula has no response.", call. = FALSE)
-    if (is.matrix(y)) stop("Multivariate responses are not supported.", call. = FALSE)
+    if (attr(mt_aug, "response") == 0L) stop("The formula has no response.", call. = FALSE)
+    ## (a factor or character response, for a GLM, as it is)
+    y <- mf[[1L]]
+    if (is.numeric(y) || is.logical(y)) y <- dmfit_response(mf)
     w <- as.vector(stats::model.weights(mf))
     if (!is.null(w) && !is.numeric(w)) stop("'weights' must be a numeric vector", call. = FALSE)
     if (!is.null(w)) w <- as.double(w)
+    off <- as.vector(stats::model.offset(mf))
+    if (!is.null(off)) {
+        if (length(off) != NROW(y))
+            stop(gettextf("number of offsets is %d should equal %d (number of observations)",
+                          length(off), NROW(y)), call. = FALSE)
+        off <- as.double(off)
+    }
     D <- design_matrix(mt, mf, contrasts.arg = contrasts)
-    list(x = D, z = y, w = w, keys = dm_fe_keys(D, pf, clv, mf),
+    list(x = D, z = y, w = w, off = off, keys = dm_fe_keys(D, pf, clv, mf),
          rows = seq_len(nrow(mf)), nall = nrow(mf), na_act = attr(mf, "na.action"),
          terms = mt, contrasts = D$contrasts, xlevels = stats::.getXlevels(mt, mf), spec = dmfit_spec(D))
 }
 
-## Remotely: the remote design of the right-hand side, and the response and
-## weights resolved as columns (a column name, DBI::SQL(), or an R
-## expression: in SQL when translatable, else evaluated in R), on the rows
-## where the model, FE and cluster variables, the response and the weights
-## are present, as the model frame in memory (dm_remote_fit()).
-dm_fe_base_remote <- function(pf, source, call, env, contrasts, dots, clv) {
+## Remotely: the remote design of the right-hand side, and the response,
+## weights and offset resolved as columns (a column name, DBI::SQL(), or an
+## R expression: in SQL when translatable, else evaluated in R), on the
+## rows where the model, FE and cluster variables, the response, weights
+## and offset are present, as the model frame in memory (dm_remote_fit()).
+## `glm`: the response of a GLM (dmglm_remote_response()): `z` is then the
+## response (a factor as 0/1), `resp` the columns of cbind(a, b).
+dm_fe_base_remote <- function(pf, source, call, env, contrasts, dots, clv, glm = FALSE) {
     na <- if (is.null(call$na.action)) "omit" else dm_na_kind(eval(call$na.action, env), c("omit", "exclude"), "For remote data, ")
     nms <- names(dots)
     if (is.null(nms)) nms <- rep("", length(dots))
     keys <- c("table", "sql", "engine", "chunk_size")
     if (any(!nms %in% keys))
         stop("Unknown arguments: ", paste(nms[!nms %in% keys], collapse = ", "), call. = FALSE)
-    if (length(attr(stats::terms(pf$main), "offset")))
-        stop("Offsets are not supported with fixed effects.", call. = FALSE)
     dm_need_duckdb()
     src <- dm_remote_source(source, dots$table, dots$sql)
-    r <- dm_remote_fit(pf$main, src, list(y = pf$main[[2L]], weights = call$weights), env, dots, contrasts,
-                       present = unique(c(unlist(pf$fe, use.names = FALSE), clv)))
+    resp <- if (glm) dmglm_remote_response(pf$main[[2L]], src$types, src$holder$con)
+            else list(args = list(y = pf$main[[2L]]), present = character(), cbind = FALSE)
+    r <- dm_remote_fit(pf$main, src, c(resp$args, list(weights = call$weights, offset = call$offset)), env, dots,
+                       contrasts, present = unique(c(unlist(pf$fe, use.names = FALSE), clv, resp$present)))
     D <- r$x
-    list(x = D, z = r$cols$y, w = r$cols$weights, keys = dm_fe_keys(D, pf, clv), rows = NULL, nall = D$n,
+    z <- if (length(resp$present)) dmglm_remote_factor(D, resp$present) else r$cols$y
+    list(x = D, z = z, w = r$cols$weights, off = r$off, resp = list(a = r$cols$a, b = r$cols$b, cbind = resp$cbind),
+         keys = dm_fe_keys(D, pf, clv),
+         rows = NULL, nall = D$n,
          na_act = NULL, exclude = na == "exclude", terms = stats::terms(pf$main), contrasts = D$plan$contrasts, xlevels = D$plan$xlevels,
          spec = D$plan)
 }
@@ -925,20 +994,25 @@ dm_fe_keys <- function(x, pf, clv, data = NULL) {
 
 ## The rows used and the FE codes, on the primitives (one code path): rows
 ## with a missing or non-finite response or weight, a zero weight or a
-## missing FE or cluster value are dropped; then, with fixef.rm =
-## "singleton", rows alone in a level of some FE, iteratively (grouped
-## counts, a lookup of each row's count, dmp_subset()), until none is left.
-## Every column is computed on the design of the rows kept. Returns
-## list(x, cols = list(z, w, codes, cl), levels, nsingle, rows).
-dm_fe_prepare <- function(base, pf, clv, fixef.rm) {
+## missing FE or cluster value are dropped; then, iteratively until none is
+## left, rows in a level of some FE that the FE fit perfectly (grouped
+## counts and sums, a lookup of each row's level counts, dmp_subset()):
+## with fixef.rm = "singleton" or "perfect_fit", levels with one row
+## (singletons); with "infinite_coef" or "perfect_fit" and `bounds`, levels
+## whose response is all 0 (bounds$zero) or all 1 (bounds$one), whose FE
+## would be infinite in a GLM (fixest's rule). Every column is computed on
+## the design of the rows kept; `base$more` holds other columns to keep
+## (offset, GLM columns). Returns list(x, cols = list(z, w, codes, cl),
+## more, levels, nsingle, nperfect, rows).
+dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "missing or negative weights not allowed") {
     x <- base$x
     z <- base$z
     w <- base$w
     rows <- base$rows
+    more <- base$more
     keys <- base$keys$fe
     clkey <- base$keys$cl
-    if (!is.null(w) && dm_colsum(dmc_is_finite(w) & w < 0) > 0)
-        stop("missing or negative weights not allowed", call. = FALSE)
+    if (!is.null(w) && dm_colsum(dmc_is_finite(w) & w < 0) > 0) stop(wmsg, call. = FALSE)
     restrict <- function(keep) {
         ## (keep is never missing: the logical columns are NA-safe)
         nd <- dm_colsum(!keep)
@@ -947,6 +1021,7 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm) {
         z <<- dmc_subset(z, keep, x2)
         w <<- dmc_subset(w, keep, x2)
         rows <<- dmc_subset(rows, keep, x2)
+        more <<- lapply(more, dmc_subset, keep, x2)
         keys <<- lapply(keys, dmc_subset, keep, x2)
         clkey <<- dmc_subset(clkey, keep, x2)
         x <<- x2
@@ -957,7 +1032,10 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm) {
     if (!is.null(w)) keep <- keep & dmc_is_finite(w) & w != 0
     for (k in c(keys, list(clkey))) if (!is.null(k)) keep <- keep & dmc_not_na(k)
     restrict(keep)
-    nsingle <- 0
+    rm_single <- fixef.rm %in% c("singleton", "perfect_fit")
+    rm0 <- isTRUE(bounds$zero) && fixef.rm %in% c("infinite_coef", "perfect_fit")
+    rm1 <- isTRUE(bounds$one) && fixef.rm %in% c("infinite_coef", "perfect_fit")
+    nsingle <- nperfect <- 0
     repeat {
         last <- list()
         cds <- vector("list", length(keys))
@@ -965,20 +1043,33 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm) {
             cds[[k]] <- dmc_dense_codes(keys[[k]], along = last)
             last <- list(cds[[k]]$codes$codes)
         }
-        if (fixef.rm == "none") break
+        if (!rm_single && !rm0 && !rm1) break
+        ## per level: rows, rows with a response not 0, not 1
         one <- dmc_const(z, 1)
-        cnt <- lapply(cds, function(cd) dmp_groupsum(one, cd$codes)[, 1L])
-        ## no level with one row: no singleton
-        if (!any(vapply(cnt, function(v) any(v == 1), NA))) break
-        single <- NULL
+        cols <- dmc_cbind(one, if (rm0) dmc_count(z != 0) else one, if (rm1) dmc_count(z != 1) else one)
+        cnt <- lapply(cds, function(cd) dmp_groupsum(cols, cd$codes))
+        flag <- function(m) (rm_single & m[, 1L] == 1) | (rm0 & m[, 2L] == 0) | (rm1 & m[, 3L] == 0)
+        ## no level to drop
+        if (!any(vapply(cnt, function(m) any(flag(m)), NA))) break
+        single <- perfect <- NULL
         for (k in seq_along(keys)) {
-            s <- dmc_lookup(cnt[[k]], cds[[k]]$codes, along = last) == 1
-            single <- if (is.null(single)) s else single | s
-            last <- list(single)
+            m <- cnt[[k]]
+            ## a level is perfectly fit (counted as such) or a singleton
+            pf_k <- (rm0 & m[, 2L] == 0) | (rm1 & m[, 3L] == 0)
+            sg_k <- rm_single & m[, 1L] == 1 & !pf_k
+            lk <- dmc_lookup(cbind(as.double(pf_k), as.double(sg_k)), cds[[k]]$codes, along = last)
+            p1 <- dmc_col(lk, 1L) == 1
+            s1 <- dmc_col(lk, 2L) == 1
+            perfect <- if (is.null(perfect)) p1 else perfect | p1
+            single <- if (is.null(single)) s1 else single | s1
+            last <- list(lk)
         }
-        nd <- restrict(!single)
+        drop <- perfect | single
+        s <- dmc_sums(dmc_count(perfect), dmc_count(drop))
+        nd <- restrict(!drop)
         if (nd == 0) break
-        nsingle <- nsingle + nd
+        nperfect <- nperfect + s[1L]
+        nsingle <- nsingle + (s[2L] - s[1L])
     }
     cl <- NULL
     if (!is.null(clv)) {
@@ -992,10 +1083,22 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm) {
         }
         if (cl$G < 2L) stop("Clustered standard errors need at least two clusters.", call. = FALSE)
     }
-    ## the design over the frame of the last columns (which keeps the others)
+    ## the design over the frame of the last columns (which keeps the
+    ## others), and every column on it (remotely, columns combine on the
+    ## latest of their frames: one chain of frames)
+    ## Remotely the rows used are then copied to a temporary table
+    ## (dmp_materialize()), which every later query scans, instead of
+    ## recomputing the codes' joins; x_rows keeps the design over the data,
+    ## whose rows not used pad the results with na.exclude.
     x <- dm_rebase(x, if (length(last)) dm_rcols_frame(last[[1L]]))
-    list(x = x, cols = list(z = z, w = w, codes = lapply(cds, `[[`, "codes"), cl = cl),
-         levels = lapply(cds, `[[`, "levels"), nsingle = as.integer(nsingle), rows = rows)
+    x_rows <- x
+    x <- dmp_materialize(x)
+    on <- function(col) dmc_on(col, x)
+    oncodes <- function(g) if (!is.null(g)) dmc_codes(on(g$codes), g$G)
+    list(x = x, x_rows = x_rows,
+         cols = list(z = on(z), w = on(w), codes = lapply(cds, function(cd) oncodes(cd$codes)), cl = oncodes(cl)),
+         more = lapply(more, on), levels = lapply(cds, `[[`, "levels"), nsingle = as.integer(nsingle),
+         nperfect = as.integer(nperfect), rows = rows)
 }
 
 ## The fit: on the design with numeric variables centered when that is
@@ -1141,7 +1244,8 @@ dm_fe_columns <- function(object) {
              call. = FALSE)
     cols <- object$cols
     f <- dm_fe_fitted(x, dm_fe_beta(object, x), object$fixef, cols$codes)
-    list(fitted = f, resid = cols$z - f)
+    ## (z is the response minus the offset)
+    list(fitted = if (is.null(cols$off)) f else f + cols$off, resid = cols$z - f)
 }
 
 ## Coefficients for the columns of design x (0 for the intercept, absorbed,
@@ -1180,9 +1284,19 @@ predict.design_lm_fe <- function(object, newdata, se.fit = FALSE,
     if (missing(newdata) || is.null(newdata)) return(fitted(object))
     if (!identical(na.action, stats::na.pass))
         stop("With fixed effects, predict() keeps every row of `newdata` (na.action = na.pass).", call. = FALSE)
-    ## the design of the new rows (as predict() without FE)
-    Dn <- dmfit_newdata(object, newdata, stats::na.pass, list(...))$D
-    keys <- lapply(object$fe_vars, function(vars) {
+    ## the design of the new rows (as predict() without FE), their offsets
+    nd <- dmfit_newdata(object, newdata, stats::na.pass, list(...))
+    Dn <- nd$D
+    keys <- dm_fe_new_keys(object, Dn, newdata)
+    f <- dm_fe_fitted(Dn, dm_fe_beta(object, Dn), object$fixef, keys, object$fe_levels)
+    if (!is.null(nd$off)) f <- f + nd$off
+    ## a table remotely, a named vector in memory
+    dmp_output(Dn, list(.fitted = f), memory = function(d) stats::setNames(d$.fitted, dimnames(Dn)[[1L]]))
+}
+
+## The keys of the FE of a fit over the rows of a new design Dn.
+dm_fe_new_keys <- function(object, Dn, newdata) {
+    lapply(object$fe_vars, function(vars) {
         k <- tryCatch(dmc_key(Dn, vars, data = if (is.data.frame(newdata)) newdata),
                       error = function(e) NULL)
         if (is.null(k))
@@ -1190,9 +1304,6 @@ predict.design_lm_fe <- function(object, newdata, se.fit = FALSE,
                  call. = FALSE)
         k
     })
-    f <- dm_fe_fitted(Dn, dm_fe_beta(object, Dn), object$fixef, keys, object$fe_levels)
-    ## a table remotely, a named vector in memory
-    dmp_output(Dn, list(.fitted = f), memory = function(d) stats::setNames(d$.fitted, dimnames(Dn)[[1L]]))
 }
 
 ## fixef(): the FE values, a list with one named vector per FE (fixest's

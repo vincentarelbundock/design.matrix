@@ -83,7 +83,9 @@
 #' products in the database or in batches. `predict(fit, newdata = con,
 #' table = ..., type = "response")`, `fitted()` and `residuals(fit, type =
 #' )` return a temporary view with a `.fitted` (and `.resid`) column next to
-#' the columns of the remote data.
+#' the columns of the remote data. Fixed effects (`y ~ x | fe`, see
+#' [design_glm()]) work remotely as in memory: each iteration's sums over
+#' rows are queries, the working weights and responses a temporary table.
 NULL
 
 ## na.action of a fit, as one of `allowed` ("omit", "exclude", "fail",

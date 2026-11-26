@@ -267,7 +267,9 @@ failures). The fit is the same code as in memory, on the remote methods
 of the products: with few design patterns (see \emph{Compression}), the
 iterations run on the patterns; otherwise each iteration computes its
 products in the database or in batches. \code{predict(fit, newdata = con, table = ..., type = "response")}, \code{fitted()} and \code{residuals(fit, type = )} return a temporary view with a \code{.fitted} (and \code{.resid}) column next to
-the columns of the remote data.
+the columns of the remote data. Fixed effects (\code{y ~ x | fe}, see
+\code{\link[=design_glm]{design_glm()}}) work remotely as in memory: each iteration's sums over
+rows are queries, the working weights and responses a temporary table.
 }
 
 \examples{

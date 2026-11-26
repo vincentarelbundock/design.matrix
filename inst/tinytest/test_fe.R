@@ -358,12 +358,37 @@ if (remote) {
     expect_equal(unname(coef(a4)), unname(coef(b4)), tolerance = TOL)
 }
 
+# Offsets: the `offset` argument and offset() terms, as feols(offset = ) ------
+bo <- fixest::feols(y ~ x1 | a + b, d, offset = ~ log(w) + 0.5 * x2, fixef.tol = 1e-11, notes = FALSE, warn = FALSE)
+fo <- list(memory = design_lm(y ~ x1 + offset(0.5 * x2) | a + b, d, offset = log(w), vcov = ~c))
+if (remote) {
+    fo$sql <- design_lm(y ~ x1 + offset(0.5 * x2) | a + b, con, table = "d", offset = log(w), vcov = ~c)
+    fo$chunked <- design_lm(y ~ x1 + offset(0.5 * x2) | a + b, con, table = "d", offset = DBI::SQL("ln(w)"),
+                            vcov = ~c, engine = "chunked", chunk_size = 1500)
+    fo$parquet <- design_lm(y ~ x1 + offset(0.5 * x2) | a + b, src$parquet, offset = log(w), vcov = ~c)
+}
+for (nm in names(fo)) {
+    a <- fo[[nm]]
+    expect_equal(unname(coef(a)), unname(coef(bo)), tolerance = TOL, info = paste("offset", nm))
+    expect_equal(plain(vcov(a)), plain(vcov(bo, cluster = ~c)), tolerance = TOL, info = paste("offset", nm))
+    expect_equal(sigma(a), unname(sqrt(bo$ssr / (nobs(bo) - bo$nparams))), tolerance = TOL,
+                 info = paste("offset", nm))
+    if (nm == "memory") {
+        expect_equal(unname(fitted(a)), unname(fitted(bo)), tolerance = TOL)
+        expect_equal(unname(resid(a)), unname(resid(bo)), tolerance = TOL)
+        expect_equal(unname(predict(a, d)), unname(predict(bo, d)), tolerance = TOL)
+    } else {
+        p <- as.data.frame(predict(a, con, table = "d"))
+        p <- p[order(p$.row), ]
+        expect_equal(p$.fitted, unname(predict(bo, d)), tolerance = TOL, info = paste("offset predict", nm))
+    }
+}
+
 # Errors -----------------------------------------------------------------------
 expect_error(design_lm(y ~ x1 | a, d, vcov = ~a + b), "one-way")
 expect_error(design_lm(y ~ x1 | a, d, vcov = "hc1"), "vcov")
 expect_error(design_lm(y ~ x1, d, vcov = ~a), "fixed effects")
 expect_error(design_lm(y ~ x1 | a, d, fixef.rm = "perfect"), "fixef.rm")
-expect_error(design_lm(y ~ x1 | a, d, offset = x2), "Offsets")
 expect_error(design_lm(y ~ x1 | a, d, subset = x2 > 0), "subset")
 expect_error(design_lm(y ~ x1 | log(a), d), "variable names")
 expect_error(predict(design_lm(y ~ x1 | a, d), d[1:3, ], se.fit = TRUE), "fit only")
