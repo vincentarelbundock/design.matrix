@@ -271,7 +271,7 @@ col_compute <- function(x, name = NULL, overwrite = FALSE, nm = NULL) {
     tab <- dm_remote_to_table(tab, name = name, overwrite = overwrite)
     tab$depth <- dm_frame_depth(fr) + 1L
     tab <- dm_frame_child(tab, fr)
-    dm_column_label(dm_column(tab, sprintf("s.%s", dm_qi(tab, nm)), notnull = unclass(x)$notnull), nm)
+    dm_column_label(dm_column(tab, sprintf("s.%s", dm_qi(tab, nm))), nm)
 }
 
 #' @rdname design_column
