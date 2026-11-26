@@ -21,16 +21,18 @@
 #' @param x A design: a `design_matrix` built from a data frame, or a remote
 #'   design. Scaled designs (`s * D`) are not accepted.
 #' @param z The response. In memory, a numeric vector with one value per row
-#'   of `x`. For a remote design, the name of a numeric column of the remote
-#'   data or a `DBI::SQL()` expression over its columns. Missing or infinite
+#'   of `x` (such as a [design_column()] of `x`, or a product with it). For a
+#'   remote design, the name of a numeric column of the remote data, a
+#'   `DBI::SQL()` expression over its columns, or a [design_column()] of the
+#'   design (such as `design_column(x, "y") - x %*% b`). Missing or infinite
 #'   values are an error.
 #' @param w Optional weights, in the same form as `z`: finite and
 #'   non-negative. Rows with zero weight do not enter the statistics.
 #' @param keys Optional extra grouping columns: patterns are then also split
 #'   by their values. In memory, a numeric vector, matrix or data frame of
 #'   numeric columns with one row per row of `x`. For a remote design, the
-#'   names of numeric columns of the remote data, or a `DBI::SQL()`
-#'   expression.
+#'   names of numeric columns of the remote data, a `DBI::SQL()`
+#'   expression, or a [design_column()] of the design.
 #' @param compress `"auto"` (default), `TRUE` or `FALSE`. With `"auto"`, the
 #'   patterns are returned only when compression pays (few patterns
 #'   relative to rows): in memory, following the option
@@ -102,6 +104,8 @@ dm_patterns_memory <- function(x, z, w, keys, compress) {
     if (dm_is_comb(x)) stop("`x` must not be a scaled design.", call. = FALSE)
     n <- nrow(x)
     vec <- function(v, what) {
+        ## (a one-column matrix, such as D %*% b, is a vector)
+        if (is.matrix(v) && ncol(v) == 1L) v <- v[, 1L]
         if (!(is.numeric(v) || is.logical(v)) || !is.null(dim(v)) || length(v) != n)
             stop(sprintf("`%s` must be a numeric vector with one value per row of `x`.", what), call. = FALSE)
         as.double(v)
@@ -129,8 +133,8 @@ dm_patterns_memory <- function(x, z, w, keys, compress) {
     out
 }
 
-## Remote: z, w and keys as column names, DBI::SQL() expressions or remote
-## columns, resolved as the other public remote inputs (dm_remote_cols(),
+## Remote: z, w and keys as column names, DBI::SQL() expressions or
+## design_column()s, resolved as the other public remote inputs (dm_remote_cols(),
 ## which moves the design to the frame of a remote column), then the scan of
 ## dm_sql_patterns() on their SQL.
 dm_patterns_remote <- function(x, z, w, keys, compress) {

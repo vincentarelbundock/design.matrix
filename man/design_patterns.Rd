@@ -11,8 +11,10 @@ design_patterns(x, z, w = NULL, keys = NULL, compress = "auto")
 design. Scaled designs (\code{s * D}) are not accepted.}
 
 \item{z}{The response. In memory, a numeric vector with one value per row
-of \code{x}. For a remote design, the name of a numeric column of the remote
-data or a \code{DBI::SQL()} expression over its columns. Missing or infinite
+of \code{x} (such as a \code{\link[=design_column]{design_column()}} of \code{x}, or a product with it). For a
+remote design, the name of a numeric column of the remote data, a
+\code{DBI::SQL()} expression over its columns, or a \code{\link[=design_column]{design_column()}} of the
+design (such as \code{design_column(x, "y") - x \%*\% b}). Missing or infinite
 values are an error.}
 
 \item{w}{Optional weights, in the same form as \code{z}: finite and
@@ -21,8 +23,8 @@ non-negative. Rows with zero weight do not enter the statistics.}
 \item{keys}{Optional extra grouping columns: patterns are then also split
 by their values. In memory, a numeric vector, matrix or data frame of
 numeric columns with one row per row of \code{x}. For a remote design, the
-names of numeric columns of the remote data, or a \code{DBI::SQL()}
-expression.}
+names of numeric columns of the remote data, a \code{DBI::SQL()}
+expression, or a \code{\link[=design_column]{design_column()}} of the design.}
 
 \item{compress}{\code{"auto"} (default), \code{TRUE} or \code{FALSE}. With \code{"auto"}, the
 patterns are returned only when compression pays (few patterns

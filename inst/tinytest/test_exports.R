@@ -110,7 +110,7 @@ expect_error(design_patterns(D, d$y, wneg, compress = TRUE), "non-negative")
 
 ## the same patterns and statistics on a DuckDB table
 if (requireNamespace("duckdb", quietly = TRUE) && requireNamespace("DBI", quietly = TRUE)) {
-    con <- DBI::dbConnect(duckdb::duckdb())
+    con <- test_con()
     DBI::dbWriteTable(con, "d", d)
     d$yna <- yna
     d$wneg <- wneg
@@ -138,6 +138,14 @@ if (requireNamespace("duckdb", quietly = TRUE) && requireNamespace("DBI", quietl
     pms <- design_patterns(D, 2 * d$y, d$w + 1, keys = d$g + 1, compress = TRUE)
     expect_true(same_patterns(sorted(prs), sorted(pms)))
 
+    ## design_column()s of the design, and products with it, as in memory
+    b <- coef(lm(fo, d))
+    prc <- design_patterns(R, design_column(R, "y") - R %*% b, 2 * design_column(R, "w"),
+                           keys = design_column(R, "g"), compress = TRUE)
+    pmc <- design_patterns(D, d$y - D %*% b, 2 * d$w, keys = d$g, compress = TRUE)
+    expect_true(same_patterns(sorted(prc), sorted(pmc)))
+    expect_true(same_patterns(sorted(pmc), reference(X, d$y - drop(X %*% b), 2 * d$w, cbind(d$g))))
+
     ## lm on the remote patterns is lm on the rows
     lpr <- lm(prw$z ~ as.matrix(prw$x) - 1, weights = prw$w)
     expect_true(same(coef(lpr), coef(lw)))
@@ -150,7 +158,7 @@ if (requireNamespace("duckdb", quietly = TRUE) && requireNamespace("DBI", quietl
     expect_error(design_patterns(R2, "yna", compress = TRUE), "missing or infinite")
     expect_error(design_patterns(R2, "y", "wneg", compress = TRUE), "non-negative")
     expect_error(design_patterns(R, "f", compress = TRUE), "not numeric")
-    DBI::dbDisconnect(con)
+    test_con_done(con)
 }
 
 ## ---- design_plan() and design_parts() ----
