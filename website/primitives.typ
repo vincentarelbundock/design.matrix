@@ -14,7 +14,7 @@ options(width = 200)
 
 #title()
 
-An estimator written with a few exported functions runs unchanged on a data frame and on a database table. The building blocks are the design and its products (`design_matrix()`, `%*%`, `crossprod()`, `colSums(group = )`, `quadratic_diagonal()`), *columns*, which hold one value per row, and base R arithmetic on columns. In memory a column is a numeric vector. For a remote design it is a `design_column`: a lazy SQL expression over the rows, which nothing evaluates until a sum, a product or `collect()` asks for its values. Only small results (numbers, $p times p$ matrices, one row per cluster) come back to R.
+An estimator written with a few exported functions runs unchanged on a data frame and on a database table. The building blocks are the design and its products (`design_matrix()`, `%*%`, `crossprod()`, `colSums(group = )`, `quadratic_diagonal()`), *columns*, which hold one value per row, and base R arithmetic on columns. In memory a column is a numeric vector. For a remote design it is a `design_column`: a lazy SQL expression over the rows, which nothing evaluates until a sum, a product or `as.vector()` asks for its values. Only small results (numbers, $p times p$ matrices, one row per cluster) come back to R.
 
 Remote examples need the DBI and duckdb packages.
 
@@ -25,7 +25,7 @@ Remote examples need the DBI and duckdb packages.
   [Columns], [`design_column(D, "y")`, arithmetic, comparisons, `exp()`, `log()`, `round()`, `lgamma()`, `is.na()`, ...],
   [Combining columns], [`col_ifelse()`, `col_pmin()`, `col_pmax()`],
   [Summaries], [`sum()`, `mean()`, `min()`, `max()`, `range()`, `any()`, `all()`, `col_sums()` (several sums, one query)],
-  [Values], [`collect()`, `as.data.frame(keep = )`, `compute()` (a temporary table)],
+  [Values], [`as.vector()`, `as.matrix()`, `as.data.frame(keep = )`, `compute()` (a temporary table)],
   [Groupings], [`design_groups()`, `group_sums()`, `group_crosstab()`, `group_lookup()`, `group_nested()`],
   [Compression], [`design_patterns()`],
 )
@@ -163,7 +163,7 @@ all.equal(within_slope(D_mem, g_mem), within_slope(D_db, g_db))
 
 = Columns are lazy
 
-Printing a remote column shows its SQL, without reading a row. Arithmetic builds a new expression, and the values are computed only when a summary, a product or `collect()` needs them:
+Printing a remote column shows its SQL, without reading a row. Arithmetic builds a new expression, and the values are computed only when a summary, a product or `as.vector()` needs them:
 
 ```r
 y <- design_column(D_db, "y")

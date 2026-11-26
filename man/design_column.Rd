@@ -2,9 +2,8 @@
 % Please edit documentation in R/column.R
 \name{design_column}
 \alias{design_column}
-\alias{collect}
-\alias{collect.default}
-\alias{collect.design_column}
+\alias{as.vector.design_column}
+\alias{as.matrix.design_column}
 \alias{compute}
 \alias{compute.default}
 \alias{compute.design_column}
@@ -16,11 +15,9 @@
 \usage{
 design_column(x, column)
 
-collect(x, ...)
+\method{as.vector}{design_column}(x, mode = "any")
 
-\method{collect}{default}(x, ...)
-
-\method{collect}{design_column}(x, ...)
+\method{as.matrix}{design_column}(x, ...)
 
 compute(x, ...)
 
@@ -43,6 +40,8 @@ design. For the other functions, a column.}
 \item{column}{The name of a column (a string), or for a remote design a
 SQL expression over its columns (\code{DBI::SQL()}).}
 
+\item{mode}{As in \code{\link[=as.vector]{as.vector()}}.}
+
 \item{...}{Not used.}
 
 \item{row.names, optional}{Not used.}
@@ -61,7 +60,8 @@ SQL expression over its columns (\code{DBI::SQL()}).}
 }
 \value{
 \code{design_column()}: a double vector in memory, a \code{design_column}
-remotely. \code{collect()}: a double vector or matrix. \code{as.data.frame()}: a
+remotely. \code{as.vector()}: a double vector. \code{as.matrix()}: a double
+matrix. \code{as.data.frame()}: a
 data frame. \code{compute()}: a \code{design_column} (in memory, \code{x}).
 }
 \description{
@@ -69,15 +69,16 @@ A \emph{column} holds one value per row of a design. In memory it is a plain
 numeric vector. For a remote design (see \link{design_remote}), it is a
 \code{design_column}: a lazy SQL expression over the rows of the design, which
 nothing evaluates until its values are asked for. Products with a remote
-design return one, arithmetic on it builds a new one, and \code{\link[=collect]{collect()}},
-\code{\link[=as.data.frame]{as.data.frame()}} or \code{\link[=compute]{compute()}} evaluate it. So the same code runs on a
-data frame and on a DuckDB table:
+design return one, arithmetic on it builds a new one, and the base
+generics \code{\link[=as.vector]{as.vector()}}, \code{\link[=as.matrix]{as.matrix()}} and \code{\link[=as.data.frame]{as.data.frame()}} evaluate it,
+as they would a vector in memory. So the same code runs on a data frame
+and on a DuckDB table:
 }
 \details{
 \preformatted{eta <- D \%*\% beta                 # vector in memory, design_column remotely
 mu  <- exp(eta)
 r   <- design_column(D, "y") - mu
-collect(r)                        # the values, in R
+as.vector(r)                      # the values, in R
 }
 }
 \section{Making columns}{
@@ -117,15 +118,18 @@ instance \code{colSums(e * D, group = "cl")}, or \code{crossprod(D, w * D)}).
 \section{Getting values}{
 
 \itemize{
-\item \code{collect(x)}: the values in R, a double vector (a matrix for several
-columns). Remotely this reads every row: only for results that fit in
-memory. In memory it returns \code{x}.
+\item \code{as.vector(x)}: the values in R, a double vector, for a column with one
+column (a column with several columns is an error: use \code{as.matrix()}).
+\code{as.matrix(x)}: an \verb{n x k} double matrix, without dimnames (as the
+products in memory), for one column or several. Remotely both read
+every row: only for results that fit in memory. In memory they are
+base R's functions on the vector or matrix.
 \item \code{as.data.frame(x, keep = "id")}: a data frame with one column per
 column of \code{x} (named \code{.fitted} for \code{D \%*\% b}, \code{.rowsum}, \code{.rowmean},
 \code{.quad}, the column name for \code{design_column(D, "y")}, else \code{.value};
 or \code{nm}), after the columns \code{keep} of the remote data, read in the same
 query. Remote rows have no order: to match the values with other data,
-keep a key column. Two calls to \code{collect()} need not return the rows
+keep a key column. Two calls to \code{as.vector()} need not return the rows
 in the same order.
 \item \code{compute(x)}: the column computed once into a temporary table, and a
 column that reads it (later queries scan the table instead of
@@ -152,16 +156,15 @@ including the results of separate products (\code{D \%*\% b1 + D \%*\% b2}, or
 \code{(D \%*\% b) / sqrt(quadratic_diagonal(D, V))}): a product becomes a view
 only when its values are first needed, on top of the other products it
 is combined with. Columns of different designs do not combine. Nor do
-two products that were each read (by \code{collect()}, \code{as.data.frame()},
+two products that were each read (by \code{as.vector()}, \code{as.data.frame()},
 \code{compute()} or a sum) before being combined, since their views then
 stand side by side and the database has no key to align their rows:
 combine the columns first, compute them in one product (\code{D \%*\% cbind(b1, b2)}, then \verb{[, 1]} and \verb{[, 2]}), or read them with \code{as.data.frame(keep = "id")} and match them in R. A column made by \code{design_column()} combines
 with any product of its design.
 
-\code{collect()} and \code{compute()} are generics of this package. If another
-package that defines functions of the same names is attached after
-design.matrix, call \code{design.matrix::collect()} and
-\code{design.matrix::compute()}.
+\code{compute()} is a generic of this package. If another package that
+defines a function of the same name is attached after design.matrix,
+call \code{design.matrix::compute()}.
 }
 
 \examples{
@@ -169,7 +172,7 @@ d <- data.frame(y = rnorm(100), x = rnorm(100), f = gl(4, 25))
 D <- design_matrix(y ~ x * f, d)
 b <- solve(crossprod(D), crossprod(D, d$y))
 r <- design_column(D, "y") - D \%*\% b
-head(collect(r))
+head(as.vector(r))
 
 if (requireNamespace("duckdb", quietly = TRUE)) {
     con <- DBI::dbConnect(duckdb::duckdb())
@@ -180,7 +183,7 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     r
     head(as.data.frame(r, keep = "id", nm = "resid"))
     r2 <- compute(r^2)
-    sum(collect(r2))
+    sum(as.vector(r2))
     DBI::dbDisconnect(con)
 }
 }

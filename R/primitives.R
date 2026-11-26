@@ -11,8 +11,8 @@
 ##                              of a frame (see below; made by dm_column())
 ##
 ## The remote column class, design_column, is also the public column type
-## (R/column.R: design_column(), collect(), compute(), as.data.frame(),
-## print/format, and the methods below for arithmetic). Everything else
+## (R/column.R: design_column(), as.vector(), as.matrix(), compute(),
+## as.data.frame(), print/format, and the methods below for arithmetic). Everything else
 ## here is internal; names start with dmp_ (operations on designs), dmc_
 ## (operations on columns) or dm_.
 ##
@@ -67,8 +67,8 @@
 ## are *pending* columns: a recipe (the design and B of a product; the
 ## lookup table, already written, and its join of a lookup) that becomes a
 ## new frame (a view, or a join) only at the column's first use: an
-## operation that reads rows (sums, crossprod, groups, collect,
-## as.data.frame, output), or that makes a frame or a design from the
+## operation that reads rows (sums, crossprod, groups, dmp_collect,
+## as.vector, as.matrix, as.data.frame, output), or that makes a frame or a design from the
 ## column (dmc_freeze, compute, scale, subset, materialize). Arithmetic on
 ## pending columns stays pending. At first use the pending columns of the
 ## operands are bound on the latest settled frame among them, one on the
@@ -85,7 +85,8 @@
 ##
 ## Getting values into R: dmp_collect(col) returns the values (in memory the
 ## vector itself; remotely a SELECT of all rows: only for small data). The
-## public collect() calls it, and compute() calls dmc_freeze(table = TRUE).
+## public as.vector() and as.matrix() call it, and compute() calls
+## dmc_freeze(table = TRUE).
 ##
 ## ---------------------------------------------------------------------------
 ## Operations on designs
@@ -220,8 +221,9 @@
 ##   rowSums/rowMeans(D)          column (labels .rowsum/.rowmean)  done
 ##   quadratic_diagonal(D, V)     column (label .quad)              done
 ##   design_column(D, "y"/SQL())  column of the remote data         done
-##   collect, as.data.frame,      values in R / data frame (with    done
-##     compute (of a column)      `keep` columns) / temporary table
+##   as.vector, as.matrix,        values in R / data frame (with    done
+##     as.data.frame, compute     `keep` columns) / temporary table
+##     (of a column)
 ##   qr(D)                        dmqr_chol on X'X with lm()'s      done
 ##                                rule, suspects from products
 ##   qr.coef, qr.qty, qr.R, solve numbers (as in memory)            done

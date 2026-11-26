@@ -1,10 +1,11 @@
-## The public column type (Kata design.matrix#bvxy): the remote column of the
-## fitting core (primitives.R, class design_column, made by dm_column()) is
-## also what users get from a remote design: design_column(D, "y"), the
-## products D %*% b, rowSums(D), rowMeans(D) and quadratic_diagonal(D, V)
-## return it, arithmetic composes it lazily, and collect(), as.data.frame()
-## and compute() evaluate or store it. In memory a column is a plain numeric
-## vector, and the same calls work on it (collect() and compute() return it).
+## The public column type (Kata design.matrix#bvxy, epxj): the remote column
+## of the fitting core (primitives.R, class design_column, made by
+## dm_column()) is also what users get from a remote design:
+## design_column(D, "y"), the products D %*% b, rowSums(D), rowMeans(D) and
+## quadratic_diagonal(D, V) return it, arithmetic composes it lazily, and
+## the base generics as.vector(), as.matrix() and as.data.frame() evaluate
+## it (col_compute() stores it). In memory a column is a plain numeric
+## vector (or matrix), and base R applies to it (col_compute() returns it).
 ## Frames, their depth and lineage stay internal.
 
 #' Columns of a design
@@ -13,15 +14,16 @@
 #' numeric vector. For a remote design (see [design_remote]), it is a
 #' `design_column`: a lazy SQL expression over the rows of the design, which
 #' nothing evaluates until its values are asked for. Products with a remote
-#' design return one, arithmetic on it builds a new one, and [collect()],
-#' [as.data.frame()] or [compute()] evaluate it. So the same code runs on a
-#' data frame and on a DuckDB table:
+#' design return one, arithmetic on it builds a new one, and the base
+#' generics [as.vector()], [as.matrix()] and [as.data.frame()] evaluate it,
+#' as they would a vector in memory. So the same code runs on a data frame
+#' and on a DuckDB table:
 #'
 #' ```
 #' eta <- D %*% beta                 # vector in memory, design_column remotely
 #' mu  <- exp(eta)
 #' r   <- design_column(D, "y") - mu
-#' collect(r)                        # the values, in R
+#' as.vector(r)                      # the values, in R
 #' ```
 #'
 #' @section Making columns:
@@ -55,15 +57,18 @@
 #'   instance `colSums(e * D, group = "cl")`, or `crossprod(D, w * D)`).
 #'
 #' @section Getting values:
-#' * `collect(x)`: the values in R, a double vector (a matrix for several
-#'   columns). Remotely this reads every row: only for results that fit in
-#'   memory. In memory it returns `x`.
+#' * `as.vector(x)`: the values in R, a double vector, for a column with one
+#'   column (a column with several columns is an error: use `as.matrix()`).
+#'   `as.matrix(x)`: an `n x k` double matrix, without dimnames (as the
+#'   products in memory), for one column or several. Remotely both read
+#'   every row: only for results that fit in memory. In memory they are
+#'   base R's functions on the vector or matrix.
 #' * `as.data.frame(x, keep = "id")`: a data frame with one column per
 #'   column of `x` (named `.fitted` for `D %*% b`, `.rowsum`, `.rowmean`,
 #'   `.quad`, the column name for `design_column(D, "y")`, else `.value`;
 #'   or `nm`), after the columns `keep` of the remote data, read in the same
 #'   query. Remote rows have no order: to match the values with other data,
-#'   keep a key column. Two calls to `collect()` need not return the rows
+#'   keep a key column. Two calls to `as.vector()` need not return the rows
 #'   in the same order.
 #' * `compute(x)`: the column computed once into a temporary table, and a
 #'   column that reads it (later queries scan the table instead of
@@ -87,7 +92,7 @@
 #' `(D %*% b) / sqrt(quadratic_diagonal(D, V))`): a product becomes a view
 #' only when its values are first needed, on top of the other products it
 #' is combined with. Columns of different designs do not combine. Nor do
-#' two products that were each read (by `collect()`, `as.data.frame()`,
+#' two products that were each read (by `as.vector()`, `as.data.frame()`,
 #' `compute()` or a sum) before being combined, since their views then
 #' stand side by side and the database has no key to align their rows:
 #' combine the columns first, compute them in one product (`D %*% cbind(b1,
@@ -95,10 +100,9 @@
 #' "id")` and match them in R. A column made by `design_column()` combines
 #' with any product of its design.
 #'
-#' `collect()` and `compute()` are generics of this package. If another
-#' package that defines functions of the same names is attached after
-#' design.matrix, call `design.matrix::collect()` and
-#' `design.matrix::compute()`.
+#' `compute()` is a generic of this package. If another package that
+#' defines a function of the same name is attached after design.matrix,
+#' call `design.matrix::compute()`.
 #'
 #' @param x For `design_column()`, a design: a `design_matrix` or a remote
 #'   design. For the other functions, a column.
@@ -109,16 +113,18 @@
 #'   (for instance a key, to match the rows with other data).
 #' @param nm Names of the value columns of the data frame (one per column of
 #'   `x`).
+#' @param mode As in [as.vector()].
 #' @param ... Not used.
 #' @return `design_column()`: a double vector in memory, a `design_column`
-#'   remotely. `collect()`: a double vector or matrix. `as.data.frame()`: a
+#'   remotely. `as.vector()`: a double vector. `as.matrix()`: a double
+#'   matrix. `as.data.frame()`: a
 #'   data frame. `compute()`: a `design_column` (in memory, `x`).
 #' @examples
 #' d <- data.frame(y = rnorm(100), x = rnorm(100), f = gl(4, 25))
 #' D <- design_matrix(y ~ x * f, d)
 #' b <- solve(crossprod(D), crossprod(D, d$y))
 #' r <- design_column(D, "y") - D %*% b
-#' head(collect(r))
+#' head(as.vector(r))
 #'
 #' if (requireNamespace("duckdb", quietly = TRUE)) {
 #'     con <- DBI::dbConnect(duckdb::duckdb())
@@ -129,7 +135,7 @@
 #'     r
 #'     head(as.data.frame(r, keep = "id", nm = "resid"))
 #'     r2 <- compute(r^2)
-#'     sum(collect(r2))
+#'     sum(as.vector(r2))
 #'     DBI::dbDisconnect(con)
 #' }
 #' @name design_column
@@ -180,19 +186,26 @@ dm_column_valid <- function(x) {
 
 #' @rdname design_column
 #' @export
-collect <- function(x, ...) UseMethod("collect")
+as.vector.design_column <- function(x, mode = "any") {
+    k <- length(unclass(x)$sql)
+    if (k != 1L)
+        stop(sprintf(paste("This remote column has %d columns: as.vector() reads a column with one column;",
+                           "use as.matrix() for several, or x[, j] for one of them."), k), call. = FALSE)
+    dm_column_valid(x)
+    as.vector(dmp_collect(x), mode)
+}
 
 #' @rdname design_column
 #' @export
-collect.default <- function(x, ...) x
-
-#' @rdname design_column
-#' @export
-collect.design_column <- function(x, ...) {
+as.matrix.design_column <- function(x, ...) {
     dm_column_valid(x)
     out <- dmp_collect(x)
-    if (is.matrix(out)) dimnames(out) <- NULL
-    out
+    if (is.matrix(out)) {
+        dimnames(out) <- NULL
+        out
+    } else {
+        matrix(out, ncol = 1L)
+    }
 }
 
 #' @rdname design_column

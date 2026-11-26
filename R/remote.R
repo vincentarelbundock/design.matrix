@@ -103,7 +103,7 @@
 #'   `quadratic_diagonal(D, V)`: a remote column ([design_column]), a
 #'   lazy SQL expression over the rows of the design, where a design in
 #'   memory returns a vector. Arithmetic on it builds another column;
-#'   [collect()] reads its values into R, `as.data.frame(p, keep = "id")`
+#'   `as.vector(p)` reads its values into R, `as.data.frame(p, keep = "id")`
 #'   reads them with columns of the remote data (to join them back), and
 #'   [compute()] stores it in a temporary table. `design_column(D, "y")`
 #'   makes a column from a column of the remote data. Columns of one design
@@ -182,7 +182,7 @@
 #'     beta <- solve(crossprod(D), crossprod(D, "y"))
 #'     p <- D %*% beta
 #'     p
-#'     head(collect(p))
+#'     head(as.vector(p))
 #'     r <- design_column(D, "y") - p
 #'     head(as.data.frame(r, nm = "resid"))
 #'     summary(D)

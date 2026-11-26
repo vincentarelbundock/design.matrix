@@ -102,7 +102,7 @@ A list of class \code{design_groups} with elements
 integer vector with one value per row of the design; for a remote
 design, a \code{\link[=design_column]{design_column()}} (lazy: a join of the rows with a table of
 the levels, made when its values are first needed). \code{codes} is a
-column like any other: \code{collect(g$codes)} reads it.}
+column like any other: \code{as.vector(g$codes)} reads it.}
 \item{\code{G}}{The number of groups (an integer).}
 \item{\code{levels}}{A data frame with \code{G} rows, one column per key variable:
 the values of the key in each group, in code order (row \code{l} is group
@@ -178,7 +178,7 @@ within_slope <- function(D, g) {
     demean <- function(v) v - group_lookup(group_sums(v, g)[, 1] / n_g, g)
     yt <- demean(design_column(D, "y"))
     xt <- demean(design_column(D, "x"))
-    sum(collect(xt * yt)) / sum(collect(xt * xt))
+    sum(xt * yt) / sum(xt * xt)
 }
 
 g <- design_groups(D, d["firm"])

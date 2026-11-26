@@ -86,7 +86,7 @@ the test is \code{NA}; \code{col_pmin()} and \code{col_pmax()} give \code{NA} or
 where either value is, as \code{pmin()} and \code{pmax()}.
 
 Remote values are doubles: a logical remote column (a comparison) sums
-to a double, where base R gives an integer, and \code{collect()} returns it
+to a double, where base R gives an integer, and \code{as.vector()} returns it
 as 0 and 1. Sums over many rows can differ from R's in the last bits
 (the database adds in another order, and R in extended precision);
 \code{gamma()} and \code{lgamma()} use the C library, R its own code (equal to
@@ -136,7 +136,7 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     range(zr, na.rm = TRUE)
     mean(round(yr / 4, 1))
     col_sums(n = !is.na(zr), total = col_ifelse(is.na(zr), 0, zr))
-    sort(collect(col_pmax(yr, 3)))
+    sort(as.vector(col_pmax(yr, 3)))
     DBI::dbDisconnect(con)
 }
 }

@@ -178,13 +178,13 @@ within_slope <- function(D, g, w = NULL) {
         demean <- function(v) v - group_lookup(group_sums(v, g)[, 1] / n_g, g)
         yt <- demean(design_column(D, "y"))
         xt <- demean(design_column(D, "x"))
-        return(sum(collect(xt * yt)) / sum(collect(xt * xt)))
+        return(sum(as.vector(xt * yt)) / sum(as.vector(xt * xt)))
     }
     sw <- group_sums(w, g)[, 1]
     demean <- function(v) v - group_lookup(group_sums(w * v, g)[, 1] / sw, g)
     yt <- demean(design_column(D, "y"))
     xt <- demean(design_column(D, "x"))
-    sum(collect(w * xt * yt)) / sum(collect(w * xt * xt))
+    sum(as.vector(w * xt * yt)) / sum(as.vector(w * xt * xt))
 }
 ref1 <- coef(lm(y ~ x + firm, d))[["x"]]
 ref2 <- coef(lm(y ~ x + interaction(firm, year), d))[["x"]]
@@ -218,7 +218,7 @@ expect_true(inherits(gr$codes, "design_column"))
 expect_identical(gr$G, g$G)
 expect_equal(gr$levels, g$levels)
 expect_identical(as.integer(by_id(gr$codes)), g$codes)
-expect_identical(as.integer(sort(collect(gr$codes))), sort(g$codes))
+expect_identical(as.integer(sort(as.vector(gr$codes))), sort(g$codes))
 expect_true(grepl("design_groups: 5 groups of firm", format(gr)[1L], fixed = TRUE))
 expect_true(grepl("duckdb", format(gr)[1L], fixed = TRUE))
 expect_identical(design_groups(2 * R, "firm")$levels, gr$levels)
@@ -293,7 +293,7 @@ expect_identical(as.integer(by_id(grl$codes)), gl$codes)
 ## groupings and columns used in any order (each use of a grouping joins
 ## its codes on top of the other columns of the use)
 p <- R %*% b
-pv <- collect(p)
+pv <- as.vector(p)
 expect_true(same(group_sums(p, gr), group_sums(drop(M %*% b), g)))
 expect_true(same(as.matrix(group_crosstab(gr, gr2)), as.matrix(ct)))
 mix <- group_lookup(vals, gr) + group_lookup(c(1, 2, 3, 4), gr2) * design_column(R, "x")

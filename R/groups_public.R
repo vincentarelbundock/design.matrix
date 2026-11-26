@@ -43,7 +43,7 @@
 #'     integer vector with one value per row of the design; for a remote
 #'     design, a [design_column()] (lazy: a join of the rows with a table of
 #'     the levels, made when its values are first needed). `codes` is a
-#'     column like any other: `collect(g$codes)` reads it.}
+#'     column like any other: `as.vector(g$codes)` reads it.}
 #'   \item{`G`}{The number of groups (an integer).}
 #'   \item{`levels`}{A data frame with `G` rows, one column per key variable:
 #'     the values of the key in each group, in code order (row `l` is group
@@ -149,7 +149,7 @@
 #'     demean <- function(v) v - group_lookup(group_sums(v, g)[, 1] / n_g, g)
 #'     yt <- demean(design_column(D, "y"))
 #'     xt <- demean(design_column(D, "x"))
-#'     sum(collect(xt * yt)) / sum(collect(xt * xt))
+#'     sum(xt * yt) / sum(xt * xt)
 #' }
 #'
 #' g <- design_groups(D, d["firm"])

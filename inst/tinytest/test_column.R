@@ -1,6 +1,6 @@
 ## The public column type (Kata design.matrix#bvxy): design_column(),
-## products of a remote design returning columns, collect(), compute(),
-## as.data.frame(), print/format and x[, j]. The same chain of public calls
+## products of a remote design returning columns, as.vector(), as.matrix(),
+## compute(), as.data.frame(), print/format and x[, j]. The same chain of public calls
 ## gives the same values in memory and on DuckDB. Only exported functions.
 source("helpers.R")
 library(design.matrix)
@@ -26,10 +26,10 @@ expect_error(design_column(M, "w"), "not a variable of the design")
 expect_error(design_column(M, "f"), "not a numeric vector")
 expect_error(design_column(as.matrix(M), "y"), "must be a design")
 v <- design_column(M, "y")
-expect_identical(collect(v), v)
+expect_identical(as.vector(v), v)
 expect_identical(compute(v), v)
 Pm <- M %*% B
-expect_identical(collect(Pm), Pm)
+expect_identical(as.matrix(Pm), Pm)
 
 ## the chains of public calls compared below (the same code for both backends)
 chain <- function(D) {
@@ -72,7 +72,11 @@ expect_identical(names(as.data.frame(pr, keep = "id")), c("id", ".fitted"))
 expect_identical(names(as.data.frame(pr)), ".fitted")
 expect_identical(names(as.data.frame(pr, nm = "eta")), "eta")
 expect_true(same(by_id(pr), M %*% b))
-expect_true(same(sort(collect(pr)), sort(drop(M %*% b))))
+expect_true(same(sort(as.vector(pr)), sort(drop(M %*% b))))
+expect_true(is.double(as.vector(pr)) && is.null(attributes(as.vector(pr))))
+expect_identical(dim(as.matrix(pr)), c(as.integer(n), 1L))
+expect_null(dimnames(as.matrix(pr)))
+expect_true(same(sort(as.matrix(pr)[, 1]), sort(drop(M %*% b))))
 
 ## ---- design_column() ----
 y <- design_column(D, "y")
@@ -98,8 +102,8 @@ expect_inherits(cr$r2, "design_column")
 expect_true(same(by_id(cr$eta), cm$eta))
 expect_true(same(by_id(cr$r), cm$r))
 expect_true(same(by_id(cr$r2), cm$r2))
-expect_true(same(sum(collect(cr$r2)), sum(collect(cm$r2))))
-expect_true(same(sort(collect(cr$r)), sort(collect(cm$r))))
+expect_true(same(sum(as.vector(cr$r2)), sum(as.vector(cm$r2))))
+expect_true(same(sort(as.vector(cr$r)), sort(as.vector(cm$r))))
 ## a computed column combines with the columns it was made from
 expect_true(same(by_id(cr$r2 - cr$r * cr$r), rep(0, n)))
 expect_true(same(by_id(chain_cols(D)), chain_cols(M)))
@@ -122,7 +126,10 @@ expect_equal(length(P), 2L)
 expect_identical(names(as.data.frame(P, keep = "id")), c("id", "b1", "b2"))
 expect_identical(names(as.data.frame(D %*% unname(B))), c(".fitted1", ".fitted2"))
 expect_true(same(by_id(P), M %*% B))
-expect_equal(dim(collect(P)), c(n, 2L))
+expect_equal(dim(as.matrix(P)), c(n, 2L))
+expect_null(dimnames(as.matrix(P)))
+expect_error(as.vector(P), "use as.matrix")
+expect_true(same(as.matrix(P)[order(as.matrix(P)[, 1]), ], (M %*% B)[order((M %*% B)[, 1]), ]))
 expect_true(same(by_id(P[, 2]), (M %*% B)[, 2]))
 expect_true(same(by_id(P[, c(FALSE, TRUE)]), (M %*% B)[, 2]))
 expect_error(P[1:3, ], "no order")
@@ -139,7 +146,7 @@ expect_true(same(by_id(two(D)), two(M)))
 expect_true(same(by_id(ratio(D)), ratio(M)))
 expect_true(same(by_id(mixed(D)), mixed(M)))
 expect_true(same(by_id(D %*% b + rowSums(D)), M %*% b + rowSums(M)))
-expect_true(same(sum(collect(two(D))), sum(two(M))))
+expect_true(same(sum(as.vector(two(D))), sum(two(M))))
 ## the products of one expression, kept and reused: each view is made once
 e1 <- D %*% b
 e2 <- quadratic_diagonal(D, V)
@@ -154,13 +161,13 @@ expect_true(same(by_id(D %*% b2 - st), M %*% b2 - M %*% b))
 ## two products each read before they are combined: refused, with the way out
 p1 <- D %*% b
 p2 <- D %*% b2
-expect_equal(length(collect(p1)), n)
-expect_equal(length(collect(p2)), n)
+expect_equal(length(as.vector(p1)), n)
+expect_equal(length(as.vector(p2)), n)
 expect_error(p1 + p2, "two different branches")
 expect_error(p1 + p2, "before reading either")
 ## (one product of both: always combines)
 P12 <- D %*% cbind(b, b2)
-expect_equal(length(collect(P12[, 1])), n)
+expect_equal(length(as.vector(P12[, 1])), n)
 expect_true(same(by_id(P12[, 1] + P12[, 2]), two(M)))
 
 ## ---- rows of the design ----
@@ -179,9 +186,10 @@ test_con_done(con)
 con2 <- DBI::dbConnect(duckdb::duckdb())
 DBI::dbWriteTable(con2, "d", d)
 col <- design_matrix(fo, con2, table = "d") %*% b
-expect_equal(length(collect(col)), n)
+expect_equal(length(as.vector(col)), n)
 DBI::dbDisconnect(con2)
 expect_true(grepl("(closed)", format(col)[1L], fixed = TRUE))
-expect_error(collect(col), "connection of this remote column is closed")
+expect_error(as.vector(col), "connection of this remote column is closed")
+expect_error(as.matrix(col), "connection of this remote column is closed")
 expect_error(compute(col), "closed")
 expect_error(as.data.frame(col), "closed")

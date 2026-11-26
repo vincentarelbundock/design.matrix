@@ -135,7 +135,7 @@ dm_summary_aggregates <- function(args, what) {
 #' where either value is, as `pmin()` and `pmax()`.
 #'
 #' Remote values are doubles: a logical remote column (a comparison) sums
-#' to a double, where base R gives an integer, and `collect()` returns it
+#' to a double, where base R gives an integer, and `as.vector()` returns it
 #' as 0 and 1. Sums over many rows can differ from R's in the last bits
 #' (the database adds in another order, and R in extended precision);
 #' `gamma()` and `lgamma()` use the C library, R its own code (equal to
@@ -193,7 +193,7 @@ dm_summary_aggregates <- function(args, what) {
 #'     range(zr, na.rm = TRUE)
 #'     mean(round(yr / 4, 1))
 #'     col_sums(n = !is.na(zr), total = col_ifelse(is.na(zr), 0, zr))
-#'     sort(collect(col_pmax(yr, 3)))
+#'     sort(as.vector(col_pmax(yr, 3)))
 #'     DBI::dbDisconnect(con)
 #' }
 #' @name column_arithmetic
