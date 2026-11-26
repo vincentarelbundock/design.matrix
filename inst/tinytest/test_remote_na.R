@@ -98,6 +98,62 @@ for (op in c("+", "-", "*", "/")) {
 }
 check(a^2, d$a^2, "^2")
 
+## pmax/pmin (design.matrix#2tr6): NA or NaN where either side is missing,
+## y's where both are (R's pmax takes the later missing argument), with
+## nothing platform-dependent
+dmc_pmax <- design.matrix:::dmc_pmax
+dmc_pmin <- design.matrix:::dmc_pmin
+check(dmc_pmax(a, b), pmax(d$a, d$b), "pmax")
+check(dmc_pmin(a, b), pmin(d$a, d$b), "pmin")
+check(dmc_pmax(b, a), pmax(d$b, d$a), "pmax swapped")
+check(dmc_pmin(b, a), pmin(d$b, d$a), "pmin swapped")
+for (k in list(0, 1, -2.5, Inf, -Inf, NA, NaN)) {
+    lab <- format(k)
+    check(dmc_pmax(a, k), pmax(d$a, k), paste("pmax", lab))
+    check(dmc_pmin(a, k), pmin(d$a, k), paste("pmin", lab))
+    check(dmc_pmax(k, a), pmax(k, d$a), paste(lab, "pmax"))
+    check(dmc_pmin(k, a), pmin(k, d$a), paste(lab, "pmin"))
+}
+## nested, as the glm links clamp
+check(dmc_pmin(dmc_pmax(a, -1), 1), pmin(pmax(d$a, -1), 1), "clamp")
+check(dmc_pmax(0.001, dmc_pmin(0.999, a)), pmax(0.001, pmin(0.999, d$a)), "clamp constant first")
+## on a multi-column column, one column each
+m <- dmp_collect(dmc_cbind(id, dmc_pmax(ab, 0), dmc_pmin(ab, 0)))
+m <- m[order(m[, 1]), -1]
+expect_identical(unname(m), unname(cbind(pmax(d$a, 0), pmax(d$b, 0), pmin(d$a, 0), pmin(d$b, 0))))
+
+## sign: NaN for NaN, NA for NA
+check(sign(a), sign(d$a), "sign")
+check(sign(-a), sign(-d$a), "sign of -a")
+
+## ^ as R's R_pow: x^0 = 1 and 1^y = 1 for every x and y (NA and NaN too); a
+## negative base with an infinite power, and -Inf with a power that is not
+## an integer, give NaN (C's pow() gives a number). Where both sides are
+## missing, R's result (x + y) depends on the platform: only missingness
+## compared there.
+checkm <- function(remote, local, miss, what) {
+    expect_true(inherits(remote, "dm_rcols"), info = what)
+    r <- get(remote)
+    expect_identical(r[!miss], as.double(local)[!miss], info = what)
+    expect_true(all(is.na(r[miss])), info = what)
+}
+pm <- is.na(d$a) & is.na(d$b)
+checkm(a^b, d$a^d$b, pm, "^")
+checkm(b^a, d$b^d$a, pm, "^ swapped")
+check(a^0, d$a^0, "^0")
+check(a^1, d$a^1, "^1")
+check(a^3, d$a^3, "^3")
+check(a^-1, d$a^-1, "^-1")
+check(a^0.5, d$a^0.5, "^0.5")
+check(a^-2.5, d$a^-2.5, "^-2.5")
+check(a^Inf, d$a^Inf, "^Inf")
+check(a^-Inf, d$a^-Inf, "^-Inf")
+checkm(a^NA, d$a^NA, is.nan(d$a), "^NA")
+checkm(a^NaN, d$a^NaN, is.na(d$a) & !is.nan(d$a), "^NaN")
+for (k in list(1, 0, -1, -2.5, 2, Inf, -Inf)) check(k^b, k^d$b, paste(format(k), "^"))
+checkm(NA^b, NA^d$b, is.nan(d$b), "NA ^")
+checkm(NaN^b, NaN^d$b, is.na(d$b) & !is.nan(d$b), "NaN ^")
+
 ## ifelse and counts: a NA test gives NA (ifelse) and does not count
 check(dmc_ifelse(a > 0, a, 7), dmc_ifelse(d$a > 0, d$a, 7), "ifelse")
 check(dmc_ifelse(a == b, 1, 0), dmc_ifelse(d$a == d$b, 1, 0), "ifelse ==")

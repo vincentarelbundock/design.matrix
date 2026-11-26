@@ -315,7 +315,7 @@ Ops.dm_rcols <- function(e1, e2) {
     }
     sql <- switch(op,
         "+" = , "-" = , "*" = , "/" = sprintf("(%s %s %s)", a, op, b),
-        "^" = sprintf("pow(%s, %s)", a, b),
+        "^" = dm_sql_pow(a, b, e2),
         "==" = sprintf("(%s = %s)", a, b), "!=" = sprintf("(%s <> %s)", a, b),
         "<" = , ">" = , "<=" = , ">=" = sprintf("(%s %s %s)", a, op, b),
         "&" = sprintf("(%s AND %s)", a, b), "|" = sprintf("(%s OR %s)", a, b),
@@ -350,21 +350,57 @@ Math.dm_rcols <- function(x, ...) {
         abs = sprintf("abs(%s)", a), log1p = sprintf("ln(1 + %s)", a), expm1 = sprintf("(exp(%s) - 1)", a),
         log2 = sprintf("log2(%s)", a), log10 = sprintf("log10(%s)", a),
         cos = sprintf("cos(%s)", a), sin = sprintf("sin(%s)", a), tan = sprintf("tan(%s)", a),
-        floor = sprintf("floor(%s)", a), ceiling = sprintf("ceil(%s)", a), sign = sprintf("sign(%s)", a),
+        floor = sprintf("floor(%s)", a), ceiling = sprintf("ceil(%s)", a),
+        ## (DuckDB's sign(NaN) is 0, R's NaN)
+        sign = sprintf("CASE WHEN isnan(CAST(%s AS DOUBLE)) THEN CAST('NaN' AS DOUBLE) ELSE sign(%s) END", a, a),
         stop(sprintf("%s() is not supported for remote columns.", .Generic), call. = FALSE))
     dm_rcols(unclass(x)$frame, sql)
 }
 
+## x^y in SQL (a, b the SQL of the operands, e2 the R operand y), with R's
+## R_pow() where DuckDB's pow() differs: x^0 and 1^y are 1 for any x and y
+## (NA and NaN included; pow(NULL, 0) is NULL), and a negative base with
+## an infinite power, or -Inf with a power that is not an integer, gives
+## NaN. A power that is a nonzero integer (as y^2) needs none of this.
+dm_sql_pow <- function(a, b, e2) {
+    if (!dm_is_rcols(e2) && is.numeric(e2) && length(e2) == 1L && is.finite(e2) && e2 != 0 && e2 == round(e2))
+        return(sprintf("pow(%s, %s)", a, b))
+    sprintf(paste("(CASE WHEN %2$s = 0 OR %1$s = 1 THEN CAST(1 AS DOUBLE)",
+                  "WHEN %1$s < 0 AND (isinf(CAST(%2$s AS DOUBLE)) OR (isinf(CAST(%1$s AS DOUBLE)) AND %2$s <> floor(%2$s)))",
+                  "THEN CAST('NaN' AS DOUBLE) ELSE pow(%1$s, %2$s) END)"), a, b)
+}
+
+## pmax/pmin with R's missing values: DuckDB's greatest() and least() skip
+## NULL and order NaN above every number, while in R an NA or NaN gives NA or
+## NaN (that of y where both are missing, as R's pmax takes the later
+## missing argument). NULLIF(v, NaN) is NULL where v is NA or NaN. With a
+## finite number on one side (every use in the fits), the column is kept
+## where it is missing or beyond the number.
 dmc_pmax <- function(x, y) {
     f <- dm_rcols_frame(x, y)
     if (is.null(f)) return(pmax(x, y))
-    dm_rcols(f, sprintf("greatest(%s, %s)", dm_rcols_operand(x), dm_rcols_operand(y)))
+    dm_sql_pext(f, x, y, "greatest", "<=")
 }
 
 dmc_pmin <- function(x, y) {
     f <- dm_rcols_frame(x, y)
     if (is.null(f)) return(pmin(x, y))
-    dm_rcols(f, sprintf("least(%s, %s)", dm_rcols_operand(x), dm_rcols_operand(y)))
+    dm_sql_pext(f, x, y, "least", ">=")
+}
+
+dm_sql_pext <- function(f, x, y, fun, cmp) {
+    num <- function(v) !dm_is_rcols(v) && is.numeric(v) && length(v) == 1L && is.finite(v)
+    a <- dm_rcols_operand(x)
+    b <- dm_rcols_operand(y)
+    nan <- "CAST('NaN' AS DOUBLE)"
+    if (num(x) || num(y)) {
+        if (num(x)) { cc <- a; v <- b } else { cc <- b; v <- a }
+        return(dm_rcols(f, sprintf("CASE WHEN NULLIF(%1$s, %3$s) %4$s %2$s THEN %2$s ELSE %1$s END",
+                                   v, cc, nan, cmp)))
+    }
+    dm_rcols(f, sprintf(paste("CASE WHEN NULLIF(%2$s, %3$s) IS NULL THEN %2$s",
+                              "WHEN NULLIF(%1$s, %3$s) IS NULL THEN %1$s ELSE %4$s(%1$s, %2$s) END"),
+                        a, b, nan, fun))
 }
 
 ## (in memory a numeric vector: `no` with `yes` where test is TRUE and NA
