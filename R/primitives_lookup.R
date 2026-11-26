@@ -151,10 +151,20 @@ dmc_key <- function(x, vars, data = NULL) {
     out
 }
 
+## TRUE where no key column is missing: NA or NaN (as complete.cases() in
+## memory). Remotely, a key column of the data (s."v") that is not double
+## cannot be NaN: only IS NOT NULL (isnan() would not take text); a double
+## column, or any other expression, is NaN-checked as well.
 dmc_not_na <- function(key) {
     if (!dm_is_rcols(key)) return(if (anyNA(key)) stats::complete.cases(key) else rep(TRUE, NROW(key)))
+    frame <- unclass(key)$frame
     sql <- unclass(key)$sql
-    dm_rcols(unclass(key)$frame, sprintf("(%s)", paste(sprintf("(%s) IS NOT NULL", sql), collapse = " AND ")))
+    types <- frame$src$types
+    cols <- names(types)[match(sql, sprintf("(s.%s)", dm_qi(frame, names(types))))]
+    plain <- !is.na(cols) & !types[cols] %in% "double"
+    one <- ifelse(plain, sprintf("(%s) IS NOT NULL", sql),
+                  sprintf("COALESCE(NOT isnan(CAST(%s AS DOUBLE)), FALSE)", sql))
+    dm_rcols(frame, sprintf("(%s)", paste(one, collapse = " AND ")))
 }
 
 dmc_dense_codes <- function(key, along = list()) {
