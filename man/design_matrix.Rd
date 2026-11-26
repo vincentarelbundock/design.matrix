@@ -18,7 +18,8 @@ design_matrix(
 \item{object}{A model formula or \code{terms} object, a reusable design, or a fitted model.}
 
 \item{data}{A data frame, as in \code{\link[stats:model.matrix]{stats::model.matrix()}}. For a design or plan, the
-new data to apply it to.}
+new data to apply it to. A DuckDB connection (with \code{table} or \code{sql} in
+\code{...}) or Parquet paths give a remote design: see \link{design_remote}.}
 
 \item{contrasts.arg, xlev}{As in \code{\link[stats:model.matrix]{stats::model.matrix()}}.}
 
@@ -29,7 +30,8 @@ has one row per row of \code{data}.}
 \item{...}{With a fitted model and \code{newdata}, arguments selecting the model
 component, such as \code{component = "precision"} for a beta regression.
 Without \code{newdata}, passed to \code{\link[stats:model.matrix]{stats::model.matrix()}} for non-formula objects;
-otherwise ignored, as in \code{model.matrix.default()}.}
+otherwise ignored, as in \code{model.matrix.default()}. For remote data,
+\code{table}, \code{sql}, \code{engine} and \code{chunk_size} (see \link{design_remote}).}
 
 \item{newdata}{A new batch of observations. For a fitted model,
 \code{design_matrix(fit, newdata = batch)} uses its training encoding.

@@ -8,7 +8,8 @@
 #'
 #' @param object A model formula or `terms` object, a reusable design, or a fitted model.
 #' @param data A data frame, as in [stats::model.matrix()]. For a design or plan, the
-#'   new data to apply it to.
+#'   new data to apply it to. A DuckDB connection (with `table` or `sql` in
+#'   `...`) or Parquet paths give a remote design: see [design_remote].
 #' @param newdata A new batch of observations. For a fitted model,
 #'   `design_matrix(fit, newdata = batch)` uses its training encoding.
 #'   Use `newdata = NULL` to prepare a specification for later batches.
@@ -22,7 +23,8 @@
 #' @param ... With a fitted model and `newdata`, arguments selecting the model
 #'   component, such as `component = "precision"` for a beta regression.
 #'   Without `newdata`, passed to [stats::model.matrix()] for non-formula objects;
-#'   otherwise ignored, as in `model.matrix.default()`.
+#'   otherwise ignored, as in `model.matrix.default()`. For remote data,
+#'   `table`, `sql`, `engine` and `chunk_size` (see [design_remote]).
 #'
 #' @return `design_matrix()` returns a design matrix object or, with explicit
 #'   `newdata = NULL`, a reusable specification.
@@ -65,6 +67,15 @@ design_matrix <- function(object, data = environment(object),
                           na.action = stats::na.pass, ..., newdata = NULL) {
     checkmate::qassert(contrasts.arg, c("0", "l"))
     checkmate::qassert(xlev, c("0", "l"))
+
+    ## remote data (see remote.R)
+    if (inherits(object, "dm_remote")) object <- object$plan
+    if (!missing(data) && dm_is_remote_source(data))
+        return(dm_remote(object, data, contrasts.arg, xlev, list(...)))
+    if (!missing(newdata) && dm_is_remote_source(newdata)) {
+        if (!missing(data)) stop("Supply only one of `data` and `newdata`.", call. = FALSE)
+        return(dm_remote(object, newdata, contrasts.arg, xlev, list(...)))
+    }
 
     if (!missing(newdata)) {
         if (!missing(data)) stop("Supply only one of `data` and `newdata`.", call. = FALSE)
