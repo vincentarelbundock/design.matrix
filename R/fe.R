@@ -207,8 +207,9 @@ dm_fe_code <- function(v) {
         if (!is.null(r)) {
             if (length(r) == 4L) return(list(codes = r[[1L]], G = r[[2L]], levels = r[[3L]], n = r[[4L]]))
             ## hashed: levels in order of first appearance, sorted here
+            ## (as plain values: not for a class with its own order)
             u <- r[[3L]]
-            if (!is.character(u) || !anyDuplicated(u)) {
+            if (is.null(oldClass(v)) && (!is.character(u) || !anyDuplicated(u))) {
                 o <- order(u, method = "radix")
                 rank <- integer(length(o))
                 rank[o] <- seq_along(o)
