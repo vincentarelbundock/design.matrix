@@ -93,6 +93,40 @@ for (fo in list(y ~ f + x + I(x^2), y ~ f * log(x) + x)) {
     D <- design_matrix(fo, dc)
     expect_true(same(qr.coef(qr(D), dc$y), qr.coef(qr(as.matrix(D)), dc$y), 1e-8), info = deparse(fo))
 }
+# (design.matrix#r6g7) the shifted design is X T on every row: T is found
+# on prototypes built, like the shifted design, from the frame's columns as
+# stored; such designs are now centered (no guard)
+ns <- asNamespace("design.matrix")
+for (fo in list(y ~ f + x + I(x^2), y ~ f * log(x) + x, y ~ I(x^2) + f, y ~ log(x) * I(x^2))) {
+    info <- paste(deparse(fo), "X T")
+    D <- design_matrix(fo, dc)
+    ctr <- ns$dmp_center(D)
+    expect_false(is.null(ctr), info = info)
+    X <- as.matrix(D)
+    err <- abs(X %*% ctr$T - as.matrix(ctr$x))
+    scale <- abs(X) %*% abs(ctr$T)
+    expect_true(all(err <= 1e-10 * pmax(scale, 1)), info = info)
+    ## (badly conditioned: qr() centers; I(x^2) alone is not bad enough)
+    if (!identical(fo, y ~ I(x^2) + f)) expect_false(is.null(qr(D)$centered), info = paste(info, "centered"))
+    check_fit(design_lm(fo, dc), lm(fo, dc), info)
+    dw <- transform(dc, w = runif(nrow(dc), 0.5, 2))
+    check_fit(design_lm(fo, dw, weights = w), lm(fo, dw, weights = w), paste(info, "weighted"))
+}
+# with fixed effects: centered as well, coefficients and covariance as
+# lm() with the FE as dummies (the intercept and f absorbed)
+dc$g <- sample(40, nrow(dc), TRUE)
+for (fo in list(y ~ x + I(x^2) | f, y ~ log(x) + I(x^2) | f + g, y ~ I(x^2) | g)) {
+    info <- paste(deparse(fo), "FE")
+    rhs <- deparse(fo[[3L]][[2L]])
+    fes <- all.vars(fo[[3L]][[3L]])
+    l <- lm(stats::as.formula(paste("y ~", rhs, "+", paste(sprintf("factor(%s)", fes), collapse = " + "))), dc)
+    a <- design_lm(fo, dc)
+    nm <- names(coef(a))
+    expect_true(same(coef(a), coef(l)[nm], 1e-7), info = paste(info, "coef"))
+    ## (lm()'s covariance, with fixest's small sample correction of the FE fit)
+    Vl <- vcov(l)[nm, nm] * df.residual(l) / df.residual(a)
+    expect_true(same(vcov(a), Vl, 1e-7), info = paste(info, "vcov"))
+}
 
 # design_glm() (gaussian) takes the same factorization
 l <- glm(y ~ xb * xs + f1, data = d)
@@ -117,6 +151,21 @@ expect_false(is.null(q$centered))
 if (requireNamespace("duckdb", quietly = TRUE) && requireNamespace("DBI", quietly = TRUE)) {
     con <- DBI::dbConnect(duckdb::duckdb())
     DBI::dbWriteTable(con, "d", d)
+    DBI::dbWriteTable(con, "dc", dc)
+    for (fo in list(y ~ f + x + I(x^2), y ~ f * log(x) + x)) {
+        info <- paste(deparse(fo), "remote, stored columns")
+        f <- design_lm(fo, dc)
+        r <- design_lm(fo, con, table = "dc")
+        expect_true(same(coef(f), coef(r)), info = paste(info, "coef"))
+        expect_true(same(vcov(f), vcov(r)), info = paste(info, "vcov"))
+    }
+    for (fo in list(y ~ x + I(x^2) | f, y ~ log(x) + I(x^2) | f + g)) {
+        info <- paste(deparse(fo), "remote FE, stored columns")
+        f <- design_lm(fo, dc)
+        r <- design_lm(fo, con, table = "dc")
+        expect_true(same(coef(f), coef(r)), info = paste(info, "coef"))
+        expect_true(same(vcov(f), vcov(r)), info = paste(info, "vcov"))
+    }
     for (fo in list(y ~ xs + f1, y ~ xb * xs, y ~ xt + f1, y ~ xb * f2)) {
         info <- paste(deparse(fo), "remote")
         f <- design_lm(fo, d)

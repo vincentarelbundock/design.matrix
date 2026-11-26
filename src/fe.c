@@ -825,6 +825,10 @@ SEXP dm_fe_recode(SEXP codes_, SEXP rank_)
    columns), max backward error, and NULL or, when the recursion of a
    column broke down (p'Rp <= 0: R singular, the FE collinear beyond the
    references removed), its direction p, close to a null vector of R).
+   nthreads: on T > 1 threads (pcg_threads(): one for small systems) the
+   products, sums and updates of the recursion are threaded (pcg_op,
+   below: identical results for a given T); T = 1 runs the
+   single-threaded code.
    ------------------------------------------------------------------------ */
 
 SEXP dm_fe_ichol(SEXP p_, SEXP i_, SEXP x_, SEXP n_, SEXP omega_)
@@ -1098,8 +1102,278 @@ static void fe_op(int n, int nc, const int *ap, const int *ai, const double *ax,
     }
 }
 
+/* ------------------------------------------------------------------------
+   dm_fe_pcg() on T > 1 threads.
+
+   Products y = R x: A as its full symmetric pattern in compressed rows
+   (fp, fi, fx: row k lists (j, a) for each entry a at (k, j) or (j, k) of
+   the triangle given), N by the rows of R in compressed rows (tp, tj, tx;
+   the rows dropped left out).  First s = diag(d) N' x by columns of N,
+   then each row of y as the sum over its row of A minus the sum over its
+   row of N times s.  Every entry of s and of y is computed by one thread,
+   in an order of operations fixed by the matrices alone: the products are
+   the same for any T > 1 (the partition into T parts, balanced by
+   nonzeros, decides only which thread computes what).
+
+   Sums over the n rows (p'Rp, ||r||, ||x||, r'z): the rows split into T
+   chunks by dm_chunk_start() (boundaries from n and T only), one partial
+   sum per chunk and column, the partial sums added in chunk order: the
+   same for a given T.
+
+   Updates of vectors are elementwise: the same for any T.
+
+   The IC(0) solves stay on one thread (triangular solves).  No R API
+   inside the parallel regions; everything is allocated before.
+   ------------------------------------------------------------------------ */
+typedef struct {
+    int n, nc, G, T;
+    const int *fp, *fi;
+    const double *fx;
+    const int *tp, *tj;		/* NULL without N */
+    const double *tx;
+    const int *np, *ni, *mp;
+    const double *nx, *d;
+    double *s;			/* G x nc, interleaved */
+    const int *rb, *gb;		/* T + 1 bounds: rows of R, columns of N */
+} pcg_op;
+
+/* bounds b[0..T] (nondecreasing, b[0] = 0, b[T] = len) of T parts of
+   `len` units balanced by the cost of unit u, 1 + cnt1[u + 1] - cnt1[u] +
+   cnt2[u + 1] - cnt2[u] (cnt1, cnt2: cumulative counts, or NULL) */
+static int *pcg_bounds(int len, int T, const int *cnt1, const int *cnt2)
+{
+    int *b = (int *) R_alloc((size_t) T + 1, sizeof(int));
+    double total = (double) len;
+    if (cnt1) total += (double) cnt1[len] - cnt1[0];
+    if (cnt2) total += (double) cnt2[len] - cnt2[0];
+    double cum = 0.0;
+    int t = 1;
+    b[0] = 0;
+    for (int u = 0; u < len && t < T; u++) {
+	while (t < T && cum >= total * t / T) b[t++] = u;
+	cum += 1.0;
+	if (cnt1) cum += (double) cnt1[u + 1] - cnt1[u];
+	if (cnt2) cum += (double) cnt2[u + 1] - cnt2[u];
+    }
+    while (t < T) b[t++] = len;
+    b[T] = len;
+    return b;
+}
+
+static void pcg_op_build(pcg_op *P, int n, int nc, int T, const int *ap, const int *ai,
+			 const double *ax, int G, const int *np, const int *ni, const int *mp,
+			 const double *nx, const double *d)
+{
+    P->n = n;
+    P->nc = nc;
+    P->T = T;
+    P->G = np ? G : 0;
+    P->np = np;
+    P->ni = ni;
+    P->mp = mp;
+    P->nx = nx;
+    P->d = d;
+    /* full A by rows */
+    int *fp = (int *) R_alloc((size_t) n + 1, sizeof(int));
+    int *fill = (int *) R_alloc((size_t) n + 1, sizeof(int));
+    for (int k = 0; k <= n; k++) fp[k] = 0;
+    for (int j = 0; j < n; j++)
+	for (int q = ap[j]; q < ap[j + 1]; q++) {
+	    int k = ai[q];
+	    fp[k + 1]++;
+	    if (k != j) fp[j + 1]++;
+	}
+    for (int k = 0; k < n; k++) fp[k + 1] += fp[k];
+    int *fi = (int *) R_alloc((size_t) fp[n] + 1, sizeof(int));
+    double *fx = (double *) R_alloc((size_t) fp[n] + 1, sizeof(double));
+    memcpy(fill, fp, sizeof(int) * (size_t) n);
+    for (int j = 0; j < n; j++)
+	for (int q = ap[j]; q < ap[j + 1]; q++) {
+	    int k = ai[q], t = fill[k]++;
+	    fi[t] = j;
+	    fx[t] = ax[q];
+	    if (k != j) {
+		t = fill[j]++;
+		fi[t] = k;
+		fx[t] = ax[q];
+	    }
+	}
+    P->fp = fp;
+    P->fi = fi;
+    P->fx = fx;
+    /* N by rows of R (the rows mapped to n, dropped, left out) */
+    int *tp = NULL;
+    P->tp = NULL;
+    P->tj = NULL;
+    P->tx = NULL;
+    P->s = NULL;
+    P->gb = NULL;
+    if (P->G > 0) {
+	tp = (int *) R_alloc((size_t) n + 1, sizeof(int));
+	for (int k = 0; k <= n; k++) tp[k] = 0;
+	int nnzN = np[G];
+	for (int q = 0; q < nnzN; q++) {
+	    int k = mp[ni[q]];
+	    if (k < n) tp[k + 1]++;
+	}
+	for (int k = 0; k < n; k++) tp[k + 1] += tp[k];
+	int *tj = (int *) R_alloc((size_t) tp[n] + 1, sizeof(int));
+	double *tx = (double *) R_alloc((size_t) tp[n] + 1, sizeof(double));
+	memcpy(fill, tp, sizeof(int) * (size_t) n);
+	for (int j = 0; j < G; j++)
+	    for (int q = np[j]; q < np[j + 1]; q++) {
+		int k = mp[ni[q]];
+		if (k >= n) continue;
+		int t = fill[k]++;
+		tj[t] = j;
+		tx[t] = nx[q];
+	    }
+	P->tp = tp;
+	P->tj = tj;
+	P->tx = tx;
+	P->s = (double *) R_alloc((size_t) G * nc + 1, sizeof(double));
+	P->gb = pcg_bounds(G, T, np, NULL);
+    }
+    P->rb = pcg_bounds(n, T, fp, tp);
+}
+
+/* s[j] = d[j] (N' x)[j] for the columns j0..j1-1 of N (the rows mapped to
+   n read the zero row n of x), the order of fe_op() */
+static inline void pcg_gather(const pcg_op *P, int NC, const double *restrict x, int j0, int j1)
+{
+    const int *np = P->np, *ni = P->ni, *mp = P->mp;
+    const double *nx = P->nx, *d = P->d;
+    double *restrict s = P->s;
+    for (int j = j0; j < j1; j++) {
+	double *sj = s + (size_t) j * NC;
+	for (int c = 0; c < NC; c++) sj[c] = 0.0;
+	for (int q = np[j]; q < np[j + 1]; q++) {
+	    const double *xk = x + (size_t) mp[ni[q]] * NC;
+	    double v = nx[q];
+	    for (int c = 0; c < NC; c++) sj[c] += v * xk[c];
+	}
+	for (int c = 0; c < NC; c++) sj[c] *= d[j];
+    }
+}
+
+/* rows k0..k1-1 of y = A x - N s */
+static inline void pcg_rows(const pcg_op *P, int NC, const double *restrict x, double *restrict y,
+			    int k0, int k1)
+{
+    const int *fp = P->fp, *fi = P->fi, *tp = P->tp, *tj = P->tj;
+    const double *fx = P->fx, *tx = P->tx;
+    const double *s = P->s;
+    for (int k = k0; k < k1; k++) {
+	double *yk = y + (size_t) k * NC;
+	for (int c = 0; c < NC; c++) yk[c] = 0.0;
+	for (int t = fp[k]; t < fp[k + 1]; t++) {
+	    const double *xj = x + (size_t) fi[t] * NC;
+	    double a = fx[t];
+	    for (int c = 0; c < NC; c++) yk[c] += a * xj[c];
+	}
+	if (tp)
+	    for (int t = tp[k]; t < tp[k + 1]; t++) {
+		const double *sj = s + (size_t) tj[t] * NC;
+		double v = tx[t];
+		for (int c = 0; c < NC; c++) yk[c] -= v * sj[c];
+	    }
+    }
+}
+
+/* (instances where the column count is a constant the compiler unrolls) */
+static void pcg_gather_nc(const pcg_op *P, const double *x, int j0, int j1)
+{
+    switch (P->nc) {
+    case 1: pcg_gather(P, 1, x, j0, j1); break;
+    case 2: pcg_gather(P, 2, x, j0, j1); break;
+    case 3: pcg_gather(P, 3, x, j0, j1); break;
+    case 4: pcg_gather(P, 4, x, j0, j1); break;
+    default: pcg_gather(P, P->nc, x, j0, j1);
+    }
+}
+
+static void pcg_rows_nc(const pcg_op *P, const double *x, double *y, int k0, int k1)
+{
+    switch (P->nc) {
+    case 1: pcg_rows(P, 1, x, y, k0, k1); break;
+    case 2: pcg_rows(P, 2, x, y, k0, k1); break;
+    case 3: pcg_rows(P, 3, x, y, k0, k1); break;
+    case 4: pcg_rows(P, 4, x, y, k0, k1); break;
+    default: pcg_rows(P, P->nc, x, y, k0, k1);
+    }
+}
+
+/* y = R x on T threads (x: n + 1 rows, row n zero; row n of y set to
+   zero).  The parts are loop iterations, not thread ids: the result is
+   the same when OpenMP gives fewer threads than T. */
+static void pcg_apply(const pcg_op *P, const double *x, double *y)
+{
+    int T = P->T, hasN = P->G > 0;
+#ifdef _OPENMP
+#pragma omp parallel num_threads(T)
+#endif
+    {
+	if (hasN) {
+#ifdef _OPENMP
+#pragma omp for schedule(static)
+#endif
+	    for (int t = 0; t < T; t++) pcg_gather_nc(P, x, P->gb[t], P->gb[t + 1]);
+	    /* (the implicit barrier: s complete before the rows) */
+	}
+#ifdef _OPENMP
+#pragma omp for schedule(static)
+#endif
+	for (int t = 0; t < T; t++) pcg_rows_nc(P, x, y, P->rb[t], P->rb[t + 1]);
+    }
+    for (int c = 0; c < P->nc; c++) y[(size_t) P->n * P->nc + c] = 0.0;
+}
+
+/* out[c] = sum_k a[k, c] b[k, c] (interleaved, n rows) by T chunks, the
+   partial sums (at acc + t * stride) added in chunk order */
+static void pcg_dot(int n, int nc, int T, const double *a, const double *b, double *acc,
+		    size_t stride, double *out)
+{
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(T) schedule(static)
+#endif
+    for (int t = 0; t < T; t++) {
+	double *at = acc + (size_t) t * stride;
+	for (int c = 0; c < nc; c++) at[c] = 0.0;
+	R_xlen_t k0 = dm_chunk_start(n, T, t, 1), k1 = dm_chunk_start(n, T, t + 1, 1);
+	for (R_xlen_t k = k0; k < k1; k++) {
+	    const double *ak = a + (size_t) k * nc, *bk = b + (size_t) k * nc;
+	    for (int c = 0; c < nc; c++) at[c] += ak[c] * bk[c];
+	}
+    }
+    for (int c = 0; c < nc; c++) {
+	double v = acc[c];
+	for (int t = 1; t < T; t++) v += acc[(size_t) t * stride + c];
+	out[c] = v;
+    }
+}
+
+/* Threads for the products and sums of dm_fe_pcg(): one for small systems
+   (fewer than 2 x 4096 rows, or fewer than DM_RED_MIN_WORK multiply-adds
+   per thread and iteration).  requested < 0: -requested threads whatever
+   the size (for the tests). */
+static int pcg_threads(int requested, int n, int nc, double nnzA, double nnzN)
+{
+    if (requested == NA_INTEGER || n < 2) return 1;
+    /* the full pattern of A must fit int offsets */
+    if (2.0 * nnzA >= (double) INT_MAX) return 1;
+    if (requested < 0) {
+	int T = -requested;
+	return T < n ? T : n;
+    }
+    double work = (double) nc * (2.0 * nnzA + 2.0 * nnzN + 8.0 * n);
+    int T = dm_worker_count(requested, n / 4096);
+    while (T > 1 && work < DM_RED_MIN_WORK * T) T--;
+    return T;
+}
+
 SEXP dm_fe_pcg(SEXP ap_, SEXP ai_, SEXP ax_, SEXP np_, SEXP ni_, SEXP nx_, SEXP map_, SEXP d_,
-	       SEXP lp_, SEXP li_, SEXP lx_, SEXP B_, SEXP X0_, SEXP bmin_, SEXP tol_, SEXP maxit_)
+	       SEXP lp_, SEXP li_, SEXP lx_, SEXP B_, SEXP X0_, SEXP bmin_, SEXP tol_, SEXP maxit_,
+	       SEXP nthreads_)
 {
     int n = nrows(B_), nc = ncols(B_);
     const int *ap = INTEGER(ap_), *ai = INTEGER(ai_);
@@ -1169,8 +1443,22 @@ SEXP dm_fe_pcg(SEXP ap_, SEXP ai_, SEXP ax_, SEXP np_, SEXP ni_, SEXP nx_, SEXP 
 	}
 	its[c] = 0;
     }
+    /* T > 1: the products, sums and updates of the recursion on T threads
+       (pcg_op); T = 1: the single-threaded code */
+    int T = pcg_threads(asInteger(nthreads_), n, nc, (double) ap[n], mf ? (double) np[G] : 0.0);
+    pcg_op P;
+    memset(&P, 0, sizeof(P));
+    double *acc = NULL;
+    size_t stride = 0;
+    if (T > 1) {
+	pcg_op_build(&P, n, nc, T, ap, ai, ax, G, np, ni, mp, nx, d);
+	/* per chunk: 3 nc partial sums, padded to 64 bytes (no false sharing) */
+	stride = ((3 * (size_t) nc + 7) / 8) * 8;
+	acc = (double *) R_alloc(stride * T, sizeof(double));
+    }
     if (!isNull(X0_)) {
-	fe_op(n, nc, ap, ai, ax, G, np, ni, mp, nx, d, x, Ap, s);
+	if (T > 1) pcg_apply(&P, x, Ap);
+	else fe_op(n, nc, ap, ai, ax, G, np, ni, mp, nx, d, x, Ap, s);
 	for (size_t t = 0; t < nn; t++) r[t] -= Ap[t];
 	/* a starting value worse than zero (residual above ||b||) is dropped */
 	for (int c = 0; c < nc; c++) {
@@ -1217,7 +1505,98 @@ SEXP dm_fe_pcg(SEXP ap_, SEXP ai_, SEXP ax_, SEXP np_, SEXP ni_, SEXP nx_, SEXP 
 	for (int k = 0; k < n; k++) rz[c] += r[(size_t) k * nc + c] * z[(size_t) k * nc + c];
     }
     int it = 0;
-    for (;;) {
+    if (T > 1) {
+	double *pap = (double *) R_alloc((size_t) nc + 1, sizeof(double));
+	double *rr = (double *) R_alloc((size_t) nc + 1, sizeof(double));
+	double *xx = (double *) R_alloc((size_t) nc + 1, sizeof(double));
+	double *rzn = (double *) R_alloc((size_t) nc + 1, sizeof(double));
+	for (;;) {
+	    int active = 0;
+	    for (int c = 0; c < nc; c++) active += !done[c];
+	    if (!active || it >= maxit) break;
+	    it++;
+	    pcg_apply(&P, pv, Ap);
+	    pcg_dot(n, nc, T, pv, Ap, acc, stride, pap);
+	    for (int c = 0; c < nc; c++) {
+		alpha[c] = 0.0;
+		if (done[c]) continue;
+		if (!(pap[c] > 0.0)) {
+		    /* p'Rp <= 0: as below */
+		    done[c] = 1;
+		    if (isNull(nullv_)) {
+			nullv_ = PROTECT(allocVector(REALSXP, n));
+			nprot++;
+			for (int k = 0; k < n; k++) REAL(nullv_)[k] = pv[(size_t) k * nc + c];
+		    }
+		    continue;
+		}
+		alpha[c] = rz[c] / pap[c];
+		its[c] = it;
+	    }
+	    /* x += alpha p, r -= alpha Rp with the sums of r^2 and x^2 (and,
+	       Jacobi, z = diag(R)^-1 r with the sums of r z), by chunks */
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(T) schedule(static)
+#endif
+	    for (int t = 0; t < T; t++) {
+		double *a_rr = acc + (size_t) t * stride, *a_xx = a_rr + nc, *a_rz = a_xx + nc;
+		for (int c = 0; c < 3 * nc; c++) a_rr[c] = 0.0;
+		R_xlen_t k0 = dm_chunk_start(n, T, t, 1), k1 = dm_chunk_start(n, T, t + 1, 1);
+		for (R_xlen_t k = k0; k < k1; k++) {
+		    double dk = dinv[k];
+		    for (int c = 0; c < nc; c++) {
+			size_t i = (size_t) k * nc + c;
+			x[i] += alpha[c] * pv[i];
+			r[i] -= alpha[c] * Ap[i];
+			a_rr[c] += r[i] * r[i];
+			a_xx[c] += x[i] * x[i];
+			if (!use_ic) {
+			    z[i] = dk * r[i];
+			    a_rz[c] += r[i] * z[i];
+			}
+		    }
+		}
+	    }
+	    for (int c = 0; c < nc; c++) {
+		double vr = acc[c], vx = acc[nc + c], vz = acc[2 * nc + c];
+		for (int t = 1; t < T; t++) {
+		    const double *at = acc + (size_t) t * stride;
+		    vr += at[c];
+		    vx += at[nc + c];
+		    vz += at[2 * nc + c];
+		}
+		rr[c] = vr;
+		xx[c] = vx;
+		rzn[c] = vz;
+	    }
+	    for (int c = 0; c < nc; c++) {
+		if (done[c]) continue;
+		res[c] = sqrt(rr[c]) / (dmax * sqrt(xx[c]) + (bn[c] > bmin ? bn[c] : bmin));
+		if (res[c] <= tol) done[c] = 1;
+	    }
+	    if (use_ic) {
+		memcpy(z, r, sizeof(double) * nn);
+		ic_solve(n, nc, lp, li, lx, z);
+		pcg_dot(n, nc, T, r, z, acc, stride, rzn);
+	    }
+	    for (int c = 0; c < nc; c++) {
+		beta[c] = 0.0;
+		if (done[c]) continue;
+		beta[c] = rzn[c] / rz[c];
+		rz[c] = rzn[c];
+	    }
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(T) schedule(static)
+#endif
+	    for (int k = 0; k < n; k++)
+		for (int c = 0; c < nc; c++) {
+		    size_t i = (size_t) k * nc + c;
+		    pv[i] = done[c] ? 0.0 : z[i] + beta[c] * pv[i];
+		}
+	    if ((it & 63) == 0) R_CheckUserInterrupt();
+	}
+    }
+    else for (;;) {
 	int active = 0;
 	for (int c = 0; c < nc; c++) active += !done[c];
 	if (!active || it >= maxit) break;

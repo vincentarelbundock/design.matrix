@@ -175,6 +175,24 @@ if (remote) {
     b <- design_glm(yb ~ x1 | a + c, binomial, d)
     expect_equal(c(a$nperfect, a$nsingletons, nobs(a)), c(b$nperfect, b$nsingletons, nobs(b)))
 }
+# a level that is both a singleton and all 0 counts as perfectly fit; a
+# singleton with y > 0 as a singleton (the masks of each level count matrix
+# are computed once, design.matrix#6y4d)
+set.seed(11)
+dp <- data.frame(a = c(1, 12, rep(2:11, each = 5)))
+dp$x1 <- rnorm(nrow(dp))
+dp$y <- c(0, 3, rpois(50, 2) + 1)
+srcp <- put(dp, "dglm_prec")
+for (rm in c("perfect_fit", "singleton", "infinite_coef")) {
+    fp <- design_glm(y ~ x1 | a, poisson, dp, fixef.rm = rm)
+    want <- switch(rm, perfect_fit = c(1, 1, 50), singleton = c(0, 2, 50), infinite_coef = c(1, 0, 51))
+    expect_equal(c(fp$nperfect, fp$nsingletons, nobs(fp)), want, info = paste("precedence", rm))
+    if (remote) {
+        fr <- design_glm(y ~ x1 | a, poisson, con, table = srcp$table, fixef.rm = rm)
+        expect_equal(c(fr$nperfect, fr$nsingletons, nobs(fr)), want, info = paste("precedence remote", rm))
+        expect_equal(coef(fr), coef(fp), tolerance = TOL, info = paste("precedence remote coef", rm))
+    }
+}
 
 # Missing values: na.omit, na.exclude ----------------------------------------
 dn <- d

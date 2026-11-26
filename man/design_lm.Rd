@@ -182,7 +182,11 @@ iteratively, as \code{feols()} does. \code{fit$nsingletons} counts them.
 \item Coefficients: the intercept is absorbed; a column collinear with the
 FE or earlier columns is \code{NA} (fixest's rule: its residual variance is
 below \code{tol} times its variance; \code{tol} defaults to \code{1e-10} with FE, as
-\code{collin.tol}). One step of iterative refinement from the residuals is
+\code{collin.tol}). The residual variance comes from sums over rows; for a
+column within rounding of that threshold (about \code{2e-12} times its sum
+of squares) it is computed again from the data, one pass over the
+rows, so that the decision does not depend on rounding. One step of
+iterative refinement from the residuals is
 taken, and numeric variables far from zero are centered when that is
 an exact transform of the design, so that coefficients and standard
 errors stay accurate.

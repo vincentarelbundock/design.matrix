@@ -213,8 +213,10 @@ expect_message(design_lm(y ~ x + f, con, table = "d", weights = myfun(x)),
                "Evaluated in R: weights `myfun(x)` cannot be translated", fixed = TRUE)
 expect_error(design_lm(y ~ x + f, con, table = "d", subset = myfun(z) > 2, engine = "sql"),
              "SQL engine cannot compute this fit: subset `myfun(z) > 2`", fixed = TRUE)
-## compression stays exact with R-evaluated weights and offsets
-r <- suppressMessages(design_lm(y ~ xd + f, con, table = "d", weights = myfun(xd), offset = log(myfun(z))))
+## compression stays exact with R-evaluated weights and offsets (forced:
+## "auto" does not compress a weighted lm with few numeric columns)
+r <- suppressMessages(design_lm(y ~ xd + f, con, table = "d", weights = myfun(xd), offset = log(myfun(z)),
+                                compress = TRUE))
 expect_true(r$compressed)
 check_methods(r, lm(y ~ xd + f, d, weights = myfun(xd), offset = log(myfun(z))), "compressed, R expressions")
 

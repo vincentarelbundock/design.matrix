@@ -383,6 +383,31 @@ for (nm in names(fo)) {
     }
 }
 
+# LM and gaussian GLM with FE: the fields they share (dm_fe_fields(),
+# design.matrix#62n9) are the same, and so is the clustered covariance
+# (fit$vcov of the LM, fit$vcov_cluster of the GLM)
+for (vc in list("iid", ~b)) {
+    info <- paste("shared fields", deparse(vc))
+    l <- design_lm(y ~ x1 * f + x2 | a + b, d, vcov = vc)
+    g <- design_glm(y ~ x1 * f + x2 | a + b, gaussian, d, vcov = vc, control = list(epsilon = 1e-12))
+    expect_identical(names(coef(l)), names(coef(g)), info = info)
+    expect_equal(coef(l), coef(g), tolerance = 1e-9, info = info)
+    expect_identical(dimnames(l$cov.unscaled), dimnames(g$cov.unscaled), info = info)
+    expect_identical(dimnames(vcov(l)), list(names(coef(l)), names(coef(l))), info = info)
+    expect_equal(l$cov.unscaled, g$cov.unscaled, tolerance = 1e-9, info = info)
+    expect_identical(lapply(l$fixef, names), lapply(g$fixef, names), info = info)
+    expect_identical(l$fe_sizes, g$fe_sizes, info = info)
+    expect_identical(names(l$fe_sizes), c("a", "b"), info = info)
+    expect_identical(l[c("rank", "fe_dof", "fe_dof_exact", "fe_vars", "fe_levels", "vcov_type")],
+                     g[c("rank", "fe_dof", "fe_dof_exact", "fe_vars", "fe_levels", "vcov_type")], info = info)
+    if (!identical(vc, "iid")) {
+        expect_identical(dimnames(g$vcov_cluster), dimnames(vcov(l)), info = info)
+        expect_equal(vcov(l), g$vcov_cluster, tolerance = 1e-8, info = info)
+        expect_identical(c(l$cluster, g$cluster), c("b", "b"), info = info)
+        expect_identical(l$G_cluster, g$G_cluster, info = info)
+    }
+}
+
 # Errors -----------------------------------------------------------------------
 expect_error(design_lm(y ~ x1 | a, d, vcov = ~a + b), "one-way")
 expect_error(design_lm(y ~ x1 | a, d, vcov = "hc1"), "vcov")

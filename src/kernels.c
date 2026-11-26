@@ -890,36 +890,50 @@ SEXP dm_jac_gram(SEXP a1, SEXP av1, SEXP as1, SEXP a2, SEXP av2, SEXP as2,
     return out;
 }
 
-/* Cholesky factor of X'X (= G) with the limited column pivoting of
-   LINPACK's dqrdc2 (as in qr() and lm()): columns are taken in order, and
-   a column whose residual norm (after projection on the columns already
-   taken) is below tol times its norm is moved to the end, after the
-   columns already moved.  As in dqrdc2, columns are tested only until
-   min(n, p) columns are taken; the rest stay in place.
+/* Pivoted Cholesky factor of a symmetric p x p matrix G with the limited
+   column pivoting of LINPACK's dqrdc2 (as in qr() and lm()): columns are
+   taken in order, and a column that fails the rule below is moved to the
+   end, after the columns already moved.  As in dqrdc2, columns are tested
+   only until `lup` columns are taken; the rest stay in place.
 
-   From G, a squared residual norm d is accurate to about eps * G[j, j]
-   only, so a small d cannot tell an aliased column from one whose
-   residual is just above tol.  A column with d <= susp * G[j, j] (the
-   caller passes susp >= 100 * tol^2, so that every column taken here is
-   clearly above tol), or with a zero norm in G (which can be underflow),
-   is a suspect: unless `dres[j]` (its squared residual norm, computed
-   from the data by the caller) is given, it is provisionally moved, and
-   listed in the result for the caller to check.  With `dres[j]`, the
-   column is taken when dres[j] > tol^2 * G[j, j], with
-   R[j, j] = sqrt(dres[j]).
+   Rule: column j, whose squared residual norm after projection on the
+   columns already taken is d, is taken when scale[j] > 0 and
+   d > tol * scale[j] (ties = 0) or d >= tol * scale[j] (ties = 1).  The two
+   callers (dm_pivchol() in R):
+   * qr() (dmqr_chol()): G = X'X, scale = diag(G), tol = tol^2 of qr(),
+     ties = 1 (dqrdc2 keeps a column whose residual norm equals tol times
+     its norm);
+   * fixed effects (dm_fe_pivchol()): G = X'MX (the FE absorbed), scale the
+     variances before absorption, tol = collin.tol, ties = 0 (fixest).
+
+   Suspect band (lo, hi: p values each, or length 0 for none): from G, d is
+   accurate only to rounding, so a column with lo[j] <= d <= hi[j] cannot be
+   judged from G.  Unless `dres[j]` (its squared residual norm, computed
+   from the data by the caller) is given, such a column is provisionally
+   moved and listed in the result for the caller to check.  With dres[j],
+   d = dres[j] and the column is taken when scale[j] > 0, d > 0 and the rule
+   holds, with R[j, j] = sqrt(d).  (qr() passes lo = -Inf and
+   hi = susp * G[j, j], susp >= 100 tol^2, so that every column taken from
+   G is clearly above tol, and a zero norm in G, which can be underflow, is
+   always a suspect; FE passes a narrow band around tol * scale[j].)
 
    Returns list(R, rank, pivot, suspects): R is p x p upper triangular in
    pivoted order, with zeros in the block of the moved columns' residuals;
    pivot and suspects are 1-based. */
-SEXP dm_chol_pivot(SEXP G_, SEXP tol_, SEXP susp_, SEXP n_, SEXP dres_)
+SEXP dm_chol_pivot(SEXP G_, SEXP scale_, SEXP tol_, SEXP ties_, SEXP lo_, SEXP hi_, SEXP lup_,
+		   SEXP dres_)
 {
     int p = nrows(G_);
     if (ncols(G_) != p) error("internal error: G must be square");
-    if (XLENGTH(dres_) != p) error("internal error: dres must have p values");
-    const double *G = REAL(G_), *dres = REAL(dres_);
-    double tol = asReal(tol_), tol2 = tol * tol, susp = asReal(susp_);
-    double nrow = asReal(n_);
-    int lup = nrow < p ? (int) nrow : p;
+    if (XLENGTH(dres_) != p || XLENGTH(scale_) != p) error("internal error: dres and scale must have p values");
+    int band = XLENGTH(lo_) > 0;
+    if (band && (XLENGTH(lo_) != p || XLENGTH(hi_) != p)) error("internal error: lo and hi must have p values");
+    const double *G = REAL(G_), *dres = REAL(dres_), *scale = REAL(scale_);
+    const double *lo = band ? REAL(lo_) : NULL, *hi = band ? REAL(hi_) : NULL;
+    double tol = asReal(tol_);
+    int ties = asLogical(ties_) == TRUE;
+    int lup = asInteger(lup_);
+    if (lup == NA_INTEGER || lup > p) lup = p;
     int p1 = p > 0 ? p : 1;
     int *acc = (int *) R_alloc(p1, sizeof(int));
     int *rej = (int *) R_alloc(p1, sizeof(int));
@@ -945,20 +959,20 @@ SEXP dm_chol_pivot(SEXP G_, SEXP tol_, SEXP susp_, SEXP n_, SEXP dres_)
 	    ss += x[a] * x[a];
 	}
 	double d = gjj - ss;
+	double thr = tol * scale[j];
 	int take;
 	if (!ISNAN(dres[j])) {
-	    /* judged from the data by the caller */
+	    /* judged from the data by the caller (a zero residual never
+	       counts) */
 	    d = dres[j];
-	    /* as dqrdc2: a column is moved when its residual norm is below
-	       tol times its norm, so a tie keeps it; a zero residual never */
-	    take = gjj > 0.0 && d > 0.0 && d >= tol2 * gjj;
-	} else if (gjj > 0.0 && d > susp * gjj) {
-	    take = 1;
-	} else {
-	    /* a small residual, or a zero norm that may be underflow: the
-	       caller checks it against the data */
+	    take = scale[j] > 0.0 && d > 0.0 && R_FINITE(d) && (ties ? d >= thr : d > thr);
+	} else if (band && lo[j] <= d && d <= hi[j]) {
+	    /* within rounding of the rule: the caller checks it against the
+	       data */
 	    take = 0;
 	    sus[nsus++] = j;
+	} else {
+	    take = scale[j] > 0.0 && R_FINITE(d) && (ties ? d >= thr : d > thr);
 	}
 	if (take) {
 	    double *rk = R + (size_t) k * p;

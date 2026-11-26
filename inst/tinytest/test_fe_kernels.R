@@ -186,3 +186,128 @@ for (nm in names(cases)) {
 # much (variables far from zero, not centered: the one-pass aggregates
 # lose digits, b moves by 1e-6 and 4e-3 standard errors)
 expect_identical(unname(pass), c("skipped", "skipped", "done", "done"))
+
+# ---- conjugate gradients on several threads (dm_fe_pcg(), src/fe.c): the
+# reduced system of a worker x firm x year panel (workers eliminated),
+# applied matrix-free (Jacobi) or formed (IC(0)), the references dropped
+# (rows of N mapped to -1). One thread: the single-threaded code, bit for
+# bit (stored values, local runs only, when fe_pcg_ref.rds exists: generate
+# it with this code on a build without threaded PCG, at 9beef75 or before,
+# saveRDS(pcg_hex(), "inst/tinytest/fe_pcg_ref.rds")). T > 1 threads
+# (forced: nthreads = -T, whatever the size): identical across runs, and
+# the solution of one thread up to the tolerance of the solver.
+set.seed(11)
+pw <- local({
+    nid <- 3000L; nfirm <- 400L; nt <- 10L
+    id <- rep(seq_len(nid), each = nt)
+    t <- rep(seq_len(nt), nid)
+    firm <- sample.int(nfirm, length(id), TRUE)
+    ct <- function(b, a, Gb, Ga) Matrix::sparseMatrix(i = b, j = a, x = 1, dims = c(Gb, Ga))
+    Nt <- rbind(ct(firm, id, nfirm, nid), ct(t, id, nt, nid)) # m x G1
+    N <- methods::as(methods::as(Nt, "generalMatrix"), "CsparseMatrix")
+    m <- nfirm + nt
+    Af <- Matrix::bdiag(Matrix::Diagonal(x = tabulate(firm, nfirm)), Matrix::Diagonal(x = tabulate(t, nt)))
+    Af[nfirm + seq_len(nt), seq_len(nfirm)] <- ct(t, firm, nt, nfirm)
+    keep <- setdiff(seq_len(m), c(1L, nfirm + 1L))
+    A <- methods::as(methods::as(Matrix::tril(Af)[keep, keep], "generalMatrix"), "CsparseMatrix")
+    map <- rep(-1L, m)
+    map[keep] <- seq_along(keep) - 1L
+    d <- 1 / tabulate(id, nid)
+    op <- structure(list(A = A, N = N, map = map, d = d, m = length(keep)), class = "dm_fe_op")
+    Ak <- Matrix::forceSymmetric(Matrix::tril(Af), uplo = "L")[keep, keep]
+    Rf <- Ak - Nt[keep, ] %*% Matrix::Diagonal(x = d) %*% Matrix::t(Nt[keep, ])
+    Rf <- methods::as(Matrix::forceSymmetric(methods::as(Rf, "generalMatrix"), uplo = "L"), "CsparseMatrix")
+    list(op = op, Rf = Rf, block = c(rep(1L, nfirm - 1L), rep(2L, nt - 1L)), mk = length(keep))
+})
+pcg_run <- function(R, B, precond, nthreads, Z0 = NULL) {
+    args <- list(R, B, 1e-12, 10000L, pw$block, precond, new.env(), Z0 = Z0)
+    if ("nthreads" %in% names(formals(ns$dm_fe_pcg))) args$nthreads <- nthreads
+    do.call(ns$dm_fe_pcg, args)
+}
+pcg_B <- lapply(c(1L, 2L, 5L), function(k) matrix(rnorm(pw$mk * k), pw$mk, k))
+pcg_hex <- function(nthreads = 1L) {
+    out <- list()
+    for (path in c("matfree", "formed")) for (B in pcg_B) {
+        R <- if (path == "matfree") pw$op else pw$Rf
+        pc <- if (path == "matfree") "jacobi" else "ichol"
+        s <- pcg_run(R, B, pc, nthreads)
+        w <- pcg_run(R, B, pc, nthreads, Z0 = s$x + 1e-3 * B)
+        key <- paste(path, ncol(B))
+        out[[key]] <- sprintf("%a", c(s$x, s$iter, s$resid))
+        out[[paste(key, "warm")]] <- sprintf("%a", c(w$x, w$iter, w$resid))
+    }
+    out
+}
+h1 <- pcg_hex(1L)
+expect_true(strict_identical(h1, pcg_hex(1L)))
+# (small systems run on one thread: the automatic count gives the code of
+# one thread here)
+expect_true(strict_identical(h1, pcg_hex(4L)))
+ref_file <- "fe_pcg_ref.rds"
+if (at_home() && file.exists(ref_file)) {
+    ref <- readRDS(ref_file)
+    for (k in names(ref)) expect_identical(h1[[k]], ref[[k]], info = paste("pcg, 1 thread, stored:", k))
+}
+num <- function(h) suppressWarnings(as.numeric(h))
+for (th in 2:4) {
+    hT <- pcg_hex(-th)
+    expect_true(strict_identical(hT, pcg_hex(-th)), info = paste("pcg repeat, threads:", th))
+    for (k in names(h1)) {
+        a <- num(hT[[k]]); b <- num(h1[[k]])
+        nx <- length(a) - 2L
+        expect_equal(a[seq_len(nx)], b[seq_len(nx)], tolerance = 1e-8, info = paste("pcg", k, th))
+        expect_true(a[nx + 2L] <= 1e-12, info = paste("pcg converged", k, th))
+    }
+}
+# the solutions solve the system
+for (path in c("matfree", "formed")) {
+    R <- if (path == "matfree") pw$op else pw$Rf
+    s <- pcg_run(R, pcg_B[[2L]], if (path == "matfree") "jacobi" else "ichol", -3L)
+    expect_equal(as.matrix(pw$Rf %*% s$x), pcg_B[[2L]], tolerance = 1e-8, info = path)
+}
+
+# FE fits through conjugate gradients (matrix-free and formed): one thread
+# identical across runs (and to the stored values of fe_pcg_fits_ref.rds,
+# when it exists: generated as fe_pcg_ref.rds, with pcg_fits()).
+pcg_fits <- function() {
+    hex <- function(f) sprintf("%a", unname(c(coef(f), as.vector(vcov(f)), f$rss, unlist(f$fixef))))
+    out <- list()
+    for (fm in c(0, Inf)) {
+        op <- options(design.matrix.fe_solver = "pcg", design.matrix.fe_form_max = fm,
+                      design.matrix.fe_refine = 1L)
+        out[[paste("f3", fm)]] <- hex(design_lm(y ~ x1 + x2 | id + firm + t, fd, vcov = ~firm))
+        out[[paste("f3w", fm)]] <- hex(design_lm(y ~ x1 + x2 | id + firm + t, fd, weights = fd$w))
+        options(op)
+    }
+    out
+}
+design_threads(1)
+pf1 <- pcg_fits()
+expect_true(strict_identical(pf1, pcg_fits()))
+ref_file <- "fe_pcg_fits_ref.rds"
+if (at_home() && file.exists(ref_file)) {
+    ref <- readRDS(ref_file)
+    for (k in names(ref)) expect_identical(pf1[[k]], ref[[k]], info = paste("pcg fits, 1 thread, stored:", k))
+}
+# a reduced system large enough for threads (9000 firms, matrix-free):
+# identical across runs on 4 threads, one thread's values up to rounding
+if (full_tests && .Call(ns$C_dm_omp_max_threads) > 1L) {
+    set.seed(12)
+    nb <- 300000L
+    bd <- data.frame(id = rep(1:30000, each = 10), t = rep(1:10, 30000), firm = sample(9000, nb, TRUE),
+                     x1 = rnorm(nb))
+    bd$y <- bd$x1 + rnorm(9000)[bd$firm] + rnorm(30000)[bd$id] + rnorm(nb)
+    big <- function() {
+        op <- options(design.matrix.fe_solver = "pcg", design.matrix.fe_form_max = 0)
+        on.exit(options(op))
+        f <- design_lm(y ~ x1 | id + firm + t, bd)
+        c(coef(f), as.vector(vcov(f)), f$rss, unlist(f$fixef))
+    }
+    design_threads(1)
+    b1 <- big()
+    design_threads(min(4L, .Call(ns$C_dm_omp_max_threads)))
+    b4 <- big()
+    expect_true(strict_identical(b4, big()))
+    expect_equal(b4, b1, tolerance = 1e-9)
+}
+design_threads(old_threads)

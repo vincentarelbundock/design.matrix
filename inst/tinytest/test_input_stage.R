@@ -625,7 +625,7 @@ expect_identical(f$offset_call, quote(z))
 expect_identical(f$method, "SQL moments")
 expect_identical(names(f$data), c("design", "y", "weights", "offset"))
 expect_identical(f$spec, f$data$design$plan)
-f <- design_lm(yna ~ f, con, table = "d2", model = FALSE)
+f <- design_lm(yna ~ f, con, table = "d2", model = FALSE, compress = TRUE)
 expect_identical(f$method, "patterns")
 expect_false(is.null(f$data))
 

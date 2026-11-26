@@ -166,10 +166,20 @@ numeric variables costs more than it saves);
 threshold is provisional), where compression saves many per-row
 products, and when the patterns are at most 1\% of the rows. Other
 designs skip the decision entirely;
-\item \code{\link[=design_lm]{design_lm()}} and \code{\link[=design_glm]{design_glm()}} are compressed when the patterns are at
-most \code{getOption("design.matrix.remote_compress_ratio", 0.1)} times the
-number of rows.
+\item \code{\link[=design_glm]{design_glm()}} is compressed when the patterns are at most 20\% of the
+rows (each IRLS iteration then reads the patterns instead of the rows);
+\item \code{\link[=design_lm]{design_lm()}} without weights is compressed when the patterns are at
+most 0.1\% of the rows;
+\item weighted \code{\link[=design_lm]{design_lm()}} is compressed only for designs with many numeric
+columns (as \code{crossprod()}), when the patterns are at most 0.1\% of the
+rows (the sum of squares within the patterns takes a second pass over
+the rows).
 }
+
+These thresholds are provisional. The option
+\code{design.matrix.remote_compress_ratio} (unset by default), when set, caps
+every one of these ratios: under \code{"auto"}, the patterns must then also be
+at most that fraction of the rows.
 
 In every case the number of patterns must also be at most
 \code{getOption("design.matrix.remote_compress_max", 1e6)}. To decide, a design

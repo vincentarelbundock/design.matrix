@@ -522,7 +522,7 @@ dmglm_fit <- function(x, cols, family, start, control, intercept, compress, wmsg
     devold <- s0[1L]
 
     pt <- if (p > 0L && is.null(solver) && !isFALSE(compress))
-        dmp_patterns(x, y, if (isTRUE(cols$weighted)) w, compress, keys = cols$off)
+        dmp_patterns(x, y, if (isTRUE(cols$weighted)) w, compress, keys = cols$off, fit = "glm")
     units <- rows
     if (!is.null(pt)) {
         W <- pt$w %||% rep(1, length(pt$z))

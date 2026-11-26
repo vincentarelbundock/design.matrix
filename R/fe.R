@@ -218,9 +218,12 @@ dm_fe_components <- function(Nt) {
 ## `map`: Jacobi only). Z0: a starting value (a warm
 ## start; dropped for columns where it is worse than zero) or NULL. bmin: a
 ## floor for the norm of the right-hand sides in the stopping rule. The
-## preconditioner is built once per `cache`.
+## preconditioner is built once per `cache`. nthreads: threads for the
+## products and sums of the recursion (identical results for a given
+## number; one thread is the single-threaded code; small systems run on one
+## thread; a negative count -T forces T threads, for the tests).
 dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.env(), Z0 = NULL,
-                      bmin = 0) {
+                      bmin = 0, nthreads = design_threads()) {
     if (is.null(cache$A)) {
         if (inherits(R, "dm_fe_op")) {
             cache$A <- R$A
@@ -262,7 +265,7 @@ dm_fe_pcg <- function(R, B, tol, maxit, block, precond = "jacobi", cache = new.e
     }
     r <- .Call(C_dm_fe_pcg, A@p, A@i, A@x, if (!is.null(N)) N@p, if (!is.null(N)) N@i,
                if (!is.null(N)) N@x, cache$map, cache$d, L$p, L$i, L$x, B, Z0,
-               as.double(bmin), as.double(tol), as.integer(maxit))
+               as.double(bmin), as.double(tol), as.integer(maxit), as.integer(nthreads))
     ## (nullv: on a breakdown, a direction close to a null vector of R)
     list(x = r[[1L]], iter = r[[2L]], resid = r[[3L]], converged = r[[3L]] <= tol,
          nullv = r[[4L]], precond = cache$precond)
@@ -478,35 +481,94 @@ dm_fe_apply <- function(sys, B, Z0 = NULL) {
     list(Q = Q, A = A, info = info, Z = Zk)
 }
 
-## Sequential pivoted Cholesky of a p x p matrix M in column order: a column
-## is aliased when its residual variance after the earlier kept columns is
-## below tol times `scale` (its variance before the FE are absorbed).
-## Returns the kept columns and the upper factor of M[keep, keep].
-dm_fe_pivchol <- function(M, scale, tol) {
-    p <- ncol(M)
-    keep <- integer(0)
-    Rf <- matrix(0, 0, 0)
-    for (j in seq_len(p)) {
-        if (length(keep)) {
-            r <- backsolve(Rf, M[keep, j], transpose = TRUE)
-            d <- M[j, j] - sum(r^2)
-        } else {
-            r <- numeric(0)
-            d <- M[j, j]
-        }
-        if (is.finite(d) && scale[j] > 0 && d > tol * scale[j]) {
-            k <- length(keep)
-            Rn <- matrix(0, k + 1L, k + 1L)
-            if (k) {
-                Rn[seq_len(k), seq_len(k)] <- Rf
-                Rn[seq_len(k), k + 1L] <- r
-            }
-            Rn[k + 1L, k + 1L] <- sqrt(d)
-            Rf <- Rn
-            keep <- c(keep, j)
-        }
+## The kept columns and the factor of the FWL moments X'MX (fixest's rule:
+## a column is aliased when its residual variance after the FE and the
+## earlier kept columns is below tol times `scale`, its variance before
+## the FE are absorbed), by the pivoted Cholesky kernel of qr()
+## (dm_pivchol(), ties drop the column). `band` and `recheck`: suspect
+## columns, see dm_pivchol(). Returns the kept columns and the upper factor
+## of M[keep, keep].
+dm_fe_pivchol <- function(M, scale, tol, band = NULL, recheck = NULL) {
+    ch <- dm_pivchol(M, scale, tol, "drop", band = band, recheck = recheck)
+    k <- ch$rank
+    list(keep = ch$pivot[seq_len(k)], R = ch$R[seq_len(k), seq_len(k), drop = FALSE])
+}
+
+## ---------------------------------------------------------------------------
+## The absorption operator
+##
+## The FE of a fit, absorbed from sums over rows. dm_absorb() builds it from
+## the one fused pass of dmp_fe_sums() (F_k'W[X z] and F_k'W1 for every FE
+## and the crosstabs N_kl: the pass must see x and z, so the operator is
+## built for them), and reduces and sets up the FE system K = F'WF for
+## solves once (dm_fe_system()). It is a list of functions:
+##
+##   solve(B, warm)    K^- B (split by FE) and Q = B'K^-B, for B a list of
+##                     G_k x q matrices (dm_fe_apply(); warm: a starting
+##                     value of the reduced solve, the `Z` of an earlier
+##                     call, or NULL)
+##   project(M, warm)  the FWL moments M - Q of [X z] (M = [X z]'W[X z] on
+##                     the columns xcols and z, B = F'W[X z]): list(M, info,
+##                     Z); keeps Gamma = K^-B for the functions below
+##   effects(b, j)     the FE values of column j of [X z] (default: z) less
+##                     those of X b: Gamma_j - Gamma_X b, one vector per FE
+##   update(fe, Ae, kp, delta)  FE values after a refinement step: fe +
+##                     Ae - Gamma_X[, kp] delta
+##   cross(g, Ae)      g - sum_k S_k' Ae_k (S_k = F_k'WX): X'M v from X'W v
+##                     and Ae = K^- F'W v
+##   variance(dxx)     the variances of the columns of X before absorption
+##                     (sums of squares around the weighted mean), from
+##                     their sums of squares dxx
+##   scores(we, cl)    the cluster scores sum_{i in c} we_i (MX)_i, corrected
+##                     for FE not nested in the clusters (cl: a dmc_codes()
+##                     grouping; see the header): list(U, nested)
+##
+## and G, the levels per FE.
+dm_absorb <- function(x, z, w, codes, xcols, opts) {
+    G <- vapply(codes, function(g) g$G, 1L)
+    px <- length(xcols)
+    xi <- seq_len(px)
+    pairs <- dm_fe_pairs(G)
+    ## (with the crosstabs of the FE system: one or two passes in memory)
+    fs <- dmp_fe_sums(x, w, codes, extra = z, pairs = pairs)
+    nk <- lapply(fs$gs, `[[`, "n")
+    if (any(vapply(nk, function(v) any(!(v > 0)), NA)))
+        stop("internal error: a fixed-effect level without weight", call. = FALSE)
+    B <- lapply(fs$gs, function(g) cbind(g$S[, xcols, drop = FALSE], g$extra[, 1L]))
+    ## t(N_ab), G_b x G_a
+    pkey <- vapply(pairs, paste, "", collapse = ",")
+    sys <- dm_fe_system(G, nk, function(a, b) fs$ct[[match(paste(a, b, sep = ","), pkey)]], opts)
+    fs <- NULL
+    Gam <- NULL
+    solve <- function(B, warm = NULL) dm_fe_apply(sys, B, Z0 = warm)
+    project <- function(M, warm = NULL) {
+        ab <- solve(B, warm)
+        Gam <<- ab$A
+        list(M = M - ab$Q, info = ab$info, Z = ab$Z)
     }
-    list(keep = keep, R = Rf)
+    effects <- function(b, j = px + 1L) lapply(Gam, function(Ak) drop(Ak[, j] - Ak[, xi, drop = FALSE] %*% b))
+    update <- function(fe, Ae, kp, delta) {
+        for (k in seq_along(fe)) fe[[k]] <- fe[[k]] + Ae[[k]][, 1L] - drop(Gam[[k]][, kp, drop = FALSE] %*% delta)
+        fe
+    }
+    cross <- function(g, Ae) {
+        for (k in seq_along(B)) g <- g - drop(crossprod(B[[k]][, xi, drop = FALSE], Ae[[k]]))
+        g
+    }
+    variance <- function(dxx) dxx - colSums(B[[1L]])[xi]^2 / sum(nk[[1L]])
+    scores <- function(we, cl) {
+        U <- dmp_colsums_groups(dmp_scale(x, we), list(cl))[[1L]]$S[, xcols, drop = FALSE]
+        ## an FE is nested in the clusters when each of its levels is in
+        ## one cluster; otherwise its scores need a correction
+        nested <- vapply(seq_along(codes), function(k) dmp_nested(cl, codes[[k]]), NA)
+        for (k in which(!nested)) {
+            E <- dmp_crosstab(codes[[k]], cl, we) # G_k x Gc
+            U <- U - as.matrix(Matrix::crossprod(E, Gam[[k]][, xi, drop = FALSE]))
+        }
+        list(U = U, nested = nested)
+    }
+    list(G = G, solve = solve, project = project, effects = effects, update = update, cross = cross,
+         variance = variance, scores = scores)
 }
 
 ## ---------------------------------------------------------------------------
@@ -529,117 +591,176 @@ dm_fe_pivchol <- function(M, scale, tol) {
 ## numbers of iterations. With resid_final = FALSE, the residuals after the
 ## last refinement are not computed (no rss, `we`; for the steps of a GLM,
 ## which need them only for the last step: see dm_fe_glm_estimate()).
+## The fit keeps its absorption operator (`absorb`), for the cluster scores
+## (dm_fe_cluster()).
+##
+## Steps: project (the moments, the FE absorbed) -> pivoted Cholesky ->
+## solve -> refine (from the residuals) -> degrees of freedom.
 
 dm_fe_core <- function(x, cols, tol, opts, cluster = FALSE, warm = NULL, resid_final = TRUE) {
-    z <- cols$z
-    w <- cols$w
-    codes <- cols$codes
-    G <- vapply(codes, function(g) g$G, 1L)
-    p <- ncol(x)
-    icol <- which(colnames(x) == "(Intercept)")
-    xcols <- setdiff(seq_len(p), icol)
+    xcols <- setdiff(seq_len(ncol(x)), which(colnames(x) == "(Intercept)"))
     px <- length(xcols)
-    nfe <- length(G)
+    xi <- seq_len(px)
     n <- dm_nrows(x)
-    ## moments
+    mo <- dm_fe_moments(x, cols$z, cols$w, xcols, n)
+    A <- dm_absorb(x, cols$z, cols$w, cols$codes, xcols, opts)
+    pj <- A$project(mo$M, warm = if (!is.null(warm)) warm$Z)
+    if (!is.null(warm)) {
+        warm$Z <- pj$Z
+        warm$iter <- c(warm$iter, pj$info$iter %||% 0L)
+    }
+    M <- pj$M
+    dxx <- diag(mo$M)[xi]
+    scale <- A$variance(dxx)
+    su <- dm_fe_suspects(x, cols, A, xcols, M, scale, dxx, tol)
+    pc <- dm_fe_pivchol(M[xi, xi, drop = FALSE], scale, tol, band = su$band, recheck = su$recheck)
+    kp <- pc$keep
+    b0 <- numeric(px)
+    if (length(kp)) b0[kp] <- backsolve(pc$R, backsolve(pc$R, M[kp, px + 1L], transpose = TRUE))
+    rf <- dm_fe_refine(x, cols, A, xcols, pc, b0, A$effects(b0), opts, resid_final)
+    b <- rep(NA_real_, px)
+    b[kp] <- rf$b[kp]
+    bread <- matrix(NA_real_, px, px)
+    if (length(kp)) bread[kp, kp] <- chol2inv(pc$R)
+    dof <- dm_fe_dof(A$G, pj$info)
+    out <- list(b = b, kp = kp, xcols = xcols, bread = bread, rss = rf$r$rss, fe = rf$fe,
+                rank = length(kp), G = A$G, fe_dof = dof$fe_dof, fe_dof_exact = dof$fe_dof_exact,
+                df.residual = n - length(kp) - dof$fe_dof, nobs = n, tss = mo$tss,
+                tss_within = max(M[px + 1L, px + 1L], 0), info = c(pj$info, list(resid_pass = rf$info)),
+                we = rf$r$we, absorb = A)
+    if (cluster) out <- dm_fe_cluster(out, cols$cl, out$we)
+    out
+}
+
+## The suspect band of the pivoted Cholesky of a fit with FE (dm_pivchol()):
+## the residual variance d of a column after the FE and the earlier kept
+## columns comes from the aggregates, X'WX - S'K^-S, accurate only to about
+## c eps diag(X'WX). A column with |d - tol * scale| <= c eps diag(X'WX)
+## cannot be judged from them: its d is computed again from the data, the
+## sum of w e^2 of its residual e = x_j - X_K c - F f (c from the factor of
+## the columns K kept before it, f = Gamma_j - Gamma_K c), one pass over
+## the rows per suspect (dmc_fe_resid()). That residual is not refined, but
+## the error of c and f from the aggregates changes its sum of squares only
+## to second order, far below the band.
+##
+## c = 1e4 (c eps ~ 2.2e-12): the aggregates are one-pass sums (rounding of
+## order eps each), their difference cancels (absolute error of order eps
+## diag(X'WX)), and with conjugate gradients K^-S is accurate only to the
+## stopping rule, a normwise backward error of 1e-12 (~4500 eps), which
+## enters S'K^-S at that order relative to diag(X'WX); c covers that with a
+## margin of 2. With centered columns and tol = 1e-10, a column is a
+## suspect only when its residual variance is within about 2% of the
+## threshold: rare, so the extra passes cost nothing in general. Without
+## a positive scale a column is never taken, nor a suspect.
+## Returns list(band (lo, hi), recheck) for dm_fe_pivchol().
+dm_fe_suspects <- function(x, cols, A, xcols, M, scale, dxx, tol) {
+    width <- 1e4 * .Machine$double.eps * abs(dxx)
+    ok <- is.finite(scale) & scale > 0 & is.finite(width)
+    thr <- tol * scale
+    band <- list(lo = ifelse(ok, thr - width, Inf), hi = ifelse(ok, thr + width, -Inf))
+    px <- length(xcols)
+    recheck <- function(ch, sus) {
+        ## (a zero column, made only when there are suspects)
+        z0 <- dmc_const(cols$z, 0)
+        acc <- ch$pivot[seq_len(ch$rank)]
+        d <- vapply(sus, function(j) {
+            K <- acc[acc < j]
+            a <- length(K)
+            Ra <- ch$R[seq_len(a), seq_len(a), drop = FALSE]
+            bk <- numeric(px)
+            if (a) bk[K] <- backsolve(Ra, backsolve(Ra, M[K, j], transpose = TRUE))
+            beta <- numeric(ncol(x))
+            beta[xcols] <- bk
+            beta[xcols[j]] <- -1
+            ## e = 0 - (X_K c - x_j) - F f
+            r <- dmc_fe_resid(z0, dmp_mult(x, beta, along = list(z0, cols$w)), cols$w, A$effects(bk, j),
+                              cols$codes)
+            r[[3L]]
+        }, 0)
+        list(dres = d, taken = is.finite(d) & d > 0 & d > thr[sus])
+    }
+    list(band = band, recheck = recheck)
+}
+
+## The moments of a fit with FE: M = [X z]'W[X z] on the columns xcols of
+## x and the response z (weights w, NULL for none; n rows), and the total
+## sum of squares of z around its weighted mean.
+dm_fe_moments <- function(x, z, w, xcols, n) {
     wz <- if (is.null(w)) z else w * z
     xtx <- unname(if (is.null(w)) dmp_crossprod(x) else dmp_crossprod(x, dmp_scale(x, w)))
     xty <- unname(dmp_crossprod(x, wz))[, 1L]
     sm <- dmc_moments(z, w, n)
-    yty <- sm[1L]
-    sw <- if (is.null(w)) n else sm[2L]
-    ybar <- sm[3L] / sw
-    tss <- sm[4L]
     if (!all(is.finite(xtx)) || !all(is.finite(xty))) stop("NA/NaN/Inf in 'x'", call. = FALSE)
-    ## grouped sums and the FE system
-    ## (with the crosstabs of the FE system: one or two passes in memory)
-    pairs <- dm_fe_pairs(G)
-    fs <- dmp_fe_sums(x, w, codes, extra = z, pairs = pairs)
-    gs <- fs$gs
-    nk <- lapply(gs, `[[`, "n")
-    if (any(vapply(nk, function(v) any(!(v > 0)), NA)))
-        stop("internal error: a fixed-effect level without weight", call. = FALSE)
-    B <- lapply(gs, function(g) cbind(g$S[, xcols, drop = FALSE], g$extra[, 1L]))
-    ## t(N_ab), G_b x G_a
-    pkey <- vapply(pairs, paste, "", collapse = ",")
-    crosstab <- function(a, b) fs$ct[[match(paste(a, b, sep = ","), pkey)]]
-    sys <- dm_fe_system(G, nk, crosstab, opts)
-    ab <- dm_fe_apply(sys, B, Z0 = if (!is.null(warm)) warm$Z)
-    if (!is.null(warm)) {
-        warm$Z <- ab$Z
-        warm$iter <- c(warm$iter, ab$info$iter %||% 0L)
-    }
     XtX <- xtx[xcols, xcols, drop = FALSE]
     Xty <- xty[xcols]
-    Mfull <- rbind(cbind(XtX, Xty), c(Xty, yty)) - ab$Q
-    Mxx <- Mfull[seq_len(px), seq_len(px), drop = FALSE]
-    Mxy <- Mfull[seq_len(px), px + 1L]
-    sx <- colSums(B[[1L]])[seq_len(px)]
-    scale <- diag(XtX) - sx^2 / sum(nk[[1L]])
-    pc <- dm_fe_pivchol(Mxx, scale, tol)
+    list(M = rbind(cbind(XtX, Xty), c(Xty, sm[1L])), tss = sm[4L])
+}
+
+## The residuals e = z - X b - sum_k fe_k[code_k] of a fit with FE (b: the
+## coefficients of the columns xcols of x) and their sums: X'We, F_k'We,
+## rss = sum(w e^2) and we = w e (one pass in memory).
+dm_fe_residuals <- function(x, cols, xcols, b, fe) {
+    beta <- numeric(ncol(x))
+    beta[xcols] <- b
+    ## (along z and w: remotely, on a frame that has their columns)
+    r <- dmc_fe_resid(cols$z, dmp_mult(x, beta, along = list(cols$z, cols$w)), cols$w, fe, cols$codes)
+    list(xte = unname(dmp_crossprod(x, r[[1L]]))[, 1L], Be = lapply(r[[2L]], function(m) m[, 1L]),
+         rss = r[[3L]], we = drop(r[[1L]]))
+}
+
+## Iterative refinement of a fit with FE (dm_refine()): the normal
+## equations X'M e = 0 from residuals computed row by row correct the
+## rounding of the one-pass aggregates. b, fe: the solution from the
+## aggregates (b zero for aliased columns), pc its pivoted factor, A the
+## absorption operator. Stopping rule: opts$refine steps; with fe_refine =
+## "auto", the pass over the rows after the last step is skipped when the
+## step's correction is negligible (dm_fe_negligible()), and the residuals
+## of the last pass stand for those after the step. Returns list(b, fe, r
+## (the residuals; with resid_final = FALSE, after at least one step, rss
+## NA and no `we`), info).
+dm_fe_refine <- function(x, cols, A, xcols, pc, b, fe, opts, resid_final) {
     kp <- pc$keep
-    b <- rep(NA_real_, px)
-    if (length(kp)) b[kp] <- backsolve(pc$R, backsolve(pc$R, Mxy[kp], transpose = TRUE))
-    b0 <- b
-    b0[is.na(b0)] <- 0
-    fe <- lapply(ab$A, function(Ak) drop(Ak[, px + 1L] - Ak[, seq_len(px), drop = FALSE] %*% b0))
-    ## residuals e = z - X b - sum_k fe_k[code_k], and their sums
-    resid <- function(b0, fe) {
-        beta <- numeric(p)
-        beta[xcols] <- b0
-        ## (along z and w: remotely, on a frame that has their columns)
-        r <- dmc_fe_resid(z, dmp_mult(x, beta, along = list(z, w)), w, fe, codes)
-        list(xte = unname(dmp_crossprod(x, r[[1L]]))[, 1L], Be = lapply(r[[2L]], function(m) m[, 1L]),
-             rss = r[[3L]], we = drop(r[[1L]]))
-    }
-    r <- resid(b0, fe)
-    refine_info <- "done"
-    ## iterative refinement: the normal equations X'M e = 0 from residuals
-    ## computed row by row correct the rounding of the one-pass aggregates
-    for (it in seq_len(opts$refine)) {
+    resid <- function(s) dm_fe_residuals(x, cols, xcols, s$b, s$fe)
+    correct <- function(s, r) {
         ## (its right-hand side is at rounding level: the solver floors its
-        ## norm at that of the first solve with sys, see dm_fe_solve())
-        Ae <- dm_fe_apply(sys, lapply(r$Be, function(v) matrix(v, ncol = 1L)))$A
+        ## norm at that of the first solve with the system, see
+        ## dm_fe_solve())
+        Ae <- A$solve(lapply(r$Be, function(v) matrix(v, ncol = 1L)))$A
+        b <- s$b
         delta <- numeric(0)
         if (length(kp)) {
-            g <- r$xte[xcols]
-            for (k in seq_len(nfe)) g <- g - drop(crossprod(B[[k]][, seq_len(px), drop = FALSE], Ae[[k]]))
+            g <- A$cross(r$xte[xcols], Ae)
             delta <- backsolve(pc$R, backsolve(pc$R, g[kp], transpose = TRUE))
-            b0[kp] <- b0[kp] + delta
-            b[kp] <- b0[kp]
+            b[kp] <- b[kp] + delta
         }
-        for (k in seq_len(nfe))
-            fe[[k]] <- fe[[k]] + Ae[[k]][, 1L] - drop(ab$A[[k]][, kp, drop = FALSE] %*% delta)
-        if (it == opts$refine && isTRUE(opts$refine_auto) && dm_fe_negligible(r, Ae, delta, pc$R)) {
-            ## (the residuals of the last pass stand for those after the step)
-            refine_info <- "skipped"
-            break
-        }
-        r <- if (resid_final || it < opts$refine) resid(b0, fe) else list(rss = NA_real_, we = NULL)
+        list(sol = list(b = b, fe = A$update(s$fe, Ae, kp, delta)), Ae = Ae, delta = delta)
     }
-    ## degrees of freedom (fixest: K.fixef = "nonnested", K.exact = FALSE)
-    fe_dof <- sum(G) - (nfe - 1L)
-    ## the exact rank of K (fixest's K.exact = TRUE): with two FE, one level
-    ## per connected component is redundant; with more, the count is exact
-    ## when the reduced system was factored (a pivoted dense Cholesky, which
-    ## gives its rank, or a sparse Cholesky that succeeded); otherwise NA
-    fe_dof_exact <- if (nfe == 1L) {
+    stop <- function(step, r, it) {
+        it == opts$refine && isTRUE(opts$refine_auto) && dm_fe_negligible(r, step$Ae, step$delta, pc$R)
+    }
+    rf <- dm_refine(list(b = b, fe = fe), resid, correct, opts$refine, stop)
+    r <- if (rf$stopped) rf$r
+         else if (resid_final || opts$refine == 0L) resid(rf$sol)
+         else list(rss = NA_real_, we = NULL)
+    list(b = rf$sol$b, fe = rf$sol$fe, r = r, info = if (rf$stopped) "skipped" else "done")
+}
+
+## Degrees of freedom of the FE (fixest: K.fixef = "nonnested", K.exact =
+## FALSE), and the exact rank of K (fixest's K.exact = TRUE): with two FE,
+## one level per connected component is redundant; with more, the count is
+## exact when the reduced system was factored (a pivoted dense Cholesky,
+## which gives its rank, or a sparse Cholesky that succeeded); otherwise NA.
+## info: the solver details of the absorption.
+dm_fe_dof <- function(G, info) {
+    nfe <- length(G)
+    exact <- if (nfe == 1L) {
         G
-    } else if (nfe == 2L || ab$info$solver %in% c("dense", "chol")) {
-        max(G) + ab$info$m
+    } else if (nfe == 2L || info$solver %in% c("dense", "chol")) {
+        max(G) + info$m
     } else {
         NA_integer_
     }
-    rank <- length(kp)
-    bread <- matrix(NA_real_, px, px)
-    if (rank) bread[kp, kp] <- chol2inv(pc$R)
-    out <- list(b = b, kp = kp, xcols = xcols, bread = bread, rss = r$rss, fe = fe,
-                rank = rank, G = G, fe_dof = fe_dof, fe_dof_exact = fe_dof_exact,
-                df.residual = n - rank - fe_dof, nobs = n, tss = tss,
-                tss_within = max(Mfull[px + 1L, px + 1L], 0), info = c(ab$info, list(resid_pass = refine_info)),
-                we = r$we, A = lapply(ab$A, function(Ak) Ak[, seq_len(px), drop = FALSE]))
-    if (cluster) out <- dm_fe_cluster(x, out, codes, cols$cl)
-    out
+    list(fe_dof = sum(G) - (nfe - 1L), fe_dof_exact = exact)
 }
 
 ## Is the correction of a refinement step negligible for the residuals,
@@ -662,28 +783,19 @@ dm_fe_negligible <- function(r, Ae, delta, Rc) {
     is.finite(q) && abs(q) <= 1e-20 * r$rss
 }
 
-## Clustered covariance of a fit of dm_fe_core() (`est`, which keeps the
-## weighted residuals `we` and Gamma = K^- S, `A`), clusters `cl` (a
-## dmc_codes() grouping): adds vcov_cluster and G_cluster to `est`.
-dm_fe_cluster <- function(x, est, codes, cl) {
-    xcols <- est$xcols
-    px <- length(xcols)
+## Clustered covariance of a fit of dm_fe_core() (`est`, which keeps its
+## absorption operator), clusters `cl` (a dmc_codes() grouping), weighted
+## residuals `we`: adds vcov_cluster and G_cluster to `est`.
+dm_fe_cluster <- function(est, cl, we) {
+    px <- length(est$xcols)
     kp <- est$kp
     rank <- est$rank
     G <- est$G
-    nfe <- length(G)
     n <- est$nobs
     Gc <- cl$G
-    U <- dmp_colsums_groups(dmp_scale(x, est$we), list(cl))[[1L]]$S[, xcols, drop = FALSE]
-    ## an FE is nested in the clusters when each of its levels is in one
-    ## cluster; otherwise its scores need a correction
-    nested <- vapply(seq_len(nfe), function(k) dmp_nested(cl, codes[[k]]), NA)
-    for (k in which(!nested)) {
-        E <- dmp_crosstab(codes[[k]], cl, est$we) # G_k x Gc
-        U <- U - as.matrix(Matrix::crossprod(E, est$A[[k]]))
-    }
-    U <- U[, kp, drop = FALSE]
-    nn <- !nested
+    sc <- est$absorb$scores(we, cl)
+    U <- sc$U[, kp, drop = FALSE]
+    nn <- !sc$nested
     K_cl <- rank + if (any(nn)) sum(G[nn]) - (sum(nn) - 1L) else 1L
     adj <- Gc / (Gc - 1) * (n - 1) / (n - K_cl)
     Vc <- matrix(NA_real_, px, px)
@@ -712,7 +824,7 @@ dm_fe_uncenter <- function(est, Tm, icol) {
     Tx <- Tm[xc, xc, drop = FALSE]
     kp <- est$kp
     al <- setdiff(seq_along(xc), kp)
-    if (length(al) && length(kp) && any(Tx[al, kp] != 0)) return(NULL)
+    if (!dm_uncenter_ok(Tx, kp, al)) return(NULL)
     bt <- est$b
     bt[is.na(bt)] <- 0
     b <- drop(Tx %*% bt)
@@ -720,37 +832,15 @@ dm_fe_uncenter <- function(est, Tm, icol) {
     est$b <- b
     if (length(kp)) {
         Tk <- Tx[kp, kp, drop = FALSE]
-        est$bread[kp, kp] <- Tk %*% est$bread[kp, kp, drop = FALSE] %*% t(Tk)
+        est$bread[kp, kp] <- dm_uncenter_cov(Tk, est$bread[kp, kp, drop = FALSE])
         if (!is.null(est$vcov_cluster))
-            est$vcov_cluster[kp, kp] <- Tk %*% est$vcov_cluster[kp, kp, drop = FALSE] %*% t(Tk)
+            est$vcov_cluster[kp, kp] <- dm_uncenter_cov(Tk, est$vcov_cluster[kp, kp, drop = FALSE])
     }
     ## X~ b~ = X b + (t0'b~) 1: the constant goes to the first FE
     if (length(icol)) est$fe[[1L]] <- est$fe[[1L]] + sum(Tm[icol, xc] * bt)
     est
 }
 
-
-## Centering of numeric variables (in memory; see dmp_center()): list(shift, T), with the
-## design of the shifted frame X~ = X T and T unit upper triangular, or
-## NULL. As dm_center() does for remote designs: only variables whose mean
-## is large compared with their spread, and only when such a T exists
-## (checked on prototype rows).
-dm_fe_center <- function(mt, mf, contrasts) {
-    if (!isTRUE(getOption("design.matrix.fe_center", TRUE))) return(NULL)
-    if (attr(mt, "intercept") == 0L) return(NULL)
-    ## the decision and the shift from a systematic sample of rows (any
-    ## shift is exact; a shift near the mean keeps the sums accurate)
-    tv <- dm_terms_vars(mt)$names
-    nr <- nrow(mf)
-    idx <- if (nr > 1e5) unique(round(seq(1, nr, length.out = 1e5))) else seq_len(nr)
-    st <- mf[idx, intersect(tv, names(mf)), drop = FALSE]
-    attr(st, "terms") <- mt
-    m0 <- mf[seq_len(min(nrow(mf), 2000L)), , drop = FALSE]
-    attr(m0, "terms") <- NULL
-    p <- tryCatch(ncol(design_matrix(mt, m0, contrasts.arg = contrasts)), error = function(e) NA)
-    if (is.na(p) || p > 2000L) return(NULL)
-    dm_center_shift(st, m0, function(fr) design_matrix(mt, fr, contrasts.arg = contrasts), p)
-}
 
 ## ---------------------------------------------------------------------------
 ## design_lm() with fixed effects
@@ -784,7 +874,11 @@ dm_fe_center <- function(mt, mf, contrasts) {
 #' * Coefficients: the intercept is absorbed; a column collinear with the
 #'   FE or earlier columns is `NA` (fixest's rule: its residual variance is
 #'   below `tol` times its variance; `tol` defaults to `1e-10` with FE, as
-#'   `collin.tol`). One step of iterative refinement from the residuals is
+#'   `collin.tol`). The residual variance comes from sums over rows; for a
+#'   column within rounding of that threshold (about `2e-12` times its sum
+#'   of squares) it is computed again from the data, one pass over the
+#'   rows, so that the decision does not depend on rounding. One step of
+#'   iterative refinement from the residuals is
 #'   taken, and numeric variables far from zero are centered when that is
 #'   an exact transform of the design, so that coefficients and standard
 #'   errors stay accurate.
@@ -970,17 +1064,18 @@ dm_fe_prepare <- function(base, pf, clv, fixef.rm, bounds = list(), wmsg = "miss
             cols <- dmc_cbind(one, if (rm0) dmc_count(z != 0) else one, if (rm1) dmc_count(z != 1) else one)
             cnt <- lapply(cds, function(cd) dmp_groupsum(cols, cd$codes))
         }
-        flag <- function(m) (rm_single & m[, 1L] == 1) | (rm0 & m[, 2L] == 0) | (rm1 & m[, 3L] == 0)
-        ## no level to drop
-        if (!any(vapply(cnt, function(m) any(flag(m)), NA))) break
+        ## per level, once: perfectly fit (counted as such when it is also
+        ## a singleton), or a singleton
+        masks <- lapply(cnt, function(m) {
+            pf_k <- (rm0 & m[, 2L] == 0) | (rm1 & m[, 3L] == 0)
+            cbind(pf_k, rm_single & m[, 1L] == 1 & !pf_k)
+        })
+        ## no level to drop (no lookup of the rows' levels)
+        if (!any(vapply(masks, any, NA))) break
         single <- perfect <- NULL
         for (k in seq_along(keys)) {
-            m <- cnt[[k]]
-            ## a level is perfectly fit (counted as such) or a singleton
-            pf_k <- (rm0 & m[, 2L] == 0) | (rm1 & m[, 3L] == 0)
-            sg_k <- rm_single & m[, 1L] == 1 & !pf_k
             ## (the flags of the rows' levels)
-            lk <- dmc_lookup_flags(cbind(pf_k, sg_k), cds[[k]]$codes, along = last)
+            lk <- dmc_lookup_flags(masks[[k]], cds[[k]]$codes, along = last)
             p1 <- lk[[1L]]
             s1 <- lk[[2L]]
             perfect <- if (is.null(perfect)) p1 else perfect | p1
@@ -1042,38 +1137,50 @@ dm_fe_estimate <- function(x, cols, tol, cluster) {
     dm_fe_core(x, cols, tol, opts, cluster)
 }
 
-## The design_lm object of an FE fit.
-dm_fe_finish <- function(est, cn, pf, lv, clv, nsingle, nall) {
+## The fields of a fit with FE shared by design_lm() and design_glm(), from
+## a fit of dm_fe_core() (`est`), the column names of the design (cn), the
+## parsed formula (pf) and the FE levels (lv): the coefficients named by
+## the columns but the intercept, their unscaled covariance, the FE values
+## named by level, the FE sizes and degrees of freedom (`fields`); the
+## clustered covariance with dimnames (`vcov_cluster`, NULL without
+## clusters) and the fields that describe it (`inference`). Each caller
+## finishes its own inference fields: a clustered LM stores the clustered
+## covariance as fit$vcov, a GLM as fit$vcov_cluster. `named`: dimnames
+## for a covariance of the coefficients.
+dm_fe_fields <- function(est, cn, pf, lv, clv) {
     nm <- cn[est$xcols]
+    named <- function(V) {
+        dimnames(V) <- list(nm, nm)
+        V
+    }
     b <- est$b
     names(b) <- nm
-    sigma2 <- est$rss / est$df.residual
-    V <- est$bread * sigma2
-    dimnames(V) <- list(nm, nm)
-    cu <- est$bread
-    dimnames(cu) <- list(nm, nm)
     fe <- est$fe
     names(fe) <- names(pf$fe)
     names(lv) <- names(pf$fe)
     for (k in seq_along(fe)) names(fe[[k]]) <- dm_fe_labels(lv[[k]])
     G <- est$G
     names(G) <- names(pf$fe)
-    fit <- list(coefficients = b, vcov = V, vcov_type = "iid",
-                sigma = sqrt(sigma2), rss = est$rss, df.residual = est$df.residual,
-                nobs = est$nobs, rank = est$rank, fixef = fe, fe_levels = lv,
-                fe_vars = pf$fe, fe_sizes = G, fe_dof = est$fe_dof,
-                fe_dof_exact = est$fe_dof_exact, nsingletons = nsingle,
-                cov.unscaled = cu, tss = est$tss, tss_within = est$tss_within,
-                compressed = FALSE, patterns = est$nobs, rows = nall, fe_info = est$info,
-                intercept = TRUE)
-    if (!is.null(clv)) {
-        Vc <- est$vcov_cluster
-        dimnames(Vc) <- list(nm, nm)
-        fit$vcov <- Vc
-        fit$vcov_type <- "cluster"
-        fit$cluster <- clv
-        fit$G_cluster <- est$G_cluster
-    }
+    fields <- list(coefficients = b, cov.unscaled = named(est$bread), rank = est$rank, fixef = fe,
+                   fe_levels = lv, fe_vars = pf$fe, fe_sizes = G, fe_dof = est$fe_dof,
+                   fe_dof_exact = est$fe_dof_exact, fe_info = est$info)
+    inference <- if (is.null(clv)) list(vcov_type = "iid")
+                 else list(vcov_type = "cluster", cluster = clv, G_cluster = est$G_cluster)
+    list(fields = fields, named = named, inference = inference,
+         vcov_cluster = if (!is.null(clv)) named(est$vcov_cluster))
+}
+
+## The design_lm object of an FE fit.
+dm_fe_finish <- function(est, cn, pf, lv, clv, nsingle, nall) {
+    sh <- dm_fe_fields(est, cn, pf, lv, clv)
+    sigma2 <- est$rss / est$df.residual
+    fit <- c(sh$fields, list(vcov = sh$named(est$bread * sigma2), sigma = sqrt(sigma2), rss = est$rss,
+                             df.residual = est$df.residual, nobs = est$nobs, nsingletons = nsingle,
+                             tss = est$tss, tss_within = est$tss_within, compressed = FALSE,
+                             patterns = est$nobs, rows = nall, intercept = TRUE))
+    fit[names(sh$inference)] <- sh$inference
+    ## clustered: the covariance of the fit is the clustered one
+    if (!is.null(clv)) fit$vcov <- sh$vcov_cluster
     class(fit) <- c("design_lm_fe", "design_lm")
     fit
 }
