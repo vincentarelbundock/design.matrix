@@ -29,12 +29,13 @@ Three choices follow from this, and the rest of the page describes them:
   [Design], [Checks, contrasts and column names as in R; the dense fill], [`src/modelmatrix.c`, `R/design_matrix.R`],
   [Kernels], [Products with the design from codes and numbers], [`src/kernels.c`, `src/structured.c`, `R/algebra.R`],
   [Primitives], [Operations on designs and columns, in memory and remote; the public column type], [`R/primitives.R`, `R/primitives_lookup.R`, `R/column.R`, `R/columns_public.R`],
-  [Fitting layers], [Least squares, the input stage, GLM families on columns, the fixed-effects estimator], [`R/qr.R`, `R/wls.R`, `R/problem.R`, `R/family.R`, `R/absorb.R`, `src/fe.c`, `src/fused.c`],
-  [Fits (package `xtx.fit`)], [`lm_xtx()`, `glm_xtx()`: IRLS, checks, covariances, methods (exports of `xtx` only)], [`xtx.fit`: `R/lm.R`, `R/glm.R`, `R/fe.R`, `R/fe_glm.R`, `R/remote_fit.R`, `R/checks.R`, `R/na_action.R`],
+  [Least squares], [`qr()` of a design: pivoting, the solve and its refinement, exact centering], [`R/qr.R`, `R/center.R`],
+  [Fitting layers (package `xtx.fit`)], [Weighted least squares, the input stage, GLM families on columns, the fixed-effects estimator and its solver], [`xtx.fit`: `R/wls.R`, `R/problem.R`, `R/family.R`, `R/kernels.R`, `R/absorb.R`, `src/fe_solver.c`, `src/kernels.c`],
+  [Fits (package `xtx.fit`)], [`lm_xtx()`, `glm_xtx()`: IRLS, checks, covariances, methods], [`xtx.fit`: `R/lm.R`, `R/glm.R`, `R/fe.R`, `R/fe_glm.R`, `R/remote_fit.R`, `R/checks.R`, `R/na_action.R`],
   [Remote], [Designs over DuckDB tables, queries and Parquet files], [`R/remote.R`, `R/remote_sql.R`, `R/remote_compress.R`],
 )
 
-Each layer uses only the ones above it in the table. The fits live in a package of their own, `xtx.fit`, which reaches `xtx` only through its exported functions; they do not know which backend they run on.
+Each layer uses only the ones above it in the table. Everything that is about fitting a model lives in a package of its own, `xtx.fit`, which reaches `xtx` only through its exported functions; `xtx` itself stops at the design, its products and its decompositions. The fitting code does not know which backend it runs on.
 
 = A design is a description
 
@@ -130,26 +131,40 @@ When the data have few design patterns, the scan of the SQL engine also groups b
 
 == The API of the fitting code
 
-The fitting code, the package `xtx.fit` (`lm.R`, `glm.R`, `fe.R`, `fe_glm.R`, `remote_fit.R`, `checks.R`, `na_action.R`), reaches `xtx` only through its exported functions. Besides base generics on designs and columns (`%*%`, arithmetic, `sum()`, `is.na()`, `is.finite()`, `round()`, `log()`, `cbind()`, `x[, j]`, `rowSums()`), it uses (names may change before the first release):
+The fitting code is the package `xtx.fit`: the fits (`lm.R`, `glm.R`, `fe.R`, `fe_glm.R`, `remote_fit.R`, `checks.R`, `na_action.R`) and the layers they are built on, which are exported from `xtx.fit` (names may change before the first release):
 
 #table(
   columns: 2,
-  table.header([Function], [Role]),
+  table.header([Function of `xtx.fit`], [Role]),
   [`design_problem()`], [The input stage: a formula and a data frame or remote data, a design matrix or a remote design, as the design of the rows used and the response, weights and offset as columns (class `xtx_problem`)],
-  [`design_resolve()`, `is_remote_source()`], [Arguments of a fit as columns of a design (SQL, or evaluated in R into a table); remote data or not],
   [`design_exclude()`], [`na.exclude` for remote fits (`napredict()` and `naresid()` methods)],
   [`design_wls()`], [Weighted least squares with `lm()`'s pivoting, in memory or remote],
-  [`design_patterns(check = FALSE, fit =)`], [Compression: rows that share a design pattern and their sufficient statistics],
-  [`design_output()`], [Results with one value per row: vectors in memory, tables remotely],
   [`column_family()`, `col_irls_working()`], [GLM families as functions of columns (links, variances, deviances, starting values, log densities); the working weights and responses of IRLS],
-  [`col_sums()`, `col_ifelse()`, `col_pmax()`, `col_const()`, `col_compute(table = FALSE)`], [Sums of several columns in one query (one `na.rm` per argument), conditionals, constants, columns computed once in a projection],
   [`design_absorb_rows()`], [The rows of a fit with fixed effects and the codes of the FE (missing values, singletons, levels perfectly fit)],
   [`design_absorb_wls()`, `design_absorb()`, `absorb_control()`], [The estimator with absorbed fixed effects: coefficients, bread, FE values, degrees of freedom; the absorption operator, whose `scores()` are the raw cluster scores (the fit applies fixest's small sample corrections); solver options],
-  [`design_center()`, `design_uncenter()`], [Exact centering of numeric variables, and the map of a fit back to the design],
-  [`design_absorb_fitted()`, `design_groups(levels =)`], [$X b$ plus the FE values of the rows' levels; groupings of new rows coded against the levels of a fit],
+  [`design_absorb_fitted()`, `design_uncenter()`], [$X b$ plus the FE values of the rows' levels; the map of a fit on a centered design back to the design],
 )
 
-The IRLS loop, the checks and messages of `lm()` and `glm()`, the covariance matrices, the small sample corrections and the methods of the fits stay in the fitting code, in `xtx.fit`.
+`xtx.fit` reaches `xtx` only through its documented, exported functions (no internal function is exported for it). Besides base generics on designs and columns (`%*%`, arithmetic, `sum()`, `is.na()`, `is.finite()`, `round()`, `log()`, `cbind()`, `x[, j]`, `rowSums()`), it uses:
+
+#table(
+  columns: 2,
+  table.header([Function of `xtx`], [Role]),
+  [`design_matrix()`, `design_frame()`], [The design and the model frame],
+  [`design_resolve()`, `is_remote_source()`], [Arguments of a fit as columns of a design (SQL, or evaluated in R into a table); remote data or not],
+  [`design_patterns(check = FALSE, fit =)`], [Compression: rows that share a design pattern and their sufficient statistics],
+  [`design_output()`], [Results with one value per row: vectors in memory, tables remotely],
+  [`col_sums()`, `col_ifelse()`, `col_pmax()`, `col_const()`, `col_compute(table = FALSE)`], [Sums of several columns in one query (one `na.rm` per argument), conditionals, constants, columns computed once in a projection],
+  [`design_center()`, `design_groups(levels =)`], [Exact centering of numeric variables; groupings of new rows coded against the levels of a fit],
+  [`design_moments()`, `qr(D, y =)`, `pivoted_chol()`], [The weighted moments of a design and a response; the factorization with $X'y$ from the same scan; the pivoted Cholesky factor with `lm()`'s rule and the recheck of suspect columns],
+  [`design_subset()`, `design_align()`], [The rows of a design where a column is true, and a design moved to the frame of columns computed from it, with the columns that go with the rows],
+  [`design_key()`, `key_complete()`, `key_codes()`, `group_codes()`], [Keys that can have missing values, and bare group codes: remotely the stored values themselves, so that the database groups without a join],
+  [`group_sums()`, `group_crosstab()`, `group_lookup()`, `group_nested()`, `design_group_sums()`], [Sums, crosstabs, lookups and nesting of groupings or bare codes; the grouped sums of a design for several groupings in one pass],
+  [`col_math()`, `col_pmin()`, `col_pmax(checked = FALSE)`], [The functions of columns that base R cannot dispatch on: distributions, and unchecked forms for columns known to have no missing values],
+  [`design_source()`, `design_remote_frame()`], [Remote data described before a design is built; the remote counterpart of `design_frame()`: the design of the rows a model uses and its arguments as columns],
+)
+
+The estimators, the IRLS loop, the checks and messages of `lm()` and `glm()`, the covariance matrices, the small sample corrections and the methods of the fits are all in `xtx.fit`.
 
 = Generalized linear models
 
@@ -157,7 +172,7 @@ The IRLS loop, the checks and messages of `lm()` and `glm()`, the covariance mat
 
 = Fixed effects
 
-`lm_xtx(y ~ x | f1 + f2)` absorbs the fixed effects without demeaning (`R/absorb.R`, `src/fe.c`; the fit in `R/fe.R` of `xtx.fit`). Write the model $y = X b + F a + e$, with $F$ the dummies of the $K$ fixed effects and $W$ the weights. With
+`lm_xtx(y ~ x | f1 + f2)` absorbs the fixed effects without demeaning (`R/absorb.R` and `src/fe_solver.c` of `xtx.fit`, on the grouped sums and crosstabs of `xtx`, `src/fe.c`; the fit in `R/fe.R`). Write the model $y = X b + F a + e$, with $F$ the dummies of the $K$ fixed effects and $W$ the weights. With
 
 $ S = F' W X, quad s = F' W y, quad K = F' W F, $
 

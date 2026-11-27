@@ -12,7 +12,7 @@
 \usage{
 design_groups(x, key, levels = NULL)
 
-group_sums(col, g)
+group_sums(col, g, total = NULL)
 
 group_crosstab(g1, g2, w = NULL)
 
@@ -48,7 +48,7 @@ key variable). A list combines several of these.}
 of a fit, instead of the levels that occur in \code{x}. Rows whose key is
 missing or not among \code{levels} get the code \code{NA} (no error): such a
 grouping works with \code{group_lookup()} (\code{NA} for those rows) and
-\code{\link[=design_absorb_fitted]{design_absorb_fitted()}}, not with \code{group_sums()}, \code{group_crosstab()} or
+\code{xtx.fit::design_absorb_fitted()}, not with \code{group_sums()}, \code{group_crosstab()} or
 \code{group_nested()}. Names may change before the first release.}
 
 \item{col}{A column: in memory a numeric (or logical) vector with one
@@ -60,7 +60,13 @@ A list of columns is bound into one with several columns. A single
 number is a constant column: \code{group_sums(1, g)} counts the rows of each
 group.}
 
-\item{g, g1, g2}{Groupings made by \code{design_groups()}, of the same design.}
+\item{g, g1, g2}{Groupings made by \code{design_groups()}, of the same design,
+or bare codes (see \code{\link[=group_codes]{group_codes()}}), which are used as given, without
+the checks. For \code{group_sums()}, \code{g} can also be a list of groupings:
+the sums within each of them, from one pass over the rows.}
+
+\item{total}{For \code{group_sums()} with a list of groupings: \code{NULL}, or a
+column whose sum over all rows is computed in the same pass.}
 
 \item{w}{Optional weights, a column in the same form as \code{col} (one
 column). Without \code{w}, the counts of rows.}
@@ -73,6 +79,8 @@ order. Missing values give missing values.}
 }
 \value{
 \code{design_groups()}: a grouping (see \emph{The grouping object}).
+\code{group_sums()} with a list of groupings: a list with \code{groups} (one
+matrix of sums per grouping) and \code{total}.
 \code{group_sums()}: a \verb{G x k} numeric matrix, \code{k} the number of columns of
 \code{col}. \code{group_crosstab()}: a \verb{G1 x G2} \link[Matrix:dgCMatrix-class]{Matrix::dgCMatrix} of the
 sums of \code{w} (counts without \code{w}) in each pair of groups; pairs with no

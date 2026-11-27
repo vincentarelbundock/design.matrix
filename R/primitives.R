@@ -52,9 +52,7 @@
 ##   xtx_c_freeze(col, table) (computed once: remotely, columns of a new
 ##                         frame; with table = TRUE, a temporary table of the
 ##                         rows used with every column of the frame)
-##   xtx_c_pnorm xtx_c_qnorm xtx_c_dnorm xtx_c_pcauchy xtx_c_qcauchy
-##   xtx_c_logit_inv xtx_c_logit_mu_eta xtx_c_binomial_dev(y, mu, w)
-##                         (in memory the C code of binomial())
+##   xtx_c_pnorm xtx_c_qnorm xtx_c_dnorm xtx_c_pcauchy
 ##                         (remotely the DuckDB macros of xtx_sql_macros(), as
 ##                         R computes them: pnorm/dnorm/pcauchy to rounding,
 ##                         qnorm to one ulp; xtx_c_mexpm1m(u) = -expm1(-u))
@@ -148,7 +146,6 @@
 ##                            memory x
 ##   xtx_colsum(col)           sums over rows: a number per column
 ##   xtx_c_sums(...)            sums over rows of several columns (one query)
-##   xtx_c_mean(col)            the mean of a column
 ##   xtx_p_colnorms(col)        Euclidean norms of the columns
 ##   xtx_nrows(x)              number of rows of a design or column
 ##   xtx_engine(x)             "sql" for a remote design, ""
@@ -909,32 +906,6 @@ xtx_c_qnorm <- function(x) xtx_c_macro(x, stats::qnorm, "xtx_qnorm")
 xtx_c_dnorm <- function(x) xtx_c_macro(x, stats::dnorm, "xtx_dnorm")
 xtx_c_pcauchy <- function(x) xtx_c_macro(x, stats::pcauchy, "xtx_pcauchy")
 xtx_c_mexpm1m <- function(x) xtx_c_macro(x, function(u) -expm1(-u), "xtx_mexpm1m")
-## The logit link of binomial(): inverse, derivative, and the binomial
-## deviance residuals (in memory the C code of R's family object, in one
-## pass; remotely the same arithmetic in SQL)
-xtx_c_logit_inv <- function(e) {
-    if (!xtx_is_column(e)) return(stats::binomial()$linkinv(e))
-    eps <- .Machine$double.eps
-    xtx_c_ifelse(e < -30, eps / (1 + eps), xtx_c_ifelse(e > 30, (1 / eps) / (1 + 1 / eps), exp(e) / (1 + exp(e))))
-}
-xtx_c_logit_mu_eta <- function(e) {
-    if (!xtx_is_column(e)) return(stats::binomial()$mu.eta(e))
-    xtx_c_ifelse(e > 30 | e < -30, .Machine$double.eps, exp(e) / ((1 + exp(e)) * (1 + exp(e))))
-}
-## (`positive`: mu is in (0, 1) by construction, so that the logarithms,
-## reached only for y in (0, 1], take the fast ln of xtx_fast_log())
-xtx_c_binomial_dev <- function(y, mu, w, positive = FALSE) {
-    if (is.null(xtx_column_frame(y, mu, w))) return(stats::binomial()$dev.resids(y, mu, w))
-    lg <- if (positive) xtx_fast_log else log
-    xlogx <- function(a, b) xtx_c_ifelse(a != 0, a * lg(a / b), 0)
-    2 * w * (xlogx(y, mu) + xlogx(1 - y, 1 - mu))
-}
-
-## qcauchy (remotely through tan(): to rounding, where R uses tanpi())
-xtx_c_qcauchy <- function(x) {
-    if (!xtx_is_column(x)) return(stats::qcauchy(x))
-    xtx_c_ifelse(x <= 0.5, -1 / tan(pi * x), 1 / tan(pi * (1 - x)))
-}
 
 ## The values of a column in R (remotely: all its rows; for small data).
 xtx_p_collect <- function(x) {
@@ -976,9 +947,6 @@ xtx_c_sums <- function(...) {
     if (any(vapply(a, xtx_is_column, NA))) return(xtx_colsum(do.call(xtx_c_cbind, a)))
     vapply(a, function(v) sum(v), 0)
 }
-
-## The mean of a column (in memory as mean() computes it).
-xtx_c_mean <- function(x) if (xtx_is_column(x)) xtx_colsum(x) / xtx_nrows(x) else mean(x)
 
 ## "sql" for a remote design, "" in memory.
 xtx_engine <- function(x) if (inherits(x, "xtx_remote")) "sql" else ""
@@ -1158,7 +1126,7 @@ xtx_p_quad <- function(x, V) {
 }
 
 ## Compressed least squares (see the header); the in-memory method groups
-## identical rows (wls.R), the remote one is the scan of the SQL engine
+## identical rows (exports.R), the remote one is the scan of the SQL engine
 ## grouped by the cells of the design (remote_compress.R).
 xtx_p_patterns <- function(x, z, w = NULL, compress = "auto", keys = NULL, fit = "lm") {
     if (inherits(x, "xtx_remote")) {
@@ -1235,7 +1203,7 @@ xtx_p_output <- function(x, cols, memory = identity, na = NULL, design = FALSE, 
 #' table in the database (the name of a temporary view, of class
 #' `xtx_remote_table`, with every column of the remote data and the columns
 #' `cols`), padded by [napredict()] with `na` (for instance a
-#' [design_exclude()]), with the attributes `attrs`; with `design = TRUE`, the
+#' `xtx.fit::design_exclude()`), with the attributes `attrs`; with `design = TRUE`, the
 #' remote design with the columns added to its data (so that they can scale
 #' its rows: `crossprod(R, DBI::SQL('".resid"^2') * R)`).
 #'
@@ -1550,7 +1518,7 @@ xtx_gsums_memory <- function(D, w, groups, extra = NULL, pairs = list()) {
     list(gs = gs, ct = ct)
 }
 
-## The sums of a fit with fixed effects (absorb.R): the grouped sums of
+## The sums of a fit with fixed effects (absorb.R of xtx.fit): the grouped sums of
 ## xtx_p_colsums_groups(w * x, groups, extra) (x unscaled, w NULL for 1) and
 ## the crosstabs t(xtx_p_crosstab(groups[[b]], groups[[a]], w)) (G_a x G_b
 ## sums of w, transposed) for each pair c(a, b) of `pairs`: list(gs, ct).

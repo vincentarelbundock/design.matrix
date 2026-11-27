@@ -61,7 +61,9 @@
 #'
 #' @param x A `design_matrix`.
 #' @param tol The tolerance for detecting aliased columns, as in [qr()].
-#' @param ... Not used.
+#' @param ... Not used, except `y` for a remote design: a column of the
+#'   design (a [design_column()]) whose products `X'y` are computed in the
+#'   scan that computes `X'X`, and kept for `qr.coef(qr, y)` on that column.
 #' @return An object of class `"xtx_qr"`: a list with `design` (`x`),
 #'   `R` (the `p` by `p` upper triangular factor, columns in pivoted
 #'   order), `rank`, `pivot` and `tol`.
@@ -180,7 +182,10 @@ xtx_qr_keep_seed <- function(expr) {
 ## columns from products with the data. There is no dense fallback.
 #' @method qr xtx_remote
 #' @export
-qr.xtx_remote <- function(x, tol = 1e-07, ...) xtx_qr_remote(x, tol)
+qr.xtx_remote <- function(x, tol = 1e-07, ..., y = NULL) {
+    if (!is.null(y) && !xtx_is_column(y)) stop("`y` must be a column of the design (a `design_column()`).", call. = FALSE)
+    xtx_qr_remote(x, tol, y)
+}
 
 ## (`Y`, remote columns: X'Y comes from the scan that computes X'X, and is
 ## kept for xtx_qr_coef(), see xtx_remote_gram_xty())
@@ -276,7 +281,7 @@ xtx_qr_centered <- function(ch, G, Tm, xs, mc, Y = NULL) {
 }
 
 ## Can a fit on the centered design X~ = X T be mapped back to X (qr():
-## xtx_qr_centered(); FE: xtx_fe_uncenter())? Not when a kept column of X~
+## xtx_qr_centered(); FE: design_uncenter() of xtx.fit)? Not when a kept column of X~
 ## uses an aliased column of X (T[aliased, kept] not zero).
 xtx_uncenter_ok <- function(Tm, keep, al) !(length(al) && length(keep) && any(Tm[al, keep] != 0))
 
@@ -420,22 +425,47 @@ xtx_qr_dense <- function(x, tol) {
               class = "xtx_qr")
 }
 
-## Pivoted Cholesky factor of a symmetric matrix G with limited pivoting,
-## the one kernel of qr() and of fits with fixed effects (xtx_chol_pivot()
-## in kernels.c): columns in order, column j taken when its squared
-## residual norm d after the columns taken before it is above tol *
-## scale[j] (ties = "keep": d >= tol * scale[j], lm()'s rule; "drop":
-## d > tol * scale[j], fixest's), otherwise moved to the end; columns are
-## tested until `lup` are taken. `band`: NULL, or list(lo, hi): columns with
-## lo <= d <= hi cannot be judged from G (d is accurate to rounding only)
-## and are suspects, judged by recheck(ch, cols), which returns list(dres
-## = their squared residual norms computed from the data, taken = which of
-## them pass the rule) or NULL to give up (xtx_pivchol() then returns NULL);
-## the factorization is repeated until every suspect was judged against
-## the columns actually taken before it. `dres`: squared residual norms
-## known in advance (NA: not known). Returns list(R, rank, pivot,
-## suspects), as the kernel.
-xtx_pivchol <- function(G, scale, tol, ties = c("keep", "drop"), band = NULL, recheck = NULL,
+#' Pivoted Cholesky factor with limited pivoting
+#'
+#' `pivoted_chol()` factors a symmetric positive semi-definite matrix `G`
+#' (such as `X'X`) with the limited pivoting of [stats::lm()]: columns are
+#' taken in order, and a column whose squared residual norm `d` after the
+#' columns taken before it is not above `tol * scale[j]` is moved to the
+#' end. This is the kernel of [qr()][design_qr] of a design, and of fits
+#' with fixed effects.
+#'
+#' From `G` alone, `d` is accurate only to rounding, so columns near the
+#' threshold cannot be judged. With `band`, columns with `lo <= d <= hi`
+#' are *suspects*: `recheck(ch, cols)` is called with the current
+#' factorization and the suspect columns, and returns their squared
+#' residual norms computed from the data. The factorization is repeated
+#' until every suspect was judged against the columns actually taken before
+#' it.
+#'
+#' @param G A symmetric numeric matrix.
+#' @param scale One positive number per column: the scale of its squared
+#'   norm (such as `diag(G)`).
+#' @param tol The tolerance, relative to `scale`.
+#' @param ties `"keep"`: a column is taken when `d >= tol * scale[j]` (the
+#'   rule of `lm()`); `"drop"`: when `d > tol * scale[j]`.
+#' @param band `NULL`, or a list with `lo` and `hi`, one value per column:
+#'   the range of `d` in which a column is a suspect.
+#' @param recheck With `band`, a function of the factorization and the
+#'   suspect columns that returns a list with `dres` (their squared residual
+#'   norms) and `taken` (which of them pass the rule), or `NULL` to give up.
+#' @param lup Columns are tested until this many are taken.
+#' @param dres Squared residual norms known in advance (`NA`: not known).
+#' @return A list with `R` (the upper triangular factor, columns in pivoted
+#'   order), `rank`, `pivot` and `suspects`; `NULL` when `recheck()` gave
+#'   up.
+#' @examples
+#' X <- cbind(1, x = 1:5, x2 = 2 * (1:5), z = c(1, 0, 2, 1, 3))
+#' G <- crossprod(X)
+#' ch <- pivoted_chol(G, diag(G), 1e-14)
+#' ch$rank
+#' ch$pivot
+#' @export
+pivoted_chol <- function(G, scale, tol, ties = c("keep", "drop"), band = NULL, recheck = NULL,
                        lup = ncol(G), dres = rep(NA_real_, ncol(G))) {
     ties <- match.arg(ties)
     p <- ncol(G)
@@ -458,7 +488,7 @@ xtx_pivchol <- function(G, scale, tol, ties = c("keep", "drop"), band = NULL, re
     }
 }
 
-## Pivoted Cholesky factor of G = X'X with lm()'s rule (xtx_pivchol()).
+## Pivoted Cholesky factor of G = X'X with lm()'s rule (pivoted_chol()).
 ## Columns whose residual norm is too small to judge from G, or whose norm
 ## in G is zero, are suspects: their residual norms are computed from the
 ## data (xtx_qr_resid2()). Returns NULL when a column with a zero norm in G is
@@ -485,7 +515,7 @@ xtx_qr_chol <- function(x, G, tol) {
     }
     ## (every column with d <= susp * G[j, j], or a zero norm in G, is a
     ## suspect)
-    xtx_pivchol(G, dg, tol^2, "keep", band = list(lo = rep(-Inf, p), hi = susp * dg), recheck = recheck,
+    pivoted_chol(G, dg, tol^2, "keep", band = list(lo = rep(-Inf, p), hi = susp * dg), recheck = recheck,
                lup = min(nrow(x), p), dres = dres)
 }
 
@@ -614,7 +644,7 @@ xtx_qr_coef <- function(qr, Y, steps = 3L) {
             return(cc$T %*% bt)
         }
         b <- cc$T %*% bt
-        ## the moments of the solution, for sums of squares (design_wls())
+        ## the moments of the solution, for sums of squares (design_wls() of xtx.fit)
         attr(b, "moments") <- list(b = bt, h = ht, G = crossprod(cc$Rt))
         return(b)
     }
@@ -632,7 +662,7 @@ xtx_qr_coef <- function(qr, Y, steps = 3L) {
 }
 
 ## Iterative refinement, the one driver of qr() (xtx_qr_refine()) and of
-## fits with fixed effects (xtx_fe_refine()): up to `steps` times, the
+## fits with fixed effects (xf_fe_refine() of xtx.fit): up to `steps` times, the
 ## residual of the current solution (`residual(sol)`: a pass over the rows,
 ## or the moments already computed) and the corrected solution
 ## (`correct(sol, r)`, list(sol, ...): `sol` and what the stopping rule
@@ -726,7 +756,10 @@ setMethod("qr.coef", "xtx_qr", function(qr, y) {
     yy <- xtx_p_y(qr$design, y)
     b <- xtx_qr_coef(qr, yy$Y)
     out <- xtx_qr_full(qr, b, fill = NA_real_)
-    xtx_qr_out(out, yy, colnames(qr$design))
+    out <- xtx_qr_out(out, yy, colnames(qr$design))
+    ## (the moments of the solution, when the factorization has them)
+    if (!is.null(attr(b, "moments"))) attr(out, "moments") <- attr(b, "moments")
+    out
 })
 
 #' @rdname design_qr

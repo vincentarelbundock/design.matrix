@@ -135,7 +135,6 @@ SEXP xtx_int_unique(SEXP);
 SEXP xtx_str_unique(SEXP);
 SEXP xtx_fe_gsum(SEXP, SEXP, SEXP, SEXP);
 SEXP xtx_fe_crosstabs(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
-SEXP xtx_fe_components(SEXP, SEXP, SEXP, SEXP);
 SEXP xtx_fe_struct_gsum(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP xtx_fe_code(SEXP, SEXP);
 SEXP xtx_fe_recode(SEXP, SEXP);
@@ -144,18 +143,9 @@ SEXP xtx_fe_lookup(SEXP, SEXP);
 /* fused.c */
 SEXP xtx_ifelse(SEXP, SEXP, SEXP);
 SEXP xtx_notnan(SEXP);
-SEXP xtx_fe_fitted_add(SEXP, SEXP, SEXP);
-SEXP xtx_fe_resid(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP xtx_fe_moments(SEXP, SEXP);
-SEXP xtx_glm_working(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
-SEXP xtx_poisson_dev(SEXP, SEXP, SEXP);
 SEXP xtx_unwrap_vars(SEXP);
 SEXP xtx_levels_unused(SEXP, SEXP);
-SEXP xtx_ls_sums(SEXP, SEXP, SEXP, SEXP);
-SEXP xtx_binomial_ll(SEXP, SEXP, SEXP, SEXP);
-SEXP xtx_fe_ichol(SEXP, SEXP, SEXP, SEXP, SEXP);
-SEXP xtx_fe_pcg(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
-SEXP xtx_fe_schur(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP xtx_omp_max_threads(void);
 /* error unless the integer vector codes is in 1..G (no NA), fe.c */
 void xtx_check_codes(SEXP codes, int G);

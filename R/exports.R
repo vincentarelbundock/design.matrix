@@ -1,3 +1,49 @@
+## Row patterns: the rows of a design that share a row of the model matrix,
+## and the sufficient statistics of a response within them
+## (design_patterns()), which compress a least squares fit.
+
+## Groups of rows that share a design pattern, or NULL when the fit should
+## not be compressed. `compress = "auto"` follows the option
+## `xtx.dedup` (its "auto" search gives up beyond n / 2
+## patterns); TRUE searches in any case. Either way, a fit on more than
+## half as many patterns as rows is not worth compressing.
+xtx_fit_groups <- function(x, compress) {
+    if (isFALSE(compress) || nrow(x) < 2L) return(NULL)
+    J <- as_jac(x)
+    if (!jac_kernel_ok(J)) return(NULL)
+    g <- if (isTRUE(compress)) xtx_dedup_groups(J, force = TRUE) else xtx_dedup_groups(J, cost = Inf)
+    if (is.null(g)) return(NULL)
+    if (length(g$first) == nrow(x)) return(NULL)
+    if (!isTRUE(compress) && length(g$first) > 0.5 * nrow(x)) return(NULL)
+    g
+}
+
+## Per-pattern sufficient statistics of z with weights w (NULL for 1):
+## the sum of the weights, the weighted mean, and the weighted sum of
+## squares within patterns (computed around the means, which avoids the
+## cancellation of sum(w z^2) - sum(w) mean^2).
+xtx_fit_suffstats <- function(z, w, map, G) {
+    if (is.null(w)) {
+        sw <- tabulate(map, nbins = G)
+        swz <- drop(rowsum(z, map, reorder = TRUE))
+    } else {
+        ## doubles: integer weights could overflow in the sums
+        w <- as.double(w)
+        sw <- drop(rowsum(w, map, reorder = TRUE))
+        swz <- drop(rowsum(w * z, map, reorder = TRUE))
+    }
+    m <- ifelse(sw > 0, swz / sw, 0)
+    within <- if (is.null(w)) {
+        sum((z - m[map])^2)
+    } else {
+        ## rows with zero weight do not enter the fit (their squared
+        ## deviation can overflow, and 0 * Inf is NaN)
+        pos <- w > 0
+        sum(w[pos] * (z[pos] - m[map[pos]])^2)
+    }
+    list(w = as.double(sw), mean = m, within = within)
+}
+
 #' Compress a design and a response to sufficient statistics
 #'
 #' `design_patterns()` groups the rows of a design that have the same row of

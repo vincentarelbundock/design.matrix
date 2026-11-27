@@ -81,7 +81,7 @@ xtx_terms <- function(x) {
     out
 }
 
-## The error for a scale (or the weights of a fit, design_problem()) that
+## The error for a scale (or the weights of a fit, design_problem() of xtx.fit) that
 ## is not one value per row of a design of n rows.
 xtx_scale_length_msg <- function(n) {
     sprintf("A design matrix can only be scaled by a number or a numeric vector of length %d (one value per row).", n)

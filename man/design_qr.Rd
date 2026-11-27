@@ -36,7 +36,9 @@
 
 \item{tol}{The tolerance for detecting aliased columns, as in \code{\link[=qr]{qr()}}.}
 
-\item{...}{Not used.}
+\item{...}{Not used, except \code{y} for a remote design: a column of the
+design (a \code{\link[=design_column]{design_column()}}) whose products \verb{X'y} are computed in the
+scan that computes \verb{X'X}, and kept for \code{qr.coef(qr, y)} on that column.}
 
 \item{qr}{A \code{"xtx_qr"} object, from \code{qr()} on a \code{design_matrix}.}
 

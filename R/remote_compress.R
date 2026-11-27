@@ -12,7 +12,7 @@
 ##     X'WX = Xc' diag(sum w) Xc,   X'Wy = Xc' (sum w y),   y'Wy = sum w y^2,
 ##
 ## exactly (up to rounding). This is the compression of lm_xtx() (see
-## xtx_fit_suffstats() in wls.R), done in the database.
+## xtx_fit_suffstats() in exports.R), done in the database.
 ##
 ## Only designs with na.omit are compressed (with na.pass, rows with
 ## missing values put NA where the dense computation does).

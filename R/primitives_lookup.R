@@ -1,5 +1,5 @@
 ## Lookup columns, keys and codes: primitives of the fitting core (see
-## primitives.R for the column conventions), used by fixed effects (absorb.R).
+## primitives.R for the column conventions), used by fits with fixed effects (absorb.R of xtx.fit).
 ## Each has an in-memory and a remote method; code that calls them does not
 ## branch on the backend.
 ##
@@ -21,11 +21,6 @@
 ##       operands of that use (at least the frame of the key), which gives
 ##       a new frame keeping every column of the old one; integer `values`
 ##       (codes) give an integer column.
-##   xtx_c_lookup_flags(flags, key)
-##       for a G x m logical matrix of flags of the levels and key a
-##       xtx_c_codes() grouping (codes 1..G): the m logical columns of the
-##       rows' flags. In memory flags[codes, j]; remotely one xtx_c_lookup()
-##       of the flags as 0/1.
 ##   xtx_c_key(x, vars, data = NULL)
 ##       the values of variables (columns of the data, of any type) as a key
 ##       over the rows of design x: in memory a data frame (from `data`, or
@@ -117,13 +112,6 @@ xtx_c_lookup <- function(values, key, levels = NULL) {
     fr <- xtx_remote_unscaled(frame)
     fr$pend <- c(frame$pend, list(r))
     xtx_column(fr, sprintf("s.%s", q(col)))
-}
-
-xtx_c_lookup_flags <- function(flags, key) {
-    if (xtx_plain_codes(key)) return(lapply(seq_len(ncol(flags)), function(j) flags[, j][key$codes]))
-    storage.mode(flags) <- "double"
-    lk <- xtx_c_lookup(flags, key)
-    lapply(seq_len(ncol(flags)), function(j) xtx_c_col(lk, j) == 1)
 }
 
 ## The columns of the frame of a remote design (or column) plus the new

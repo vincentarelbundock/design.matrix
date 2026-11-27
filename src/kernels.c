@@ -903,7 +903,7 @@ SEXP xtx_jac_gram(SEXP a1, SEXP av1, SEXP as1, SEXP a2, SEXP av2, SEXP as2,
    * qr() (xtx_qr_chol()): G = X'X, scale = diag(G), tol = tol^2 of qr(),
      ties = 1 (dqrdc2 keeps a column whose residual norm equals tol times
      its norm);
-   * fixed effects (xtx_fe_pivchol()): G = X'MX (the FE absorbed), scale the
+   * fixed effects (xf_fe_pivchol() of xtx.fit): G = X'MX (the FE absorbed), scale the
      variances before absorption, tol = collin.tol, ties = 0 (fixest).
 
    Suspect band (lo, hi: p values each, or length 0 for none): from G, d is

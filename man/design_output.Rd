@@ -41,7 +41,7 @@ as fitted values and residuals), on both backends: in memory
 table in the database (the name of a temporary view, of class
 \code{xtx_remote_table}, with every column of the remote data and the columns
 \code{cols}), padded by \code{\link[=napredict]{napredict()}} with \code{na} (for instance a
-\code{\link[=design_exclude]{design_exclude()}}), with the attributes \code{attrs}; with \code{design = TRUE}, the
+\code{xtx.fit::design_exclude()}), with the attributes \code{attrs}; with \code{design = TRUE}, the
 remote design with the columns added to its data (so that they can scale
 its rows: \code{crossprod(R, DBI::SQL('".resid"^2') * R)}).
 }

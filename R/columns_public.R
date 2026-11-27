@@ -180,6 +180,18 @@ xtx_summary_aggregates <- function(args, what) {
 #'   or numbers.
 #' @param ... For `col_sums()`, columns or numbers, optionally named. For
 #'   `cbind()`, columns or numbers. For the methods, as in base R.
+#' @param checked For `col_pmin()` and `col_pmax()`: `TRUE` (default)
+#'   follows [pmin()] and [pmax()] on missing values (`NA` or `NaN` if either
+#'   operand is). `FALSE` is for operands known to have no missing values:
+#'   remotely plain `least()` and `greatest()`, whose SQL is shorter; in
+#'   memory the same values.
+#' @param fun For `col_math()`, a function that base R cannot dispatch on:
+#'   `"pnorm"`, `"qnorm"`, `"dnorm"` and `"pcauchy"` (the standard
+#'   distributions, as [stats::pnorm()] and the others compute them);
+#'   `"log_positive"`, the natural logarithm of values known to be positive
+#'   (remotely without the guards of `log()` at zero and below); and
+#'   `"one_minus_exp_neg"`, `1 - exp(-x)` for `x >= 0`, accurate near zero
+#'   (`-expm1(-x)`).
 #' @param like A column, or a design: the rows of the constant column.
 #' @param value One number.
 #' @param deparse.level Not used.
@@ -189,7 +201,7 @@ xtx_summary_aggregates <- function(args, what) {
 #' @param dims For `rowSums()`, only the default.
 #' @param x A remote column.
 #' @param trim Only `0` is supported for a remote column.
-#' @return `col_ifelse()`, `col_pmin()`, `col_pmax()`: a column (a double
+#' @return `col_ifelse()`, `col_pmin()`, `col_pmax()`, `col_math()`: a column (a double
 #'   vector in memory, a `design_column` remotely). `col_sums()`: a double
 #'   vector. The `Summary` methods and `mean()`: a number, two for
 #'   `range()`, a logical value for `any()` and `all()`.
@@ -425,18 +437,30 @@ col_ifelse <- function(test, yes, no) {
 
 #' @rdname column_arithmetic
 #' @export
-col_pmin <- function(a, b) {
+col_pmin <- function(a, b, checked = TRUE) {
+    checkmate::assert_flag(checked)
     xtx_col_check(a, "a")
     xtx_col_check(b, "b")
-    xtx_c_pmin(a, b)
+    if (checked) xtx_c_pmin(a, b) else xtx_fast_pmin(a, b)
 }
 
 #' @rdname column_arithmetic
 #' @export
-col_pmax <- function(a, b) {
+col_pmax <- function(a, b, checked = TRUE) {
+    checkmate::assert_flag(checked)
     xtx_col_check(a, "a")
     xtx_col_check(b, "b")
-    xtx_c_pmax(a, b)
+    if (checked) xtx_c_pmax(a, b) else xtx_fast_pmax(a, b)
+}
+
+#' @rdname column_arithmetic
+#' @export
+col_math <- function(x, fun = c("pnorm", "qnorm", "dnorm", "pcauchy", "log_positive", "one_minus_exp_neg")) {
+    fun <- match.arg(fun)
+    xtx_col_check(x, "x")
+    switch(fun,
+           pnorm = xtx_c_pnorm(x), qnorm = xtx_c_qnorm(x), dnorm = xtx_c_dnorm(x), pcauchy = xtx_c_pcauchy(x),
+           log_positive = xtx_fast_log(x), one_minus_exp_neg = xtx_c_mexpm1m(x))
 }
 
 #' @rdname column_arithmetic

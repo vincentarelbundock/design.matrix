@@ -121,7 +121,12 @@
 #'   A list of columns is bound into one with several columns. A single
 #'   number is a constant column: `group_sums(1, g)` counts the rows of each
 #'   group.
-#' @param g,g1,g2 Groupings made by `design_groups()`, of the same design.
+#' @param g,g1,g2 Groupings made by `design_groups()`, of the same design,
+#'   or bare codes (see [group_codes()]), which are used as given, without
+#'   the checks. For `group_sums()`, `g` can also be a list of groupings:
+#'   the sums within each of them, from one pass over the rows.
+#' @param total For `group_sums()` with a list of groupings: `NULL`, or a
+#'   column whose sum over all rows is computed in the same pass.
 #' @param w Optional weights, a column in the same form as `col` (one
 #'   column). Without `w`, the counts of rows.
 #' @param values The value of each group: a numeric vector of length `G`, or
@@ -133,10 +138,12 @@
 #'   of a fit, instead of the levels that occur in `x`. Rows whose key is
 #'   missing or not among `levels` get the code `NA` (no error): such a
 #'   grouping works with `group_lookup()` (`NA` for those rows) and
-#'   [design_absorb_fitted()], not with `group_sums()`, `group_crosstab()` or
+#'   `xtx.fit::design_absorb_fitted()`, not with `group_sums()`, `group_crosstab()` or
 #'   `group_nested()`. Names may change before the first release.
 #' @param ... Not used.
 #' @return `design_groups()`: a grouping (see *The grouping object*).
+#'   `group_sums()` with a list of groupings: a list with `groups` (one
+#'   matrix of sums per grouping) and `total`.
 #'   `group_sums()`: a `G x k` numeric matrix, `k` the number of columns of
 #'   `col`. `group_crosstab()`: a `G1 x G2` [Matrix::dgCMatrix-class] of the
 #'   sums of `w` (counts without `w`) in each pair of groups; pairs with no
@@ -220,7 +227,13 @@ design_groups <- function(x, key, levels = NULL) {
 
 #' @rdname design_groups
 #' @export
-group_sums <- function(col, g) {
+group_sums <- function(col, g, total = NULL) {
+    ## bare codes (group_codes(), key_codes()): unchecked; a list of them,
+    ## every grouping (and the sum of `total`) in one pass over the rows
+    if (xtx_is_codes(g)) return(xtx_p_groupsum(col, g))
+    if (is.list(g) && is.null(oldClass(g)))
+        return(xtx_c_groupsums(col, lapply(g, group_codes), total = total))
+    if (!is.null(total)) stop("`total` applies only with a list of groupings.", call. = FALSE)
     xtx_groups_check(g, "g")
     col <- xtx_groups_col(col, g, "col")
     out <- xtx_p_groupsum_codes(col, xtx_groups_codes(g))
@@ -231,6 +244,7 @@ group_sums <- function(col, g) {
 #' @rdname design_groups
 #' @export
 group_crosstab <- function(g1, g2, w = NULL) {
+    if (xtx_is_codes(g1) && xtx_is_codes(g2)) return(xtx_p_crosstab(g1, g2, w))
     xtx_groups_check(g1, "g1")
     xtx_groups_check(g2, "g2")
     xtx_groups_same(g1, g2)
@@ -257,6 +271,7 @@ group_crosstab <- function(g1, g2, w = NULL) {
 #' @rdname design_groups
 #' @export
 group_lookup <- function(values, g) {
+    if (xtx_is_codes(g)) return(xtx_c_lookup(values, g))
     xtx_groups_check(g, "g", na_ok = TRUE)
     if (is.data.frame(values)) values <- as.matrix(values)
     if (!(is.numeric(values) || is.logical(values)) || !(is.null(dim(values)) || length(dim(values)) == 2L))
@@ -275,6 +290,7 @@ group_lookup <- function(values, g) {
 #' @rdname design_groups
 #' @export
 group_nested <- function(g1, g2) {
+    if (xtx_is_codes(g1) && xtx_is_codes(g2)) return(xtx_p_nested(g2, g1))
     xtx_groups_check(g1, "g1")
     xtx_groups_check(g2, "g2")
     xtx_groups_same(g1, g2)
