@@ -14,10 +14,11 @@ options(width = 200)
 
 #title()
 
-When the data do not fit in memory, `design_matrix()`, `design_lm()` and `design_glm()` take a DuckDB connection and a table (or a `sql` query), or the path of Parquet files, instead of a data frame. The rows stay in the database: products with the design run there as `GROUP BY` aggregates, or in batches, and only small results come back to R. These designs need the DBI and duckdb packages.
+When the data do not fit in memory, `design_matrix()` and the fits of `xtx.fit`, `lm_xtx()` and `glm_xtx()`, take a DuckDB connection and a table (or a `sql` query), or the path of Parquet files, instead of a data frame. The rows stay in the database: products with the design run there as `GROUP BY` aggregates, or in batches, and only small results come back to R. These designs need the DBI and duckdb packages.
 
 ```r
 library(xtx)
+library(xtx.fit)
 con <- DBI::dbConnect(duckdb::duckdb())
 set.seed(1)
 n <- 10000
@@ -53,26 +54,26 @@ r_db  <- design_column(D_db, "y") - D_db %*% beta
 all.equal(sum(r_mem^2), sum(r_db^2))
 
 ## a linear model
-lm_mem <- design_lm(y ~ x + f, d, weights = w)
-lm_db  <- design_lm(y ~ x + f, con, table = "d", weights = w)
+lm_mem <- lm_xtx(y ~ x + f, d, weights = w)
+lm_db  <- lm_xtx(y ~ x + f, con, table = "d", weights = w)
 all.equal(coef(lm_mem), coef(lm_db))
 all.equal(vcov(lm_mem), vcov(lm_db))
 
 ## a GLM
-glm_mem <- design_glm(k ~ x + f, poisson, d)
-glm_db  <- design_glm(k ~ x + f, poisson, con, table = "d")
+glm_mem <- glm_xtx(k ~ x + f, poisson, d)
+glm_db  <- glm_xtx(k ~ x + f, poisson, con, table = "d")
 all.equal(coef(glm_mem), coef(glm_db))
 all.equal(deviance(glm_mem), deviance(glm_db))
 
 ## fixed effects, with standard errors clustered by FE
-fe_mem <- design_lm(y ~ x + f | cl, d, vcov = ~cl)
-fe_db  <- design_lm(y ~ x + f | cl, con, table = "d", vcov = ~cl)
+fe_mem <- lm_xtx(y ~ x + f | cl, d, vcov = ~cl)
+fe_db  <- lm_xtx(y ~ x + f | cl, con, table = "d", vcov = ~cl)
 all.equal(coef(fe_mem), coef(fe_db))
 all.equal(vcov(fe_mem), vcov(fe_db))
 
 ## a Poisson GLM with two fixed effects, clustered
-fg_mem <- design_glm(k ~ x + f | cl + z, poisson, d, vcov = ~cl)
-fg_db  <- design_glm(k ~ x + f | cl + z, poisson, con, table = "d", vcov = ~cl)
+fg_mem <- glm_xtx(k ~ x + f | cl + z, poisson, d, vcov = ~cl)
+fg_db  <- glm_xtx(k ~ x + f | cl + z, poisson, con, table = "d", vcov = ~cl)
 all.equal(coef(fg_mem), coef(fg_db))
 all.equal(vcov(fg_mem), vcov(fg_db))
 ```
@@ -115,7 +116,7 @@ all.equal(crossprod("w" * D, "y"), crossprod(X, d$w * d$y), check.attributes = F
 all.equal(colSums(D, group = "cl"), rowsum(X, d$cl), check.attributes = FALSE)
 ```
 
-When the rows have few distinct design patterns (factors and discrete numeric variables), these products and `design_lm()` run one `GROUP BY` over the input columns of the design, and compute the result from the design of the patterns, in memory. The option `xtx.remote_compress` controls this.
+When the rows have few distinct design patterns (factors and discrete numeric variables), these products and `lm_xtx()` run one `GROUP BY` over the input columns of the design, and compute the result from the design of the patterns, in memory. The option `xtx.remote_compress` controls this.
 
 = Columns and predictions
 
@@ -138,21 +139,21 @@ A column is valid while its connection is open: the views and temporary tables i
 
 = Linear models
 
-`design_lm()` fits a linear model on remote data with the same algorithm as in memory: with few design patterns, on the patterns with their counts and sums of the response; otherwise, from `qr()` of the remote design, with `X'X` computed in the database. Either way, the coefficients, aliased columns, covariance and residual standard error are those of `lm()` on the same rows, and `weights` names a column.
+`lm_xtx()` fits a linear model on remote data with the same algorithm as in memory: with few design patterns, on the patterns with their counts and sums of the response; otherwise, from `qr()` of the remote design, with `X'X` computed in the database. Either way, the coefficients, aliased columns, covariance and residual standard error are those of `lm()` on the same rows, and `weights` names a column.
 
 ```r
-fit <- design_lm(y ~ x + f, con, table = "d", weights = "w")
+fit <- lm_xtx(y ~ x + f, con, table = "d", weights = "w")
 all.equal(coef(fit), coef(lm(y ~ x + f, d, weights = w)))
 all.equal(vcov(fit), vcov(lm(y ~ x + f, d, weights = w)))
 
-fit_z <- design_lm(y ~ factor(z) * f, con, table = "d")
+fit_z <- lm_xtx(y ~ factor(z) * f, con, table = "d")
 fit_z
 ```
 
 `weights`, `offset` and `subset` are columns, `DBI::SQL()` expressions or R expressions with a SQL translation, `offset()` terms work, and `na.action` can be `na.omit`, `na.exclude`, `na.fail` or `na.pass`, as for `lm()`. Results with one value per row are tables in the database: `fitted(fit)` (with `.fitted` and `.resid`), and `predict(fit, newdata = con, table = )`, with `se.fit`, confidence and prediction intervals, and the non-estimable cases of a rank-deficient fit, as `predict.lm()`.
 
 ```r
-fit_s <- design_lm(y ~ x + f, con, table = "d", subset = z > 2, offset = log(w))
+fit_s <- lm_xtx(y ~ x + f, con, table = "d", subset = z > 2, offset = log(w))
 p <- predict(fit_s, newdata = con, table = "d", interval = "confidence")
 head(as.data.frame(p))
 ```
@@ -161,16 +162,16 @@ Expressions with no SQL translation, such as `weights = myfun(x)` or a response 
 
 = Generalized linear models
 
-`design_glm()` takes remote data as `design_lm()` does, with `weights` and `offset` naming columns. With few design patterns, one `GROUP BY` returns the sums of each pattern (including the working weights of the first iteration and the parts of the deviance and AIC that do not depend on the coefficients), and the iterations run in memory. Otherwise, each iteration computes the linear predictor, the working weights and responses, `X'WX` and `X'Wz` in the database (the family and link are translated to SQL). Either way, the results are those of `glm()` on the same rows.
+`glm_xtx()` takes remote data as `lm_xtx()` does, with `weights` and `offset` naming columns. With few design patterns, one `GROUP BY` returns the sums of each pattern (including the working weights of the first iteration and the parts of the deviance and AIC that do not depend on the coefficients), and the iterations run in memory. Otherwise, each iteration computes the linear predictor, the working weights and responses, `X'WX` and `X'Wz` in the database (the family and link are translated to SQL). Either way, the results are those of `glm()` on the same rows.
 
 ```r
 d2 <- transform(d, k = rpois(n, exp(0.2 * z)), yb = as.integer(y > 5))
 DBI::dbWriteTable(con, "d2", d2)
-fit <- design_glm(k ~ x + f, poisson, con, table = "d2")
+fit <- glm_xtx(k ~ x + f, poisson, con, table = "d2")
 all.equal(coef(fit), coef(glm(k ~ x + f, poisson, d2)))
 fit$method
 
-fit_z <- design_glm(yb ~ factor(z) * f, binomial, con, table = "d2")
+fit_z <- glm_xtx(yb ~ factor(z) * f, binomial, con, table = "d2")
 all.equal(coef(fit_z), coef(glm(yb ~ factor(z) * f, binomial, d2)))
 fit_z$method
 ```
@@ -182,7 +183,7 @@ fit_z$method
 `residuals()` of a remote fit returns the remote design with two more columns, `.fitted` and `.resid`, which can scale its rows. The heteroskedasticity-consistent (HC1) and clustered (CR1, as in `sandwich::vcovCL()`) covariance matrices follow:
 
 ```r
-fit <- design_lm(y ~ x + f, con, table = "d")
+fit <- lm_xtx(y ~ x + f, con, table = "d")
 R <- residuals(fit)
 bread <- vcov(fit) / sigma(fit)^2
 n <- nobs(fit)
@@ -218,7 +219,7 @@ all.equal(V_cl, G / (G - 1) * (n - 1) / (n - k) * B %*% crossprod(S) %*% B, chec
 
 = Limits
 
-Remote designs keep only the algebra promise: results agree with the in-memory computation up to rounding. `as.matrix()` refuses to collect more than 100,000 rows unless `force = TRUE`. Only DuckDB connections are supported. With infinite values in the data, `NaN` and `Inf` can land in other places than in the dense computation. See `?design_remote` for the details.
+Remote designs keep only the algebra promise: results agree with the in-memory computation up to rounding. `as.matrix()` refuses to collect more than 100,000 rows unless `force = TRUE`. Only DuckDB connections are supported. With infinite values in the data, `NaN` and `Inf` can land in other places than in the dense computation. See `?design_remote` for the details, and `?xtx.fit::remote_fits` for the fits on remote data.
 
 #calepin.chunk(echo: false, results: "hide")[
 ```r

@@ -13,6 +13,11 @@
 # (refs are committed trees: commit before comparing; uncommitted changes are
 # not included). With only --base / --base-ref, one version is timed.
 #
+# The fit cases (fe, glm, nofe, remote) call xtx.fit::lm_xtx() and
+# xtx.fit::glm_xtx(): xtx.fit must be installed, in <libpath> or in the
+# default library (the worker puts <libpath> first, so xtx.fit runs on the
+# xtx of the library being timed). Refs build xtx only.
+#
 # Options (defaults in brackets):
 #   --cases fe,glm,...  groups or case names [all]. Groups: fe (FE OLS), glm
 #                       (FE Poisson/logit), nofe (no FE, in memory), remote

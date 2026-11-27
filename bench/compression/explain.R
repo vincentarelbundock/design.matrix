@@ -1,6 +1,7 @@
 ## Where the time goes: every SQL statement that remote products and fits
 ## run, compressed vs uncompressed, with its wall time, and EXPLAIN ANALYZE
-## of representative ones (kata design.matrix#8jp3). Base R + DBI + duckdb.
+## of representative ones (kata design.matrix#8jp3). Base R + DBI + duckdb
+## (the fits: xtx.fit, installed in .rlib with xtx).
 ##
 ##   R_LIBS=$PWD/.rlib Rscript bench/compression/explain.R [n]
 ##
@@ -13,6 +14,7 @@ suppressMessages({
     library(DBI)
     library(duckdb)
     library(xtx)
+    library(xtx.fit)
 })
 args <- commandArgs(trailingOnly = TRUE)
 n <- if (length(args)) as.numeric(args[1L]) else 5e6
@@ -81,11 +83,11 @@ ops <- list(
     crossprod = function(m) crossprod(D),
     crossprod_wide = function(m) crossprod(Dw),
     colSums_group = function(m) colSums(D, group = "g"),
-    lm = function(m) design_lm(y ~ f1 + f2 + xd1 + xd2, con, table = "d", compress = m),
-    wlm = function(m) design_lm(y ~ f1 + f2 + xd1 + xd2, con, table = "d", weights = "w", compress = m),
-    glm = function(m) design_glm(yb ~ f1 + f2 + xd1 + xd2, binomial, con, table = "d", compress = m),
+    lm = function(m) lm_xtx(y ~ f1 + f2 + xd1 + xd2, con, table = "d", compress = m),
+    wlm = function(m) lm_xtx(y ~ f1 + f2 + xd1 + xd2, con, table = "d", weights = "w", compress = m),
+    glm = function(m) glm_xtx(yb ~ f1 + f2 + xd1 + xd2, binomial, con, table = "d", compress = m),
     ## (FE fits are not compressed; compress = TRUE is an error: "auto")
-    fe = function(m) design_lm(y ~ xd1 + xd2 + f2 | f1, con, table = "d", compress = if (isTRUE(m)) "auto" else m))
+    fe = function(m) lm_xtx(y ~ xd1 + xd2 + f2 | f1, con, table = "d", compress = if (isTRUE(m)) "auto" else m))
 res <- list()
 for (op in names(ops)) for (m in list(TRUE, FALSE, "auto")) {
     mode <- if (isTRUE(m)) "compressed" else if (isFALSE(m)) "uncompressed" else "auto"

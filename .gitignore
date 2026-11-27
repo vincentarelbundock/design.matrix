@@ -78,6 +78,7 @@ vignettes/*.pdf
 /website/**/.calepin/
 /website/**/.calepin-entry.*
 /website/reference/
+/website/reference-fit/
 
 # local library
 /.rlib/

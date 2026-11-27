@@ -1,5 +1,5 @@
 title = "xtx"
-description = "Exact and fast model matrices for R."
+description = "Exact and fast model matrices for R, and model fitting on them (xtx.fit)."
 base-url = "https://vincentarelbundock.github.io/xtx"
 search = "pagefind"
 
@@ -40,22 +40,28 @@ fold = true
 title = "Recipes"
 
   [[sidebar.section.item]]
-  target = "recipes/estimation.typ"
-
-  [[sidebar.section.item]]
   target = "recipes/prediction.typ"
 
   [[sidebar.section.item]]
   target = "recipes/out-of-core.typ"
 
 [[sidebar.section]]
-title = "Benchmarks"
+title = "xtx.fit: model fitting"
+
+  [[sidebar.section.item]]
+  target = "recipes/estimation.typ"
 
   [[sidebar.section.item]]
   target = "benchmarks/fixed_effects.typ"
 
 [[sidebar.section]]
-title = "Reference"
+title = "Reference: xtx"
 
   [[sidebar.section.item]]
   glob = "reference/*.typ"
+
+[[sidebar.section]]
+title = "Reference: xtx.fit"
+
+  [[sidebar.section.item]]
+  glob = "reference-fit/*.typ"

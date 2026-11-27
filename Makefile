@@ -1,10 +1,19 @@
-.PHONY: install reference website serve bench bench-ols bench-quick
+.PHONY: install install-fit reference website serve bench bench-ols bench-quick
 
 install: ## Install the package
 	R CMD INSTALL .
 
-reference: ## Convert man/*.Rd to website/reference/*.typ
-	./website/reference.sh
+# The website covers xtx and xtx.fit (the model fits): its pages, the
+# fitting benchmarks (website/benchmarks/fixed_effects, the dev harness,
+# bench/compression) and the reference pages need xtx.fit installed, and
+# its sources at XTX_FIT_DIR (default ../xtx.fit) for the reference pages.
+XTX_FIT_DIR ?= ../xtx.fit
+
+install-fit: ## Install xtx.fit from XTX_FIT_DIR (after xtx)
+	R CMD INSTALL $(XTX_FIT_DIR)
+
+reference: ## Convert man/*.Rd of xtx and xtx.fit to website/reference*/*.typ
+	XTX_FIT_DIR=$(XTX_FIT_DIR) ./website/reference.sh
 
 # Benchmarks never run when the site builds: the pages read saved results.
 # BENCH_SIZE=full (default) saves the published results; BENCH_SIZE=quick
@@ -14,17 +23,17 @@ reference: ## Convert man/*.Rd to website/reference/*.typ
 # (FE_BENCH_CACHE, see website/benchmarks/fixed_effects.R).
 BENCH_SIZE ?= full
 
-bench: install ## Run website benchmarks (all, or B="crossprod qr"; BENCH_SIZE=quick|full)
+bench: install install-fit ## Run website benchmarks (all, or B="crossprod qr"; BENCH_SIZE=quick|full)
 	BENCH_SIZE=$(BENCH_SIZE) Rscript website/benchmarks/run.R $(B)
 
 bench-ols: install ## Run the least squares comparison (fresh process per method; BENCH_SIZE=quick|full)
 	BENCH_SIZE=$(BENCH_SIZE) ./bench/ols/run.sh
 
-bench-quick: install ## Quick check of every published benchmark; results outside the repository
+bench-quick: install install-fit ## Quick check of every published benchmark; results outside the repository
 	BENCH_SIZE=quick Rscript website/benchmarks/run.R $(B)
 	BENCH_SIZE=quick ./bench/ols/run.sh
 
-website: install reference ## Build the site into _site/
+website: install install-fit reference ## Build the site into _site/
 	calepin compile website _site
 
 serve: ## Serve the built site

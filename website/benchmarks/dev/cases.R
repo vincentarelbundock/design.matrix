@@ -96,8 +96,8 @@ case_fe_ols <- function(type, nfe, remote = FALSE) {
     f <- fe_formula("y", nfe)
     tab <- if (remote) remote_table(d)
     list(
-        fit = if (remote) function() coef(xtx::design_lm(f, con, table = tab))["x1"]
-              else function() coef(xtx::design_lm(f, d))["x1"],
+        fit = if (remote) function() coef(xtx.fit::lm_xtx(f, con, table = tab))["x1"]
+              else function() coef(xtx.fit::lm_xtx(f, d))["x1"],
         fixest = function() fixest::feols(f, d, vcov = "iid", notes = FALSE),
         ref = function() coef(fixest::feols(f, d, vcov = "iid", notes = FALSE,
                                             fixef.tol = 1e-11, fixef.iter = 1e5))["x1"],
@@ -118,8 +118,8 @@ case_fe_glm <- function(family, type, nfe, remote = FALSE) {
         else fixest::feglm(f, d, family = "logit", vcov = "iid", notes = FALSE, ...)
     }
     list(
-        fit = if (remote) function() coef(xtx::design_glm(f, fam, con, table = tab))["x1"]
-              else function() coef(xtx::design_glm(f, fam, d))["x1"],
+        fit = if (remote) function() coef(xtx.fit::glm_xtx(f, fam, con, table = tab))["x1"]
+              else function() coef(xtx.fit::glm_xtx(f, fam, d))["x1"],
         fixest = function() fx(),
         ref = function() coef(fx(fixef.tol = 1e-11, fixef.iter = 1e5, glm.tol = 1e-11, glm.iter = 100))["x1"],
         ref_name = "fixest", remote = remote)
@@ -135,8 +135,8 @@ case_lm_nofe <- function(remote = FALSE, compress = "auto", formula = f_nofe) fu
     tab <- if (remote) remote_table(d)
     list(
         setup = function() if (remote) options(xtx.remote_compress = compress),
-        fit = if (remote) function() coef(xtx::design_lm(formula, con, table = tab))
-              else function() coef(xtx::design_lm(formula, d, compress = compress)),
+        fit = if (remote) function() coef(xtx.fit::lm_xtx(formula, con, table = tab))
+              else function() coef(xtx.fit::lm_xtx(formula, d, compress = compress)),
         fixest = function() fixest::feols(formula, d, vcov = "iid", notes = FALSE),
         ref = function() coef(stats::lm(formula, d)),
         ref_name = "lm", remote = remote)
@@ -146,8 +146,8 @@ case_glm_nofe <- function(remote = FALSE) function(n) {
     d <- factor_dgp(n)
     tab <- if (remote) remote_table(d)
     list(
-        fit = if (remote) function() coef(xtx::design_glm(f_nofe_bin, stats::binomial(), con, table = tab))
-              else function() coef(xtx::design_glm(f_nofe_bin, stats::binomial(), d)),
+        fit = if (remote) function() coef(xtx.fit::glm_xtx(f_nofe_bin, stats::binomial(), con, table = tab))
+              else function() coef(xtx.fit::glm_xtx(f_nofe_bin, stats::binomial(), d)),
         fixest = function() fixest::feglm(f_nofe_bin, d, family = "logit", vcov = "iid", notes = FALSE),
         ref = function() coef(stats::glm(f_nofe_bin, stats::binomial(), d,
                                          control = list(epsilon = 1e-12, maxit = 100))),

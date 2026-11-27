@@ -23,7 +23,7 @@ res$fe <- factor(ifelse(res$nfe == 2, "indiv + year", "indiv + year + firm"),
                  c("indiv + year", "indiv + year + firm"))
 res$regressors <- factor(paste(res$k, ifelse(res$k == 1, "regressor", "regressors")),
                          paste(sort(unique(res$k)), ifelse(sort(unique(res$k)) == 1, "regressor", "regressors")))
-pkgs <- c("design_lm" = "#18756d", "design_lm (DuckDB)" = "#7fbfb3",
+pkgs <- c("lm_xtx" = "#18756d", "lm_xtx (DuckDB)" = "#7fbfb3",
           "feols" = "#ad481e", "dbreg (DuckDB)" = "#c79a2c")
 # (lfe::felm() was dropped from the benchmark: older result files list it)
 res <- res[res$package %in% names(pkgs), ]
@@ -82,7 +82,7 @@ scale_machine <- if (file.exists("results/fixed_effects_scale_machine.txt")) rea
 
 #title()
 
-How fast is `design_lm()` with fixed effects, compared with the other R packages that fit linear models with high-dimensional fixed effects? This page replicates the fixed-effects OLS benchmark of #link("https://github.com/py-econometrics/pyfixest")[pyfixest], itself adapted from Kyle Butts' #link("https://github.com/kylebutts/fixest_benchmarks")[fixest_benchmarks], for R packages only.
+How fast is `lm_xtx()` with fixed effects, compared with the other R packages that fit linear models with high-dimensional fixed effects? This page replicates the fixed-effects OLS benchmark of #link("https://github.com/py-econometrics/pyfixest")[pyfixest], itself adapted from Kyle Butts' #link("https://github.com/kylebutts/fixest_benchmarks")[fixest_benchmarks], for R packages only.
 
 #calepin.chunk(echo: false, results: "typst")[
 ```r
@@ -104,7 +104,7 @@ Each design is fitted with two sets of fixed effects, `y ~ x1 + ... + xk | indiv
 
 The packages:
 
-- `design_lm()`: on a data frame, and on the same data read by DuckDB from the Parquet file (`design_lm(f, con, table = "d")`, where `d` is a view on the file).
+- `lm_xtx()` (package `xtx.fit`, on the designs of `xtx`): on a data frame, and on the same data read by DuckDB from the Parquet file (`lm_xtx(f, con, table = "d")`, where `d` is a view on the file).
 - `fixest::feols()`, with `vcov = "iid"`.
 - `dbreg::dbreg()` on the same DuckDB view, with its automatic strategy, which here demeans the data in SQL: in a single pass for two fixed effects (the panel is balanced in individuals and years), by alternating projections for three. Its default limit of 100 alternating projections stops with an error on the difficult design with three fixed effects, so the benchmark raises it to 10,000.
 
@@ -195,7 +195,7 @@ ggplot(x, aes(n, pmax(mem_mb, 0.1), colour = package)) +
 
 = At scale
 
-The simple design with ten regressors and two or three fixed effects, at 10 and 50 million observations, for three fits only: `design_lm()` in memory, `design_lm()` on DuckDB reading the Parquet file, and `feols()`. The protocol is the same, with a time limit of its own, and without reference coefficients.
+The simple design with ten regressors and two or three fixed effects, at 10 and 50 million observations, for three fits only: `lm_xtx()` in memory, `lm_xtx()` on DuckDB reading the Parquet file, and `feols()`. The protocol is the same, with a time limit of its own, and without reference coefficients.
 
 #calepin.chunk(echo: false, results: "typst")[
 ```r
@@ -220,7 +220,7 @@ if (is.null(sc)) {
   fig-width: "100%",
   fig-device-width: 10,
   fig-device-height: 6,
-  fig-alt-text: "Median fitting time and extra peak memory at 10 and 50 million observations, log scales, for design_lm in memory, design_lm on DuckDB and feols, with two and three fixed effects (columns).",
+  fig-alt-text: "Median fitting time and extra peak memory at 10 and 50 million observations, log scales, for lm_xtx in memory, lm_xtx on DuckDB and feols, with two and three fixed effects (columns).",
 )[
 ```r
 # No figure until the at-scale grid has run
@@ -311,11 +311,11 @@ if (!"feols" %in% present && length(ref_notes)) cat("Reference fits missing: ", 
 
 These comments describe the provisional run, up to 100,000 observations; they will be revised with the full grid.
 
-- *In memory, easy cases: a tie, or `feols()` ahead.* With two fixed effects, or three on the simple design, both in-memory packages fit 100,000 rows in a few hundredths of a second. With one regressor, `feols()` is about twice as fast as `design_lm()` (13 against 25 ms with two fixed effects); with ten regressors they are within 20% of each other, `design_lm()` slightly ahead.
-- *In memory, the difficult design with three fixed effects: `design_lm()` ahead.* When individuals change firms every year, demeaning by alternating projections converges slowly. `design_lm()` solves for the fixed effects directly (eliminating the individual effects exactly and solving a small system for the others), so its time hardly depends on the design: at 100,000 rows with ten regressors it takes 61 ms, against 0.9 s for `feols()`.
-- *Memory.* The extra memory of `design_lm()` is about 25 to 30 MB at 100,000 rows, whatever the number of regressors, since it never forms the demeaned regressors; `feols()` uses less with one regressor (11 MB) and more with ten (39 MB).
-- *On DuckDB.* `design_lm()` on a DuckDB table has a fixed cost of 0.3 to 1 second (several SQL queries) that dominates at these sizes, so it is much slower than in memory. `dbreg()` is faster with two fixed effects, where a single demeaning pass is exact on this balanced panel; with three, it iterates alternating projections in SQL, which is slower than `design_lm()` at 100,000 rows on the simple design, and on the difficult design did not converge within 10,000 iterations at 100,000 rows (after about 15 minutes).
-- *Accuracy.* `design_lm()`, in memory and on DuckDB, and `dbreg()` agree with the tight-tolerance `feols()` coefficients to about $10^(-14)$. `feols()` at its default tolerance differs by up to $2 times 10^(-10)$, on the difficult design with three fixed effects.
+- *In memory, easy cases: a tie, or `feols()` ahead.* With two fixed effects, or three on the simple design, both in-memory packages fit 100,000 rows in a few hundredths of a second. With one regressor, `feols()` is about twice as fast as `lm_xtx()` (13 against 25 ms with two fixed effects); with ten regressors they are within 20% of each other, `lm_xtx()` slightly ahead.
+- *In memory, the difficult design with three fixed effects: `lm_xtx()` ahead.* When individuals change firms every year, demeaning by alternating projections converges slowly. `lm_xtx()` solves for the fixed effects directly (eliminating the individual effects exactly and solving a small system for the others), so its time hardly depends on the design: at 100,000 rows with ten regressors it takes 61 ms, against 0.9 s for `feols()`.
+- *Memory.* The extra memory of `lm_xtx()` is about 25 to 30 MB at 100,000 rows, whatever the number of regressors, since it never forms the demeaned regressors; `feols()` uses less with one regressor (11 MB) and more with ten (39 MB).
+- *On DuckDB.* `lm_xtx()` on a DuckDB table has a fixed cost of 0.3 to 1 second (several SQL queries) that dominates at these sizes, so it is much slower than in memory. `dbreg()` is faster with two fixed effects, where a single demeaning pass is exact on this balanced panel; with three, it iterates alternating projections in SQL, which is slower than `lm_xtx()` at 100,000 rows on the simple design, and on the difficult design did not converge within 10,000 iterations at 100,000 rows (after about 15 minutes).
+- *Accuracy.* `lm_xtx()`, in memory and on DuckDB, and `dbreg()` agree with the tight-tolerance `feols()` coefficients to about $10^(-14)$. `feols()` at its default tolerance differs by up to $2 times 10^(-10)$, on the difficult design with three fixed effects.
 
 = Code
 

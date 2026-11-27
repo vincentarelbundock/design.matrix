@@ -1,9 +1,10 @@
 ## Remote (DuckDB) auto-compression: compressed vs uncompressed products and
 ## fits (kata design.matrix#8jp3). Base R + DBI + duckdb + bench + xtx.
 ##
-## Run from the package root, with the package installed in a private
-## library:
+## Run from the package root, with the package and xtx.fit (the fits)
+## installed in a private library:
 ##   R CMD INSTALL -l .rlib .
+##   R_LIBS=$PWD/.rlib R CMD INSTALL -l .rlib ../xtx.fit
 ##   R_LIBS=$PWD/.rlib Rscript bench/compression/run.R [grid]
 ## grid: "small" (n = 1e5, 1e6), "medium" (+ 5e6; default), "full" (+ 5e7).
 ## Environment overrides: BENCH_N (comma-separated), BENCH_RATIOS,
@@ -45,6 +46,7 @@ suppressMessages({
     library(DBI)
     library(duckdb)
     library(xtx)
+    library(xtx.fit)
 })
 
 args <- commandArgs(trailingOnly = TRUE)
@@ -161,10 +163,10 @@ op_fun <- function(con, op, dat, D, mode) {
     f <- switch(op,
         crossprod = function() crossprod(D),
         colSums_group = function() colSums(D, group = "g"),
-        lm = function() design_lm(fo, con, table = "d", compress = mode),
-        wlm = function() design_lm(fo, con, table = "d", weights = "w", compress = mode),
-        glm = function() suppressWarnings(design_glm(fob, binomial, con, table = "d", compress = mode)),
-        fe = function() design_lm(stats::as.formula(dat$fe), con, table = "d", compress = mode))
+        lm = function() lm_xtx(fo, con, table = "d", compress = mode),
+        wlm = function() lm_xtx(fo, con, table = "d", weights = "w", compress = mode),
+        glm = function() suppressWarnings(glm_xtx(fob, binomial, con, table = "d", compress = mode)),
+        fe = function() lm_xtx(stats::as.formula(dat$fe), con, table = "d", compress = mode))
     ## (the products follow the option; FE fits are never compressed, so
     ## the option is "auto" for them as for the package default)
     opt <- if (op == "fe") "auto" else mode

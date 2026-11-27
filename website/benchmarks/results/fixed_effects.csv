@@ -1,10 +1,10 @@
 "package","dgp","n","nfe","k","seconds","reps","mem_mb","max_coef_diff","status","provisional"
-"design_lm","simple",1000,2,1,0.007,3,1.8,4.44e-16,"ok",TRUE
-"design_lm","simple",10000,2,1,0.006,3,1.9,7.77e-16,"ok",TRUE
-"design_lm","simple",1e+05,2,1,0.026,3,28.4,7.33e-15,"ok",TRUE
-"design_lm (DuckDB)","simple",1000,2,1,0.33,3,8.7,4.44e-16,"ok",TRUE
-"design_lm (DuckDB)","simple",10000,2,1,0.347,3,10.3,6.66e-16,"ok",TRUE
-"design_lm (DuckDB)","simple",1e+05,2,1,0.47,3,22.6,7.33e-15,"ok",TRUE
+"lm_xtx","simple",1000,2,1,0.007,3,1.8,4.44e-16,"ok",TRUE
+"lm_xtx","simple",10000,2,1,0.006,3,1.9,7.77e-16,"ok",TRUE
+"lm_xtx","simple",1e+05,2,1,0.026,3,28.4,7.33e-15,"ok",TRUE
+"lm_xtx (DuckDB)","simple",1000,2,1,0.33,3,8.7,4.44e-16,"ok",TRUE
+"lm_xtx (DuckDB)","simple",10000,2,1,0.347,3,10.3,6.66e-16,"ok",TRUE
+"lm_xtx (DuckDB)","simple",1e+05,2,1,0.47,3,22.6,7.33e-15,"ok",TRUE
 "feols","simple",1000,2,1,0.006,3,1.7,0,"ok",TRUE
 "feols","simple",10000,2,1,0.008,3,1.6,0,"ok",TRUE
 "feols","simple",1e+05,2,1,0.013,3,11.2,0,"ok",TRUE
@@ -14,12 +14,12 @@
 "dbreg (DuckDB)","simple",1000,2,1,0.019,3,4.9,6.66e-16,"ok",TRUE
 "dbreg (DuckDB)","simple",10000,2,1,0.023,3,5.1,1.33e-15,"ok",TRUE
 "dbreg (DuckDB)","simple",1e+05,2,1,0.041,3,13,1.89e-14,"ok",TRUE
-"design_lm","simple",1000,2,10,0.006,3,1.9,6.66e-16,"ok",TRUE
-"design_lm","simple",10000,2,10,0.009,3,1.9,2.66e-15,"ok",TRUE
-"design_lm","simple",1e+05,2,10,0.045,3,24.5,1.43e-14,"ok",TRUE
-"design_lm (DuckDB)","simple",1000,2,10,0.619,3,9.6,6.66e-16,"ok",TRUE
-"design_lm (DuckDB)","simple",10000,2,10,0.666,3,10.3,2.66e-15,"ok",TRUE
-"design_lm (DuckDB)","simple",1e+05,2,10,0.89,3,30.8,1.43e-14,"ok",TRUE
+"lm_xtx","simple",1000,2,10,0.006,3,1.9,6.66e-16,"ok",TRUE
+"lm_xtx","simple",10000,2,10,0.009,3,1.9,2.66e-15,"ok",TRUE
+"lm_xtx","simple",1e+05,2,10,0.045,3,24.5,1.43e-14,"ok",TRUE
+"lm_xtx (DuckDB)","simple",1000,2,10,0.619,3,9.6,6.66e-16,"ok",TRUE
+"lm_xtx (DuckDB)","simple",10000,2,10,0.666,3,10.3,2.66e-15,"ok",TRUE
+"lm_xtx (DuckDB)","simple",1e+05,2,10,0.89,3,30.8,1.43e-14,"ok",TRUE
 "feols","simple",1000,2,10,0.007,3,2.1,0,"ok",TRUE
 "feols","simple",10000,2,10,0.011,3,5.3,0,"ok",TRUE
 "feols","simple",1e+05,2,10,0.054,3,39.1,0,"ok",TRUE
@@ -29,12 +29,12 @@
 "dbreg (DuckDB)","simple",1000,2,10,0.048,3,7,2.22e-16,"ok",TRUE
 "dbreg (DuckDB)","simple",10000,2,10,0.054,3,8.7,2.64e-16,"ok",TRUE
 "dbreg (DuckDB)","simple",1e+05,2,10,0.098,3,22.9,3.89e-16,"ok",TRUE
-"design_lm","simple",1000,3,1,0.006,3,1.9,4.44e-16,"ok",TRUE
-"design_lm","simple",10000,3,1,0.01,3,1.9,2.44e-15,"ok",TRUE
-"design_lm","simple",1e+05,3,1,0.037,3,29.3,7.77e-16,"ok",TRUE
-"design_lm (DuckDB)","simple",1000,3,1,0.485,3,9.2,4.44e-16,"ok",TRUE
-"design_lm (DuckDB)","simple",10000,3,1,0.52,3,9.7,2.44e-15,"ok",TRUE
-"design_lm (DuckDB)","simple",1e+05,3,1,0.608,3,37.3,7.77e-16,"ok",TRUE
+"lm_xtx","simple",1000,3,1,0.006,3,1.9,4.44e-16,"ok",TRUE
+"lm_xtx","simple",10000,3,1,0.01,3,1.9,2.44e-15,"ok",TRUE
+"lm_xtx","simple",1e+05,3,1,0.037,3,29.3,7.77e-16,"ok",TRUE
+"lm_xtx (DuckDB)","simple",1000,3,1,0.485,3,9.2,4.44e-16,"ok",TRUE
+"lm_xtx (DuckDB)","simple",10000,3,1,0.52,3,9.7,2.44e-15,"ok",TRUE
+"lm_xtx (DuckDB)","simple",1e+05,3,1,0.608,3,37.3,7.77e-16,"ok",TRUE
 "feols","simple",1000,3,1,0.006,3,1.6,0,"ok",TRUE
 "feols","simple",10000,3,1,0.007,3,1.6,5.77e-15,"ok",TRUE
 "feols","simple",1e+05,3,1,0.019,3,12.4,5.66e-15,"ok",TRUE
@@ -44,12 +44,12 @@
 "dbreg (DuckDB)","simple",1000,3,1,0.282,3,5.3,0,"ok",TRUE
 "dbreg (DuckDB)","simple",10000,3,1,0.365,3,5.1,1.11e-15,"ok",TRUE
 "dbreg (DuckDB)","simple",1e+05,3,1,0.754,3,12.7,3.44e-15,"ok",TRUE
-"design_lm","simple",1000,3,10,0.009,3,1.9,7.77e-16,"ok",TRUE
-"design_lm","simple",10000,3,10,0.022,3,2,2.89e-15,"ok",TRUE
-"design_lm","simple",1e+05,3,10,0.061,3,29.1,7.66e-15,"ok",TRUE
-"design_lm (DuckDB)","simple",1000,3,10,0.858,3,9.1,7.77e-16,"ok",TRUE
-"design_lm (DuckDB)","simple",10000,3,10,0.69,3,10.9,2.89e-15,"ok",TRUE
-"design_lm (DuckDB)","simple",1e+05,3,10,0.869,3,53,7.66e-15,"ok",TRUE
+"lm_xtx","simple",1000,3,10,0.009,3,1.9,7.77e-16,"ok",TRUE
+"lm_xtx","simple",10000,3,10,0.022,3,2,2.89e-15,"ok",TRUE
+"lm_xtx","simple",1e+05,3,10,0.061,3,29.1,7.66e-15,"ok",TRUE
+"lm_xtx (DuckDB)","simple",1000,3,10,0.858,3,9.1,7.77e-16,"ok",TRUE
+"lm_xtx (DuckDB)","simple",10000,3,10,0.69,3,10.9,2.89e-15,"ok",TRUE
+"lm_xtx (DuckDB)","simple",1e+05,3,10,0.869,3,53,7.66e-15,"ok",TRUE
 "feols","simple",1000,3,10,0.006,3,2.1,3.61e-15,"ok",TRUE
 "feols","simple",10000,3,10,0.012,3,5.2,3.33e-15,"ok",TRUE
 "feols","simple",1e+05,3,10,0.07,3,39.9,1.04e-14,"ok",TRUE
@@ -59,12 +59,12 @@
 "dbreg (DuckDB)","simple",1000,3,10,0.458,3,8.1,7.22e-16,"ok",TRUE
 "dbreg (DuckDB)","simple",10000,3,10,0.587,3,11,5.33e-15,"ok",TRUE
 "dbreg (DuckDB)","simple",1e+05,3,10,1.36,3,42.4,9.88e-15,"ok",TRUE
-"design_lm","difficult",1000,2,1,0.004,3,1.8,1.33e-15,"ok",TRUE
-"design_lm","difficult",10000,2,1,0.006,3,1.8,8.88e-16,"ok",TRUE
-"design_lm","difficult",1e+05,2,1,0.024,3,28.1,5.11e-15,"ok",TRUE
-"design_lm (DuckDB)","difficult",1000,2,1,0.292,3,9,1.33e-15,"ok",TRUE
-"design_lm (DuckDB)","difficult",10000,2,1,0.315,3,10.2,8.88e-16,"ok",TRUE
-"design_lm (DuckDB)","difficult",1e+05,2,1,0.365,3,22.6,5.11e-15,"ok",TRUE
+"lm_xtx","difficult",1000,2,1,0.004,3,1.8,1.33e-15,"ok",TRUE
+"lm_xtx","difficult",10000,2,1,0.006,3,1.8,8.88e-16,"ok",TRUE
+"lm_xtx","difficult",1e+05,2,1,0.024,3,28.1,5.11e-15,"ok",TRUE
+"lm_xtx (DuckDB)","difficult",1000,2,1,0.292,3,9,1.33e-15,"ok",TRUE
+"lm_xtx (DuckDB)","difficult",10000,2,1,0.315,3,10.2,8.88e-16,"ok",TRUE
+"lm_xtx (DuckDB)","difficult",1e+05,2,1,0.365,3,22.6,5.11e-15,"ok",TRUE
 "feols","difficult",1000,2,1,0.006,3,1.6,0,"ok",TRUE
 "feols","difficult",10000,2,1,0.006,3,1.7,0,"ok",TRUE
 "feols","difficult",1e+05,2,1,0.013,3,11.1,0,"ok",TRUE
@@ -74,12 +74,12 @@
 "dbreg (DuckDB)","difficult",1000,2,1,0.021,3,4.8,1.78e-15,"ok",TRUE
 "dbreg (DuckDB)","difficult",10000,2,1,0.023,3,5.1,6.11e-15,"ok",TRUE
 "dbreg (DuckDB)","difficult",1e+05,2,1,0.034,3,13,7.33e-15,"ok",TRUE
-"design_lm","difficult",1000,2,10,0.006,3,1.9,9.99e-16,"ok",TRUE
-"design_lm","difficult",10000,2,10,0.01,3,1.9,3.44e-15,"ok",TRUE
-"design_lm","difficult",1e+05,2,10,0.046,3,24.5,8.88e-15,"ok",TRUE
-"design_lm (DuckDB)","difficult",1000,2,10,0.5,3,9.5,9.99e-16,"ok",TRUE
-"design_lm (DuckDB)","difficult",10000,2,10,0.563,3,11.9,3.44e-15,"ok",TRUE
-"design_lm (DuckDB)","difficult",1e+05,2,10,0.725,3,33.1,8.88e-15,"ok",TRUE
+"lm_xtx","difficult",1000,2,10,0.006,3,1.9,9.99e-16,"ok",TRUE
+"lm_xtx","difficult",10000,2,10,0.01,3,1.9,3.44e-15,"ok",TRUE
+"lm_xtx","difficult",1e+05,2,10,0.046,3,24.5,8.88e-15,"ok",TRUE
+"lm_xtx (DuckDB)","difficult",1000,2,10,0.5,3,9.5,9.99e-16,"ok",TRUE
+"lm_xtx (DuckDB)","difficult",10000,2,10,0.563,3,11.9,3.44e-15,"ok",TRUE
+"lm_xtx (DuckDB)","difficult",1e+05,2,10,0.725,3,33.1,8.88e-15,"ok",TRUE
 "feols","difficult",1000,2,10,0.006,3,2.1,0,"ok",TRUE
 "feols","difficult",10000,2,10,0.01,3,5.2,0,"ok",TRUE
 "feols","difficult",1e+05,2,10,0.049,3,39.1,0,"ok",TRUE
@@ -89,12 +89,12 @@
 "dbreg (DuckDB)","difficult",1000,2,10,0.05,3,7.3,2.22e-16,"ok",TRUE
 "dbreg (DuckDB)","difficult",10000,2,10,0.052,3,8.6,2.22e-16,"ok",TRUE
 "dbreg (DuckDB)","difficult",1e+05,2,10,0.098,3,22.4,5e-16,"ok",TRUE
-"design_lm","difficult",1000,3,1,0.007,3,1.9,4.44e-16,"ok",TRUE
-"design_lm","difficult",10000,3,1,0.008,3,1.9,2.22e-16,"ok",TRUE
-"design_lm","difficult",1e+05,3,1,0.034,3,29,4.44e-16,"ok",TRUE
-"design_lm (DuckDB)","difficult",1000,3,1,0.474,3,9.2,4.44e-16,"ok",TRUE
-"design_lm (DuckDB)","difficult",10000,3,1,0.505,3,9.7,2.22e-16,"ok",TRUE
-"design_lm (DuckDB)","difficult",1e+05,3,1,0.594,3,34.9,6.66e-16,"ok",TRUE
+"lm_xtx","difficult",1000,3,1,0.007,3,1.9,4.44e-16,"ok",TRUE
+"lm_xtx","difficult",10000,3,1,0.008,3,1.9,2.22e-16,"ok",TRUE
+"lm_xtx","difficult",1e+05,3,1,0.034,3,29,4.44e-16,"ok",TRUE
+"lm_xtx (DuckDB)","difficult",1000,3,1,0.474,3,9.2,4.44e-16,"ok",TRUE
+"lm_xtx (DuckDB)","difficult",10000,3,1,0.505,3,9.7,2.22e-16,"ok",TRUE
+"lm_xtx (DuckDB)","difficult",1e+05,3,1,0.594,3,34.9,6.66e-16,"ok",TRUE
 "feols","difficult",1000,3,1,0.005,3,1.6,0,"ok",TRUE
 "feols","difficult",10000,3,1,0.008,3,2.2,2.4e-13,"ok",TRUE
 "feols","difficult",1e+05,3,1,0.136,3,12.4,2.97e-11,"ok",TRUE
@@ -104,12 +104,12 @@
 "dbreg (DuckDB)","difficult",1000,3,1,0.185,3,5.3,6.66e-16,"ok",TRUE
 "dbreg (DuckDB)","difficult",10000,3,1,3.035,3,7,5.11e-15,"ok",TRUE
 "dbreg (DuckDB)","difficult",1e+05,3,1,NA,NA,NA,NA,"error",TRUE
-"design_lm","difficult",1000,3,10,0.009,3,1.9,1.44e-15,"ok",TRUE
-"design_lm","difficult",10000,3,10,0.011,3,1.9,2.22e-15,"ok",TRUE
-"design_lm","difficult",1e+05,3,10,0.061,3,28.3,4.88e-15,"ok",TRUE
-"design_lm (DuckDB)","difficult",1000,3,10,0.692,3,9.1,1.55e-15,"ok",TRUE
-"design_lm (DuckDB)","difficult",10000,3,10,0.816,3,10.8,2.22e-15,"ok",TRUE
-"design_lm (DuckDB)","difficult",1e+05,3,10,1.084,3,49,5.11e-15,"ok",TRUE
+"lm_xtx","difficult",1000,3,10,0.009,3,1.9,1.44e-15,"ok",TRUE
+"lm_xtx","difficult",10000,3,10,0.011,3,1.9,2.22e-15,"ok",TRUE
+"lm_xtx","difficult",1e+05,3,10,0.061,3,28.3,4.88e-15,"ok",TRUE
+"lm_xtx (DuckDB)","difficult",1000,3,10,0.692,3,9.1,1.55e-15,"ok",TRUE
+"lm_xtx (DuckDB)","difficult",10000,3,10,0.816,3,10.8,2.22e-15,"ok",TRUE
+"lm_xtx (DuckDB)","difficult",1e+05,3,10,1.084,3,49,5.11e-15,"ok",TRUE
 "feols","difficult",1000,3,10,0.007,3,2.1,0,"ok",TRUE
 "feols","difficult",10000,3,10,0.019,3,5.2,2.78e-13,"ok",TRUE
 "feols","difficult",1e+05,3,10,0.885,3,39.6,1.77e-10,"ok",TRUE

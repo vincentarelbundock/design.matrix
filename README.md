@@ -4,6 +4,8 @@
 
 The `xtx` package builds model matrices that are identical, bit for bit, to those returned by `stats::model.matrix()`. Its main benefit comes when the dense model matrix is only an intermediate input to something else: least squares coefficients need `X'X` and `X'y`, predictions multiply it by a vector of coefficients, their standard errors need a quadratic form, and cluster-robust variances need weighted sums of its rows by group. `xtx` computes these results directly from the factor codes and numeric variables, without materializing the dense matrix, which often saves an order of magnitude or more in both time and memory.
 
+Linear and generalized linear models (with or without fixed effects) fitted on these designs are in the companion package [xtx.fit](https://github.com/vincentarelbundock/xtx.fit): `lm_xtx()` and `glm_xtx()`.
+
 **Documentation, benchmarks and recipes: <https://vincentarelbundock.github.io/xtx>**
 
 ## Installation

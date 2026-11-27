@@ -1,5 +1,6 @@
-# Fixed-effects OLS: design_lm() against other R packages, after the
+# Fixed-effects OLS: lm_xtx() against other R packages, after the
 # benchmark of pyfixest (itself adapted from Kyle Butts' fixest_benchmarks).
+# lm_xtx() is in the package xtx.fit, which must be installed (with xtx).
 # The full run is one command, pinned to one core:
 #
 #   taskset -c 2 Rscript website/benchmarks/run.R fixed_effects
@@ -7,8 +8,8 @@
 # Two grids:
 # * main (results/fixed_effects.csv): every package, both designs, two and
 #   three fixed effects, k = 1, 5, 10 regressors, n = 1e3 to 1e6;
-# * at scale (results/fixed_effects_scale.csv): design_lm() in memory,
-#   design_lm() on DuckDB reading the Parquet file, and feols(); simple
+# * at scale (results/fixed_effects_scale.csv): lm_xtx() in memory,
+#   lm_xtx() on DuckDB reading the Parquet file, and feols(); simple
 #   design, k = 10, two and three fixed effects, n = 1e7 and 5e7, no
 #   reference coefficients. Memory: the 5e7 dataset is about 5 GB in R
 #   (as much Parquet on disk), and a fit in memory needs two to three times
@@ -46,7 +47,7 @@
 # each fit with it.
 #
 # BENCH_SIZE=quick (make bench-quick) runs a small preset instead: n = 1e3,
-# 1e4, 1e5, k = 1, design_lm and feols, main grid only, marked provisional;
+# 1e4, 1e5, k = 1, lm_xtx and feols, main grid only, marked provisional;
 # run.R then saves the results outside results/ (BENCH_RESULTS). Environment
 # variables also shrink the grid; the results are then marked provisional:
 #
@@ -62,12 +63,12 @@
 full <- list(
     n = c(1e3, 1e4, 1e5, 1e6),
     k = c(1, 5, 10),
-    package = c("design_lm", "design_lm (DuckDB)", "feols", "dbreg (DuckDB)"))
-preset_quick <- list(n = c(1e3, 1e4, 1e5), k = 1, package = c("design_lm", "feols"))
+    package = c("lm_xtx", "lm_xtx (DuckDB)", "feols", "dbreg (DuckDB)"))
+preset_quick <- list(n = c(1e3, 1e4, 1e5), k = 1, package = c("lm_xtx", "feols"))
 scale <- list(
     n = c(1e7, 5e7),
     k = 10,
-    package = c("design_lm", "design_lm (DuckDB)", "feols"))
+    package = c("lm_xtx", "lm_xtx (DuckDB)", "feols"))
 # Cells known not to converge (package = designs): stopped after
 # FE_BENCH_KILL_SHORT seconds
 kill_short <- list("dbreg (DuckDB)" = "difficult")
@@ -215,7 +216,7 @@ coef_diff <- function(b, r) {
     signif(max(abs(split_num(b) - split_num(r))), 3)
 }
 
-deps <- list("design_lm" = "xtx", "design_lm (DuckDB)" = c("xtx", "duckdb"),
+deps <- list("lm_xtx" = c("xtx", "xtx.fit"), "lm_xtx (DuckDB)" = c("xtx", "xtx.fit", "duckdb"),
              "feols" = "fixest", "dbreg (DuckDB)" = c("dbreg", "duckdb"))
 cpu <- tryCatch(trimws(sub(".*:", "", grep("^model name", readLines("/proc/cpuinfo"), value = TRUE)[1])),
                 error = function(e) "unknown")

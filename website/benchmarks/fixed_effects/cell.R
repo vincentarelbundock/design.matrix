@@ -27,7 +27,7 @@ xs <- paste0("x", seq_len(k))
 f <- fe_formula(k, nfe)
 
 # The data: DuckDB runs on one thread, as every package below
-remote <- package %in% c("design_lm (DuckDB)", "dbreg (DuckDB)")
+remote <- package %in% c("lm_xtx (DuckDB)", "dbreg (DuckDB)")
 if (remote) {
     # A view, so that every query reads the Parquet file: the rows are never
     # loaded into the database or into R
@@ -44,9 +44,10 @@ if (remote) {
 
 # Every package on one thread
 suppressPackageStartupMessages(switch(package,
-    "design_lm" = ,
-    "design_lm (DuckDB)" = {
+    "lm_xtx" = ,
+    "lm_xtx (DuckDB)" = {
         library(xtx)
+        library(xtx.fit)
         design_threads(1)
     },
     "feols" = {
@@ -63,8 +64,8 @@ suppressPackageStartupMessages(switch(package,
     stop("unknown package: ", package)))
 
 fit <- switch(package,
-    "design_lm" = function() design_lm(f, d),
-    "design_lm (DuckDB)" = function() design_lm(f, con, table = "d"),
+    "lm_xtx" = function() lm_xtx(f, d),
+    "lm_xtx (DuckDB)" = function() lm_xtx(f, con, table = "d"),
     "feols" = function() feols(f, d, vcov = "iid", notes = FALSE),
     "dbreg (DuckDB)" = function() dbreg(f, conn = con, table = "d", vcov = "iid"))
 

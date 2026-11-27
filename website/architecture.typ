@@ -30,11 +30,11 @@ Three choices follow from this, and the rest of the page describes them:
   [Kernels], [Products with the design from codes and numbers], [`src/kernels.c`, `src/structured.c`, `R/algebra.R`],
   [Primitives], [Operations on designs and columns, in memory and remote; the public column type], [`R/primitives.R`, `R/primitives_lookup.R`, `R/column.R`, `R/columns_public.R`],
   [Fitting layers], [Least squares, the input stage, GLM families on columns, the fixed-effects estimator], [`R/qr.R`, `R/wls.R`, `R/problem.R`, `R/family.R`, `R/absorb.R`, `src/fe.c`, `src/fused.c`],
-  [Fits], [`design_lm()`, `design_glm()`: IRLS, checks, covariances, methods (exports only)], [`R/lm.R`, `R/glm.R`, `R/fe.R`, `R/fe_glm.R`, `R/remote_fit.R`, `R/checks.R`, `R/na_action.R`],
-  [Remote], [Designs over DuckDB tables, queries and Parquet files], [`R/remote.R`, `R/remote_sql.R`, `R/remote_fit.R`, `R/remote_compress.R`],
+  [Fits (package `xtx.fit`)], [`lm_xtx()`, `glm_xtx()`: IRLS, checks, covariances, methods (exports of `xtx` only)], [`xtx.fit`: `R/lm.R`, `R/glm.R`, `R/fe.R`, `R/fe_glm.R`, `R/remote_fit.R`, `R/checks.R`, `R/na_action.R`],
+  [Remote], [Designs over DuckDB tables, queries and Parquet files], [`R/remote.R`, `R/remote_sql.R`, `R/remote_compress.R`],
 )
 
-Each layer uses only the ones above it in the table. The fits do not know which backend they run on.
+Each layer uses only the ones above it in the table. The fits live in a package of their own, `xtx.fit`, which reaches `xtx` only through its exported functions; they do not know which backend they run on.
 
 = A design is a description
 
@@ -78,7 +78,7 @@ Both can run on several threads (`design_threads()`; as in fixest, the default i
 
 == Patterns
 
-Rows with the same factor codes and the same numeric values give the same design row. When a design has far fewer such patterns than rows, the kernels compute once per pattern and expand, or sum the weights within patterns first (`R/algebra.R`, option `xtx.dedup`). The fits use the same idea as compression: a weighted least squares fit on the patterns, with the sum of the weights and the weighted mean response of each, is the fit on the rows, and the within-pattern sum of squares completes the residual sum of squares (`R/lm.R`). For a GLM, the iterations on the patterns are those on the rows for every supported family (`R/glm.R`). `design_patterns()` exports this compression, in memory and in a database, as one list: the pattern design, the mean response and summed weights of each pattern, and the within-pattern sum of squares (`R/exports.R`).
+Rows with the same factor codes and the same numeric values give the same design row. When a design has far fewer such patterns than rows, the kernels compute once per pattern and expand, or sum the weights within patterns first (`R/algebra.R`, option `xtx.dedup`). The fits use the same idea as compression: a weighted least squares fit on the patterns, with the sum of the weights and the weighted mean response of each, is the fit on the rows, and the within-pattern sum of squares completes the residual sum of squares (`R/lm.R` of `xtx.fit`). For a GLM, the iterations on the patterns are those on the rows for every supported family (`R/glm.R` of `xtx.fit`). `design_patterns()` exports this compression, in memory and in a database, as one list: the pattern design, the mean response and summed weights of each pattern, and the within-pattern sum of squares (`R/exports.R`).
 
 = Least squares
 
@@ -130,7 +130,7 @@ When the data have few design patterns, the scan of the SQL engine also groups b
 
 == The API of the fitting code
 
-The fitting code (`lm.R`, `glm.R`, the fit side of `fe.R`, `fe_glm.R`, `remote_fit.R`, `checks.R`, `na_action.R`) reaches the rest of the package only through exported functions, so that it can live in a package of its own. Besides base generics on designs and columns (`%*%`, arithmetic, `sum()`, `is.na()`, `is.finite()`, `round()`, `log()`, `cbind()`, `x[, j]`, `rowSums()`), it uses (names may change before the first release):
+The fitting code, the package `xtx.fit` (`lm.R`, `glm.R`, `fe.R`, `fe_glm.R`, `remote_fit.R`, `checks.R`, `na_action.R`), reaches `xtx` only through its exported functions. Besides base generics on designs and columns (`%*%`, arithmetic, `sum()`, `is.na()`, `is.finite()`, `round()`, `log()`, `cbind()`, `x[, j]`, `rowSums()`), it uses (names may change before the first release):
 
 #table(
   columns: 2,
@@ -149,15 +149,15 @@ The fitting code (`lm.R`, `glm.R`, the fit side of `fe.R`, `fe_glm.R`, `remote_f
   [`design_absorb_fitted()`, `design_groups(levels =)`], [$X b$ plus the FE values of the rows' levels; groupings of new rows coded against the levels of a fit],
 )
 
-The IRLS loop, the checks and messages of `lm()` and `glm()`, the covariance matrices, the small sample corrections and the methods of the fits stay in the fitting code.
+The IRLS loop, the checks and messages of `lm()` and `glm()`, the covariance matrices, the small sample corrections and the methods of the fits stay in the fitting code, in `xtx.fit`.
 
 = Generalized linear models
 
-`design_glm()` runs the iterations of `glm.fit()` step for step: the same starting values, the same weighted least squares problem at each iteration (`qr()` of the design scaled by the working weights), the same step halving, convergence rule and warnings (`R/glm.R`). The linear predictor, means, working weights and working responses are columns, and the deviance is a sum of a column, so the loop runs unchanged on remote data.
+`glm_xtx()` runs the iterations of `glm.fit()` step for step: the same starting values, the same weighted least squares problem at each iteration (`qr()` of the design scaled by the working weights), the same step halving, convergence rule and warnings (`R/glm.R` of `xtx.fit`). The linear predictor, means, working weights and working responses are columns, and the deviance is a sum of a column, so the loop runs unchanged on remote data.
 
 = Fixed effects
 
-`design_lm(y ~ x | f1 + f2)` absorbs the fixed effects without demeaning (`R/fe.R`, `src/fe.c`). Write the model $y = X b + F a + e$, with $F$ the dummies of the $K$ fixed effects and $W$ the weights. With
+`lm_xtx(y ~ x | f1 + f2)` absorbs the fixed effects without demeaning (`R/absorb.R`, `src/fe.c`; the fit in `R/fe.R` of `xtx.fit`). Write the model $y = X b + F a + e$, with $F$ the dummies of the $K$ fixed effects and $W$ the weights. With
 
 $ S = F' W X, quad s = F' W y, quad K = F' W F, $
 
