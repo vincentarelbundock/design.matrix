@@ -1,5 +1,5 @@
 ## Lookup columns, keys and codes: primitives of the fitting core (see
-## primitives.R for the column conventions), used by fixed effects (fe.R).
+## primitives.R for the column conventions), used by fixed effects (absorb.R).
 ## Each has an in-memory and a remote method; code that calls them does not
 ## branch on the backend.
 ##

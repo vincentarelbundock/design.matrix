@@ -128,7 +128,7 @@ Treat it as read-only: the functions check that the codes are within
 
 The groups are the combinations of key values that occur in the rows of
 the design, sorted as the levels of fixed effects are sorted (as
-\code{\link[=design_lm]{design_lm()}} numbers them): by the first key variable, then the second,
+\code{xtx.fit::lm_xtx()} numbers them): by the first key variable, then the second,
 and so on; numbers in increasing order, strings in the C locale (as
 \code{sort(method = "radix")}: upper case before lower case), \code{FALSE} before
 \code{TRUE}. Logical keys give integer levels \code{0} and \code{1}. Factors in memory

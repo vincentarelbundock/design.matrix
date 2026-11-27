@@ -41,7 +41,7 @@ coefficients), without forming the dense matrix: the factor comes from
 coefficients are refined from the residuals. The same call works on a
 design in memory (columns are numeric vectors) and on a remote design
 (columns are \code{\link[=design_column]{design_column()}}s of it). This is the least squares core of
-\code{\link[=design_lm]{design_lm()}} and of the iterations of \code{\link[=design_glm]{design_glm()}}.
+\code{xtx.fit::lm_xtx()} and of the iterations of \code{xtx.fit::glm_xtx()}.
 }
 \details{
 Names may change before the first release.

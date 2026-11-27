@@ -8,7 +8,7 @@
 #' pattern design, with the summed weights as weights, has the same
 #' coefficients as the fit on every row; its residual sum of squares plus
 #' `within` is the residual sum of squares of the fit on every row. This is
-#' the compression [design_lm()] uses when a design has few distinct rows
+#' the compression `xtx.fit::lm_xtx()` uses when a design has few distinct rows
 #' (factors and discrete numeric variables).
 #'
 #' In memory, the patterns are found from the factor codes and numeric
@@ -47,8 +47,8 @@
 #'   iterates on the patterns, so compression pays sooner). In memory both
 #'   give the same result.
 #' @param check Check the inputs (default). `FALSE` is for callers that
-#'   pass columns of `x` they have already checked, as [design_lm()] and
-#'   [design_glm()] do: `z`, `w` and `keys` are then a numeric vector (or
+#'   pass columns of `x` they have already checked, as `xtx.fit::lm_xtx()` and
+#'   `xtx.fit::glm_xtx()` do: `z`, `w` and `keys` are then a numeric vector (or
 #'   matrix, for `keys`) with one value per row in memory, [design_column()]s
 #'   of `x` remotely, and they are used as given (remotely, without the query
 #'   that checks them). Names may change before the first release.

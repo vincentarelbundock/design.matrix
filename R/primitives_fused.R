@@ -119,7 +119,7 @@ xtx_c_binomial_ll <- function(m, y, w, mu) {
          xtx_c_ifelse(kk > 0, kk * log(mu), 0) + xtx_c_ifelse(mm - kk > 0, (mm - kk) * log(1 - mu), 0))
 }
 
-## ---- fixed effects (fe.R) ----
+## ---- fixed effects (absorb.R) ----
 
 ## Weighted regression moments. Center the response in a separate pass to
 ## retain accuracy when its mean is large relative to its variation.

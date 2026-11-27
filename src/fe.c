@@ -1,5 +1,5 @@
 /*
- *  xtx: kernels for linear models with fixed effects (R/fe.R).
+ *  xtx: kernels for linear models with fixed effects (R/absorb.R).
  *
  *  xtx_fe_gsum():       group sums of the columns of a matrix (codes 1..G);
  *  xtx_fe_crosstabs():  weighted crosstabs of a code vector with others, as
@@ -330,7 +330,7 @@ SEXP xtx_fe_components(SEXP i_, SEXP j_, SEXP Ga_, SEXP Gb_)
 }
 
 /* ------------------------------------------------------------------------
-   Structured grouped sums (see R/fe.R, xtx_fe_moments()).
+   Structured grouped sums (see R/absorb.R, xtx_fe_moments()).
 
    For each fixed effect k with codes c_k (1..G_k), a Q x G_k matrix whose
    column g holds, over the rows i with c_k(i) = g:

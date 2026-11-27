@@ -51,7 +51,7 @@ families: zero).}
 functions of columns: numeric vectors in memory, \code{\link[=design_column]{design_column()}}s of a
 remote design (SQL expressions, evaluated in the database). In memory the
 values are those of R's family object, to the last bit; remotely the same
-arithmetic in SQL. This is how \code{\link[=design_glm]{design_glm()}} runs one IRLS code on both
+arithmetic in SQL. This is how \code{xtx.fit::glm_xtx()} runs one IRLS code on both
 backends.
 }
 \details{

@@ -83,7 +83,7 @@
 #'
 #' A term whose factors have more than about eight million combined
 #' level-column cells is refused; for a factor with many levels, use fixed
-#' effects (`y ~ x | f` in [design_lm()] and [design_glm()]).
+#' effects (`y ~ x | f` in `xtx.fit::lm_xtx()` and `xtx.fit::glm_xtx()`).
 #'
 #' @section Operations:
 #' The operations of a design in memory (see [design_algebra] and
@@ -123,7 +123,7 @@
 #' When the rows have few distinct *design patterns* (the same factor levels
 #' and the same values of the numeric variables of the design, as with
 #' factors and discrete numeric variables), `crossprod()`, `colSums()`,
-#' `colMeans()`, [design_lm()] and [design_glm()] can compress: the one scan
+#' `colMeans()`, `xtx.fit::lm_xtx()` and `xtx.fit::glm_xtx()` can compress: the one scan
 #' of the rows also groups by the numeric variables, which returns each
 #' pattern with its number of rows and the sums of the weights and
 #' responses, and the result is computed from the design of the patterns,
@@ -137,11 +137,11 @@
 #'   threshold is provisional), where compression saves many per-row
 #'   products, and when the patterns are at most 1% of the rows. Other
 #'   designs skip the decision entirely;
-#' * [design_glm()] is compressed when the patterns are at most 20% of the
+#' * `xtx.fit::glm_xtx()` is compressed when the patterns are at most 20% of the
 #'   rows (each IRLS iteration then reads the patterns instead of the rows);
-#' * [design_lm()] without weights is compressed when the patterns are at
+#' * `xtx.fit::lm_xtx()` without weights is compressed when the patterns are at
 #'   most 0.1% of the rows;
-#' * weighted [design_lm()] is compressed only for designs with many numeric
+#' * weighted `xtx.fit::lm_xtx()` is compressed only for designs with many numeric
 #'   columns (as `crossprod()`), when the patterns are at most 0.1% of the
 #'   rows (the sum of squares within the patterns takes a second pass over
 #'   the rows).
@@ -165,8 +165,14 @@
 #' differ from the dense computation, and `NaN` may appear where the dense
 #' result has `NA`.
 #'
+#' @section Fits:
+#' Linear and generalized linear models on remote data, with or without
+#' fixed effects, are in the package 'xtx.fit': `xtx.fit::lm_xtx()` and
+#' `xtx.fit::glm_xtx()`; its help page `remote_fits` describes how they run
+#' on the remote products and how they differ from fits in memory.
+#'
 #' @section Arguments of remote data:
-#' With remote data, [design_matrix()], [design_lm()], [design_glm()] and
+#' With remote data, [design_matrix()], `xtx.fit::lm_xtx()`, `xtx.fit::glm_xtx()` and
 #' `predict()` take, through `...`: `table` or `sql` (the remote rows: a
 #' table name, or a `SELECT` query; not with Parquet paths), `engine`
 #' (`"auto"`, or `"sql"` to refuse variables that must be evaluated in R)

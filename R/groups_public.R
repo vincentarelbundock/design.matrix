@@ -58,7 +58,7 @@
 #' @section Levels and their order:
 #' The groups are the combinations of key values that occur in the rows of
 #' the design, sorted as the levels of fixed effects are sorted (as
-#' [design_lm()] numbers them): by the first key variable, then the second,
+#' `xtx.fit::lm_xtx()` numbers them): by the first key variable, then the second,
 #' and so on; numbers in increasing order, strings in the C locale (as
 #' `sort(method = "radix")`: upper case before lower case), `FALSE` before
 #' `TRUE`. Logical keys give integer levels `0` and `1`. Factors in memory

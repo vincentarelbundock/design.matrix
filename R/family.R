@@ -5,16 +5,17 @@
 
 xtx_glm_link_names <- c("identity", "log", "logit", "probit", "cloglog", "cauchit", "inverse", "sqrt", "1/mu^2")
 
-## What design_glm() supports: the families of stats and quasi() with five
-## variances, and the standard links. Returns the description used by the
-## column functions and the checks.
+## What column_family() supports (and so glm_xtx() of xtx.fit): the
+## families of stats and quasi() with five variances, and the standard
+## links. Returns the description used by the column functions and the
+## checks.
 xtx_glm_kind <- function(family) {
     fam <- family$family
     link <- family$link
     ok_fam <- c("gaussian", "binomial", "poisson", "Gamma", "inverse.gaussian",
                 "quasibinomial", "quasipoisson", "quasi")
     if (!isTRUE(fam %in% ok_fam) || !isTRUE(link %in% xtx_glm_link_names))
-        stop(sprintf("design_glm() supports the families %s and the links %s (family `%s`, link `%s`).",
+        stop(sprintf("column_family() supports the families %s and the links %s (family `%s`, link `%s`).",
                      paste(ok_fam, collapse = ", "), paste(xtx_glm_link_names, collapse = ", "),
                      format(fam), format(link)), call. = FALSE)
     k <- switch(fam,
@@ -31,7 +32,7 @@ xtx_glm_kind <- function(family) {
                                mu = list(devk = "poisson", init = "y01", var = "mu", validmu = "positive_nf"),
                                "mu^2" = list(devk = "qgamma", init = "y01", var = "mu^2", validmu = "positive_nf"),
                                "mu^3" = list(devk = "invgauss", init = "y01", var = "mu^3", validmu = "positive_nf"),
-                               stop(sprintf("design_glm() does not support quasi(variance = \"%s\").", family$varfun),
+                               stop(sprintf("column_family() does not support quasi(variance = \"%s\").", family$varfun),
                                     call. = FALSE)))
     k$family <- fam
     k$link <- link
@@ -50,10 +51,10 @@ xtx_glm_cf <- function(k) {
     ## greatest()/least() remotely, qpr8): eta is never NA or NaN where they
     ## are used. In the fit, eta = X beta + offset over the kept rows, with X,
     ## offset and the coefficients finite (checked: "NA/NaN/Inf in 'x'",
-    ## xtx_glm_checks(), xtx_glm_loop() stops at non-finite coefficients, a
+    ## xf_glm_checks() of xtx.fit, xf_glm_loop() of xtx.fit stops at non-finite coefficients, a
     ## non-finite `start` is refused by xtx_p_mult()); in fitted()
     ## and residuals() it is that of the fit's rows; predict() applies the
-    ## inverse link only where eta is present (xtx_glm_response()). On finite
+    ## inverse link only where eta is present (xf_glm_response() of xtx.fit). On finite
     ## (or infinite) eta, exp(), dnorm(), pnorm() and the like are never NA
     ## or NaN either.
     link <- switch(k$link,
@@ -97,7 +98,7 @@ xtx_glm_cf <- function(k) {
         ## (fast ln where mu > 0 by construction, qpr8: the logit, probit,
         ## cloglog and cauchit links clamp mu into [eps, 1 - eps] (logit:
         ## |eta| <= 30), the log link to mu >= eps; y is finite on the
-        ## fit's rows: xtx_glm_checks())
+        ## fit's rows: xf_glm_checks() of xtx.fit)
         binomial = if (k$link %in% c("logit", "probit", "cloglog", "cauchit"))
                        function(y, m, w) xtx_c_binomial_dev(y, m, w, positive = TRUE) else xtx_c_binomial_dev,
         poisson = if (k$link == "log") function(y, m, w) xtx_c_poisson_dev(y, m, w, positive = TRUE)
@@ -117,7 +118,7 @@ xtx_glm_cf <- function(k) {
         binomial = function(y, w, n, cb) if (cb) (n * y + 0.5) / (n + 1) else (w * y + 0.5) / (w + 1),
         poisson = function(y, w, n, cb) y + 0.1,
         y01 = function(y, w, n, cb) y + 0.1 * xtx_c_count(y == 0),
-        ## (y is finite: xtx_glm_checks(); fast clamps, see the links above)
+        ## (y is finite: xf_glm_checks() of xtx.fit; fast clamps, see the links above)
         clamp = function(y, w, n, cb) xtx_fast_pmax(0.001, xtx_fast_pmin(0.999, y)))
     ## (never NA: each check starts with is.finite() or !is.na(), FALSE where
     ## the value is missing; remotely flagged as never NULL, so that its
@@ -155,7 +156,7 @@ xtx_glm_mu_eta <- function(cf, eta, mu) {
 #' functions of columns: numeric vectors in memory, [design_column()]s of a
 #' remote design (SQL expressions, evaluated in the database). In memory the
 #' values are those of R's family object, to the last bit; remotely the same
-#' arithmetic in SQL. This is how [design_glm()] runs one IRLS code on both
+#' arithmetic in SQL. This is how `xtx.fit::glm_xtx()` runs one IRLS code on both
 #' backends.
 #'
 #' The families of [stats::family] are supported: `binomial`, `poisson`,

@@ -68,7 +68,7 @@ weights, offset and subset) into the design of the rows used and the
 response, weights and offset as columns over those rows: numeric vectors in
 memory, \code{\link[=design_column]{design_column()}}s remotely (expressions with no SQL translation are
 evaluated in R, in batches, into a temporary table). One code path serves
-\code{\link[=design_lm]{design_lm()}}, \code{\link[=design_glm]{design_glm()}} and fits with fixed effects: a fitting
+\code{xtx.fit::lm_xtx()}, \code{xtx.fit::glm_xtx()} and fits with fixed effects: a fitting
 function calls it with its matched call and runs the same code on what it
 returns, whatever the source of the data.
 }

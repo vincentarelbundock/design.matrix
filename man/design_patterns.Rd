@@ -50,8 +50,8 @@ iterates on the patterns, so compression pays sooner). In memory both
 give the same result.}
 
 \item{check}{Check the inputs (default). \code{FALSE} is for callers that
-pass columns of \code{x} they have already checked, as \code{\link[=design_lm]{design_lm()}} and
-\code{\link[=design_glm]{design_glm()}} do: \code{z}, \code{w} and \code{keys} are then a numeric vector (or
+pass columns of \code{x} they have already checked, as \code{xtx.fit::lm_xtx()} and
+\code{xtx.fit::glm_xtx()} do: \code{z}, \code{w} and \code{keys} are then a numeric vector (or
 matrix, for \code{keys}) with one value per row in memory, \code{\link[=design_column]{design_column()}}s
 of \code{x} remotely, and they are used as given (remotely, without the query
 that checks them). Names may change before the first release.}
@@ -87,7 +87,7 @@ around that mean. A weighted least squares fit of the pattern means on the
 pattern design, with the summed weights as weights, has the same
 coefficients as the fit on every row; its residual sum of squares plus
 \code{within} is the residual sum of squares of the fit on every row. This is
-the compression \code{\link[=design_lm]{design_lm()}} uses when a design has few distinct rows
+the compression \code{xtx.fit::lm_xtx()} uses when a design has few distinct rows
 (factors and discrete numeric variables).
 }
 \details{

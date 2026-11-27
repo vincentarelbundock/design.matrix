@@ -178,12 +178,12 @@ SEXP xtx_fe_moments(SEXP z_, SEXP w_)
     return out;
 }
 
-/* The working weights and responses of IRLS (xtx_glm_working_memory() in memory),
+/* The working weights and responses of IRLS (xf_glm_working_memory() of xtx.fit in memory),
    from the prior weights W, eta, mu, the response y, the offset off
    (length 1 or n) and the family's variance v and d mu / d eta me at mu:
    good = W > 0 & me != 0 (NA as R's & gives it), w2 = W me me / v and
    z = (eta - off) + (y - mu) / me where good (0 where not, NA where good
-   is NA), and the counts of the checks of xtx_glm_working_memory(), as its R code
+   is NA), and the counts of the checks of xf_glm_working_memory() (xtx.fit), as its R code
    gives them: W > 0 and v missing, W > 0 and v == 0, W > 0 and me
    missing, good, and rows where w2 or z is not finite.  list(w2, z, counts). */
 SEXP xtx_glm_working(SEXP W_, SEXP eta_, SEXP mu_, SEXP y_, SEXP off_, SEXP v_, SEXP me_)

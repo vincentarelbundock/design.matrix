@@ -11,8 +11,8 @@
 ##
 ##     X'WX = Xc' diag(sum w) Xc,   X'Wy = Xc' (sum w y),   y'Wy = sum w y^2,
 ##
-## exactly (up to rounding). This is the compression of design_lm() (see
-## xtx_fit_suffstats() in lm.R), done in the database.
+## exactly (up to rounding). This is the compression of lm_xtx() (see
+## xtx_fit_suffstats() in wls.R), done in the database.
 ##
 ## Only designs with na.omit are compressed (with na.pass, rows with
 ## missing values put NA where the dense computation does).
@@ -114,13 +114,13 @@ xtx_compress_keys <- function(D) {
 ##    PROVISIONAL (between 2 and 15 is unmeasured): retune it on a quiet
 ##    machine with bench/compression/run.R.
 ##  - the fits (xtx_p_patterns(), xtx_sql_patterns()):
-##    - "glm" (design_glm()): IRLS reads the rows once per iteration
+##    - "glm" (glm_xtx()): IRLS reads the rows once per iteration
 ##      uncompressed, once in all compressed: it gained 2-4x up to ratio
 ##      1e-2, still 1.1-3x at 0.1, and broke even or lost at 0.5. Ratio 0.2;
-##    - "lm" (unweighted design_lm()): one pass either way; compression
+##    - "lm" (unweighted lm_xtx()): one pass either way; compression
 ##      gained a modest 1.2x (2-9x wide) up to 1e-3 and lost at 1e-2 for
 ##      discrete designs at 5e6. Ratio 1e-3;
-##    - "wlm" (weighted design_lm()): the weighted sum of squares within the
+##    - "wlm" (weighted lm_xtx()): the weighted sum of squares within the
 ##      cells takes a second pass, and it lost except for designs with many
 ##      numeric columns (wide: 1.9-7.8x up to 1e-3). Only with at least 8
 ##      numeric columns (the cutoff of "products") at ratio 1e-3.

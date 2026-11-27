@@ -1,5 +1,5 @@
-## Absorbed fixed effects: the estimator of design_lm(y ~ x | fe1 + fe2) and of
-## the weighted least squares steps of design_glm() with fixed effects.
+## Absorbed fixed effects: the estimator of lm_xtx(y ~ x | fe1 + fe2) and of
+## the weighted least squares steps of glm_xtx() with fixed effects.
 ##
 ## Frisch-Waugh-Lovell on aggregates instead of demeaning. Model:
 ## y = X b + F a + e, weights w, F = [F_1 ... F_K] the dummies of K fixed
@@ -105,9 +105,9 @@
 ## little: a warm start for the solver of the reduced system) and the
 ## numbers of iterations. With resid_final = FALSE, the residuals after the
 ## last refinement are not computed (no rss, `we`; for the steps of a GLM,
-## which need them only for the last step: see xtx_fe_glm_estimate()).
+## which need them only for the last step: see xf_fe_glm_estimate() of xtx.fit).
 ## The fit keeps its absorption operator (`absorb`), for the cluster scores
-## (xtx_fe_cluster()).
+## (xf_fe_cluster() of xtx.fit).
 ##
 ## Steps: project (the moments, the FE absorbed) -> pivoted Cholesky ->
 ## solve -> refine (from the residuals) -> degrees of freedom.
@@ -889,8 +889,8 @@ xtx_absorb_codes <- function(groups) {
 
 #' Absorbed fixed effects
 #'
-#' The estimator of linear models with fixed effects (FE) of [design_lm()],
-#' which [design_glm()] also uses for the weighted least squares steps of its
+#' The estimator of linear models with fixed effects (FE) of `xtx.fit::lm_xtx()`,
+#' which `xtx.fit::glm_xtx()` also uses for the weighted least squares steps of its
 #' iterations, from sums over rows (Frisch-Waugh-Lovell on aggregates: the
 #' dummies of the FE are never formed and the rows never demeaned), with one
 #' code path for designs in memory and remote designs.

@@ -77,8 +77,8 @@ residuals) and \code{absorb} (the operator, for \code{absorb$scores()}).
 memory, a \code{\link[=design_column]{design_column()}} remotely).
 }
 \description{
-The estimator of linear models with fixed effects (FE) of \code{\link[=design_lm]{design_lm()}},
-which \code{\link[=design_glm]{design_glm()}} also uses for the weighted least squares steps of its
+The estimator of linear models with fixed effects (FE) of \code{xtx.fit::lm_xtx()},
+which \code{xtx.fit::glm_xtx()} also uses for the weighted least squares steps of its
 iterations, from sums over rows (Frisch-Waugh-Lovell on aggregates: the
 dummies of the FE are never formed and the rows never demeaned), with one
 code path for designs in memory and remote designs.

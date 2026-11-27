@@ -1158,7 +1158,7 @@ xtx_p_quad <- function(x, V) {
 }
 
 ## Compressed least squares (see the header); the in-memory method groups
-## identical rows (lm.R), the remote one is the scan of the SQL engine
+## identical rows (wls.R), the remote one is the scan of the SQL engine
 ## grouped by the cells of the design (remote_compress.R).
 xtx_p_patterns <- function(x, z, w = NULL, compress = "auto", keys = NULL, fit = "lm") {
     if (inherits(x, "xtx_remote")) {
@@ -1550,7 +1550,7 @@ xtx_gsums_memory <- function(D, w, groups, extra = NULL, pairs = list()) {
     list(gs = gs, ct = ct)
 }
 
-## The sums of a fit with fixed effects (fe.R): the grouped sums of
+## The sums of a fit with fixed effects (absorb.R): the grouped sums of
 ## xtx_p_colsums_groups(w * x, groups, extra) (x unscaled, w NULL for 1) and
 ## the crosstabs t(xtx_p_crosstab(groups[[b]], groups[[a]], w)) (G_a x G_b
 ## sums of w, transposed) for each pair c(a, b) of `pairs`: list(gs, ct).

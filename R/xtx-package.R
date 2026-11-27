@@ -18,6 +18,12 @@
 ##   C         dm_* entry points -> xtx_*, DM_* macros -> XTX_*, dm.h -> xtx.h
 ##   options   design.matrix.* -> xtx.*; environment DESIGN_MATRIX_* -> XTX_*
 ##   DuckDB    temporary names __dm_* -> __xtx_*, dm_* macros/tables -> xtx_*
+##
+## The fits (design_lm(), design_glm(), their methods, checks and
+## na.action) then moved to the package xtx.fit (Kata design.matrix#fvvj):
+## lm_xtx(), glm_xtx(), internals xf_* (xtx_fit_* -> xf_*, other xtx_*
+## of the fit files -> xf_*); the classes xtx_lm, xtx_glm, xtx_lm_fe and
+## xtx_glm_fe are defined there.
 
 #' xtx: Exact and Fast Model Matrices
 #'

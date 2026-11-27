@@ -54,7 +54,7 @@ xtx_fit_suffstats <- function(z, w, map, G) {
 #' coefficients are refined from the residuals. The same call works on a
 #' design in memory (columns are numeric vectors) and on a remote design
 #' (columns are [design_column()]s of it). This is the least squares core of
-#' [design_lm()] and of the iterations of [design_glm()].
+#' `xtx.fit::lm_xtx()` and of the iterations of `xtx.fit::glm_xtx()`.
 #'
 #' Names may change before the first release.
 #'

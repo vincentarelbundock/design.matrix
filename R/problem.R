@@ -17,7 +17,7 @@ xtx_remote_keys <- c("table", "sql", "engine", "chunk_size")
 #' response, weights and offset as columns over those rows: numeric vectors in
 #' memory, [design_column()]s remotely (expressions with no SQL translation are
 #' evaluated in R, in batches, into a temporary table). One code path serves
-#' [design_lm()], [design_glm()] and fits with fixed effects: a fitting
+#' `xtx.fit::lm_xtx()`, `xtx.fit::glm_xtx()` and fits with fixed effects: a fitting
 #' function calls it with its matched call and runs the same code on what it
 #' returns, whatever the source of the data.
 #'
@@ -272,7 +272,7 @@ xtx_fe_main_terms <- function(mt_aug, main) {
 ## in R that give matrices) and the response of a GLM or an FE fit once
 ## the rows are known.
 xtx_problem_remote <- function(call, env, formula, source, contrasts, dots, family, fe, cluster) {
-    ## (the callers check the kind: checks.R)
+    ## (the callers check the kind: checks.R of xtx.fit)
     na <- if (is.null(call$na.action)) "omit" else xtx_problem_na_kind(eval(call$na.action, env))
     ## (unknown arguments first, as in memory)
     nms <- names(dots) %||% rep("", length(dots))
@@ -368,7 +368,7 @@ xtx_offset_type_msg <- function(arg, terms) {
 }
 
 ## The remote design of a fit and the columns of its arguments (one code
-## path for design_lm(), design_glm() and fixed effects).
+## path for lm_xtx(), glm_xtx() and fixed effects).
 ##   formula: the model formula; the design is that of its right-hand side
 ##     (offset() terms included; their values are columns too), and its
 ##     response is given by the caller in `args`.
@@ -863,7 +863,7 @@ xtx_glm_mem_cols <- function(Y, w, off, k) {
 
 ## The checks of a fit on a design (no rows dropped): no missing response
 ## or weight, a finite offset. A missing weight has the error of a weight
-## that is not finite ("NA/NaN/Inf in 'weights'", xtx_glm_checks()), in
+## that is not finite ("NA/NaN/Inf in 'weights'", xf_glm_checks() of xtx.fit), in
 ## memory as remotely: glm() has no error of its own for it, and lm()'s
 ## "missing or negative weights not allowed" would contradict the GLM's
 ## "negative weights not allowed" for negative weights.
