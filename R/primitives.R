@@ -281,15 +281,6 @@ xtx_column_pick <- function(x, idx) {
     structure(out, class = "xtx_column")
 }
 
-## The frame of a column replaced (same expressions and flags).
-xtx_column_reframe <- function(x, frame, sql = NULL) {
-    u <- unclass(x)
-    u$frame <- frame
-    if (!is.null(sql)) u$sql <- sprintf("(%s)", sql)
-    u$neg <- NULL
-    structure(u, class = "xtx_column")
-}
-
 xtx_is_column <- function(x) inherits(x, "xtx_column")
 
 ## The number of columns k of a column: of a remote column its number of
