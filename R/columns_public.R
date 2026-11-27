@@ -21,8 +21,8 @@
 ## to a double, where base R gives an integer.
 ##
 ## Every summary is one query, whatever the number of arguments: the
-## columns are bound together (xtx_c_cbind(), whose frame takes the pending
-## products and lookups of all of them) and the aggregates of each SQL
+## columns are bound together (xtx_c_cbind(), whose frame takes the nodes,
+## products and lookups, of all of them) and the aggregates of each SQL
 ## expression are read in one SELECT, as xtx_colsum() reads its sums.
 
 ## ---- aggregates of columns: one query ----
@@ -505,18 +505,21 @@ xtx_ifelse_missing <- function(test, yes, no, missing) {
         if (is.na(test)) return(xtx_column(f, xtx_column_operand(missing), notnull = !is.na(missing)))
         return(col_ifelse(test, yes, no))
     }
-    y <- xtx_column_operand(yes)
-    n <- xtx_column_operand(no)
+    ## (branches of one type: logical when both are, and `missing` too; else
+    ## numbers, a logical branch as 0/1)
+    br <- xtx_branches(yes, no)
+    if (br$lgl && !(is.logical(missing) || is.na(missing))) br <- list(yes = xtx_column_arith(yes), no = xtx_column_arith(no), lgl = FALSE)
+    y <- br$yes
+    n <- br$no
     ## (a numeric test is TRUE where it is not zero; NaN is missing, where
-    ## DuckDB would take it as true)
-    if (!isTRUE(unclass(test)$lgl))
-        test <- xtx_column_logical(xtx_column(f, sprintf("(NULLIF(CAST(%s AS DOUBLE), CAST('NaN' AS DOUBLE)) <> 0)",
-                                                         unclass(test)$sql)))
+    ## DuckDB would take it as true: xtx_column_test())
+    tsql <- xtx_column_test(test)
     same <- !xtx_is_column(no) && length(no) == 1L && identical(as.double(no), as.double(missing))
-    sql <- if (same) sprintf("(CASE WHEN %s THEN %s ELSE %s END)", xtx_column_operand(test), y, n)
-           else sprintf("(CASE %s WHEN TRUE THEN %s WHEN FALSE THEN %s ELSE %s END)", xtx_column_operand(test), y, n,
-                        xtx_column_operand(missing))
-    xtx_column(f, sql, notnull = all(xtx_operand_notnull(yes)) && all(xtx_operand_notnull(no)) && !is.na(missing))
+    sql <- if (same) sprintf("(CASE WHEN %s THEN %s ELSE %s END)", tsql, y, n)
+           else sprintf("(CASE %s WHEN TRUE THEN %s WHEN FALSE THEN %s ELSE %s END)", tsql, y, n,
+                        if (br$lgl) xtx_column_operand(missing) else xtx_column_arith(missing))
+    xtx_column(f, sql, notnull = all(xtx_operand_notnull(yes)) && all(xtx_operand_notnull(no)) && !is.na(missing),
+               lgl = br$lgl)
 }
 
 #' @rdname column_arithmetic

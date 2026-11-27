@@ -140,9 +140,9 @@ reads them with columns of the remote data (to join them back), and
 \code{name}). \code{design_column(D, "y")}
 makes a column from a column of the remote data. Columns of one design
 combine, separate products included (\code{D \%*\% b1 + D \%*\% b2}): a
-product becomes a view only when it is first read, on top of the
-products it is combined with (a product read before it is combined is
-made again, as one more view, next to the other).
+product is SQL that each query reading it computes over the rows of
+the design, with the other columns of that query; reading a column
+creates nothing in the database.
 \item \code{as.matrix(D)} collects the rows and builds the dense matrix, only when
 there are at most \code{getOption("xtx.remote_max_rows", 1e5)} rows
 or with \code{force = TRUE}.

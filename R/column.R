@@ -7,7 +7,7 @@
 ## it; col_compute() stores it in a table (temporary, or permanent with a
 ## name). In memory a column is a plain numeric vector (or matrix), base R
 ## applies to it, and col_compute() returns it.
-## Frames, their depth and lineage stay internal.
+## Frames, their source relations and nodes stay internal.
 
 #' Columns of a design
 #'
@@ -73,29 +73,36 @@
 #'   in the same order.
 #' * `col_compute(x)`: the column computed once into a temporary table, and
 #'   a column that reads it (later queries scan the table instead of
-#'   recomputing the expression and the views below it).
+#'   recomputing the expression and the products and lookups under it).
 #'   `col_compute(x, name = "preds")`: the same, into a permanent table
 #'   `preds` of the connection (`CREATE TABLE ... AS`; an error if the
 #'   table exists, unless `overwrite = TRUE`, which replaces it), for use
 #'   outside the package. The table holds the rows of the design (after its
-#'   filter: `na.action`, subsets), each with every column of the frame the
-#'   values were computed on: the columns of the data, the values (named
-#'   `nm`: by default as `as.data.frame()` names them) and internal columns
-#'   of the package (names starting with `__xtx_`, the products and lookups
-#'   under the column), which can be ignored. The column returned reads
+#'   filter: `na.action`, subsets), each with the columns of the data, the
+#'   values (named `nm`: by default as `as.data.frame()` names them) and
+#'   internal columns of the package (names starting with `__xtx_`: the
+#'   products and lookups that the values were computed from, and values
+#'   stored earlier), which can be ignored. The column returned reads
 #'   that table and stays aligned with the rows of its design, as with a
 #'   temporary table: the rows keep, next to the values, the columns that
-#'   later columns of the design read, so a product made later is a view
-#'   over the table. To match the values with other data outside the
+#'   other columns of the design read, so a product made earlier or later
+#'   is computed over the table when it is combined with the stored
+#'   values. The table holds the values as they were when it was written:
+#'   later changes to the source do not reach it. If the statement that
+#'   writes the table fails, no table is made and a table of that name is
+#'   left as it was (inside a transaction of yours, DuckDB then aborts that
+#'   transaction, as for any failed statement). To match the values with other data outside the
 #'   package, join on a key column of the data (such as `id`). In memory
 #'   `col_compute()` returns `x` (there is no table).
 #'   `col_compute(x, table = FALSE)`: the column computed once in a
-#'   projection instead of a table: its expressions become columns of a view
-#'   one level deeper, so that later expressions refer to them instead of
-#'   repeating them (an iterative fit keeps its SQL small this way), with no
-#'   statement run. Columns computed separately this way stand on sibling
-#'   views, which do not combine: compute them together (`cbind()` them,
-#'   then `[, j]`). (Names may change before the first release.)
+#'   projection instead of a table: later expressions refer to its values
+#'   by name instead of repeating its expressions (an iterative fit keeps
+#'   its SQL small this way), and each query that reads them computes them
+#'   once per row. Nothing is created in the database and no statement is
+#'   run. Columns computed separately this way combine with each other and
+#'   with the other columns of their design:
+#'   `col_compute(a, table = FALSE) + col_compute(b, table = FALSE)`.
+#'   (Names may change before the first release.)
 #' * `x[, j]`: the columns `j` of a column with several columns (as for the
 #'   matrix in memory), for instance of `D %*% cbind(b1, b2)`. Rows cannot
 #'   be selected: remote rows have no order.
@@ -106,29 +113,31 @@
 #'   `n x k`, the SQL and the connection, without reading any row.
 #'
 #' @section Lifetime:
-#' A remote column is valid while its connection is open. The views and
-#' temporary tables it reads (from products, and from `col_compute()`)
-#' live in the session of that connection, and disappear when it is
-#' closed; for a Parquet source, the column keeps its private connection
+#' A remote column is valid while its connection is open. The temporary
+#' tables it reads (the values of lookups, and the tables of
+#' `col_compute()`) live in the session of that connection, and disappear
+#' when it is closed; for a Parquet source, the column keeps its private connection
 #' open. To keep values beyond the session, store them in a permanent table
 #' with `col_compute(x, name = )` (on the connection of the design: for a
 #' Parquet source, a private in-memory connection, so read them with
 #' `as.data.frame()` instead), or read them with `as.data.frame()` and
 #' write them where they belong. Columns of one design combine with each other,
 #' including the results of separate products (`D %*% b1 + D %*% b2`, or
-#' `(D %*% b) / sqrt(quadratic_diagonal(D, V))`): a product becomes a view
-#' only when its values are first needed, on top of the other products it
-#' is combined with. Two products that were each read (by `as.vector()`,
-#' `as.data.frame()`, a sum, ...) before being combined also combine: their
-#' views stand side by side, and the database has no key to align their
-#' rows, so the product read on one side is made again on top of the other
-#' (one more view; a grouping's lookup needs no statement). Two columns
-#' each stored with `col_compute()`, separately, are the exception: a
-#' stored table is not made again, so combine the columns before storing them
+#' `(D %*% b) / sqrt(quadratic_diagonal(D, V))`): a product is a SQL
+#' expression over the rows of the design, which each query that reads it
+#' computes with the other columns of that query, over the same rows.
+#' Reading a column (with `as.vector()`, `as.data.frame()`, a sum, ...)
+#' creates nothing in the database and changes no column, so columns
+#' combine in the same way whatever was read before. A column stored with
+#' `col_compute()` combines with the other columns of its design, which
+#' are then computed over the stored table. Two columns each stored with
+#' `col_compute()`, separately, are the exception: the database has no key
+#' to align the rows of two tables, so combine the columns before storing them
 #' (store one column made from both, or one product `D %*% cbind(b1, b2)`
 #' and then `[, 1]` and `[, 2]`), or read them with `as.data.frame(keep =
 #' "id")` and match them in R. Columns of different designs do not combine
-#' (a subset `D[i, ]` is another design). A column made by
+#' (a subset `D[i, ]` is another design, even when it keeps every row, as
+#' is a design made again from the same data). A column made by
 #' `design_column()` combines with any column of its design.
 #'
 #' @param x For `design_column()`, a design: a `design_matrix` or a remote

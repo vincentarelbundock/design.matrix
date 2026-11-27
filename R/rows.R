@@ -3,17 +3,16 @@
 #' `design_subset()` keeps the rows of a design where a logical column is
 #' `TRUE`, as `x[keep, ]` does, and carries other columns over the rows to
 #' the new design: in memory their values on the rows kept; remotely the
-#' same SQL over the new design. With `keep = NULL` no row is dropped, and
-#' the design and the columns are only aligned: a remote design is moved to
-#' the latest frame among columns computed from it (products, lookups,
-#' columns computed once) and the columns are returned as columns of that
-#' design, so that the design and the columns can be combined again; in
-#' memory the arguments are returned as they are.
+#' same expressions over the new design (a subset is another design, and
+#' its columns do not combine with those of the design it was made from;
+#' only columns of that design can be carried over). With `keep = NULL` no
+#' row is dropped and nothing changes: the design is returned as it is,
+#' with the columns (a remote design and its columns always combine).
 #'
 #' @param x A design: a `design_matrix` or a remote design.
 #' @param keep The rows to keep: a logical vector in memory (missing values
 #'   count as `FALSE`), a logical [design_column()] of `x` remotely; or
-#'   `NULL`, to keep every row and only align the design and the columns.
+#'   `NULL`, to keep every row (the design and the columns as they are).
 #' @param cols Columns over the rows of `x`: a list, possibly nested, of
 #'   columns (vectors, matrices or data frames in memory, [design_column()]s
 #'   remotely) and `NULL`s. With `keep = NULL` it may also hold bare group

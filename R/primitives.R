@@ -47,11 +47,11 @@
 ##   xtx_c_pmin xtx_c_pmax xtx_c_ifelse xtx_c_rowsums xtx_c_cbind xtx_c_col(x, j) xtx_ncols
 ##   xtx_c_const(like, value) xtx_c_lgamma xtx_c_round (half to even)
 ##   xtx_c_is_finite (NaN-safe) xtx_c_present (not NA or NaN: !is.na)
-##   xtx_c_on(col, x) (same SQL, rows of x)
+##   xtx_c_on(col, x) (the column carried over to design x, made from its own)
 ##   xtx_c_count(cond, negate) (1 where cond is TRUE, to sum)
-##   xtx_c_freeze(col, table) (computed once: remotely, columns of a new
-##                         frame; with table = TRUE, a temporary table of the
-##                         rows used with every column of the frame)
+##   xtx_c_freeze(col, table) (computed once: remotely a projection node;
+##                         with table = TRUE, a temporary table of the rows
+##                         used with the columns of the source and the values)
 ##   xtx_c_pnorm xtx_c_qnorm xtx_c_dnorm xtx_c_pcauchy
 ##                         (remotely the DuckDB macros of xtx_sql_macros(), as
 ##                         R computes them: pnorm/dnorm/pcauchy to rounding,
@@ -62,29 +62,25 @@
 ## when a value is NULL, as sum() does, and NaN when a value is NaN.
 ## Comparisons with NULL are NULL (R: NA).
 ##
-## Products (xtx_p_mult, xtx_p_quad) and lookups (xtx_c_lookup, xtx_c_dense_codes)
-## are *pending* columns: a recipe (the design and B of a product; the
-## lookup table, already written, and its join of a lookup) that becomes a
-## new frame (a view, or a join) only at the column's first use: an
+## Products (xtx_p_mult, xtx_p_quad), lookups (xtx_c_lookup, xtx_c_dense_codes)
+## and projections (xtx_c_freeze, col_compute(table = FALSE)) are *nodes*
+## of the frame of their column: immutable values (the SQL of a product
+## over the rows of its design; the join of a lookup table, already
+## written; the expressions of a projection) that every column made from
+## them carries. Nothing is created in the database for a node. An
 ## operation that reads rows (sums, crossprod, groups, xtx_p_collect,
-## as.vector, as.matrix, as.data.frame, output), or that makes a frame or a design from the
-## column (xtx_c_freeze, col_compute, scale, subset, materialize). Arithmetic on
-## pending columns stays pending. At first use the pending columns of the
-## operands are bound on the latest settled frame among them, one on the
-## other in the order of the arguments, so that they all combine (a frame
-## keeps every column of the frame below it); each recipe is bound once
-## (later uses read the same frame). So `D %*% b1 + D %*% b2` stacks the
-## second product on the first. Combining columns takes the later frame
-## (they must come from the same design, and one frame must descend from
-## the other: each frame records its lineage, see xtx_frame_later()). For
-## columns already settled on two branches of one frame (two products each
-## read before they are combined), the products and lookups of one branch
-## are replayed on the other (copies of their recipes, bound again: one
-## more view per product, none for a lookup; xtx_frame_replay()); columns
-## frozen or stored (xtx_c_freeze, col_compute) on each branch cannot be
-## combined. xtx_c_bind() binds columns together that are used one by one
-## but must combine later (no replay needed). In memory a product is
-## computed at once.
+## as.vector, as.matrix, as.data.frame, output) or stores them (xtx_c_freeze
+## with a table, col_compute, materialize) takes all its columns at once
+## and renders, in its one statement, the source relation with one derived
+## projection or join per node that the columns name, in dependency order
+## (see "frames, source relations and nodes" below). A read changes no
+## column, so columns of one design combine in the same way whatever was
+## read before: `D %*% b1 + D %*% b2` reads both products over the rows of
+## the design. Columns combine when they are columns of the same design
+## and their source relations are the data of the design or tables stored
+## from it one on the other (the later one holds the columns of the
+## earlier ones); two tables stored separately cannot be combined (no key
+## aligns their rows). In memory a product is computed at once.
 ##
 ## Getting values into R: xtx_p_collect(col) returns the values (in memory the
 ## vector itself; remotely a SELECT of all rows: only for small data). The
@@ -136,14 +132,12 @@
 ##                            Ga x Gb matrix in code order
 ##   xtx_p_mult(x, B)           X B (B a p-vector or p x k matrix) as a column
 ##                            (in memory a vector for a vector B; remotely
-##                            pending, see above)
+##                            a node, see above)
 ##   xtx_p_quad(x, V)           rowSums((X V) * X), V p x p symmetric positive
-##                            semi-definite, as a column (remotely pending)
-##   xtx_c_bind(cols)           the pending columns of a list bound together
-##                            (one frame remotely); in memory the list
-##   xtx_p_rebase(x, cols)      the design over the latest frame of the
-##                            columns of a list (bound together); in
-##                            memory x
+##                            semi-definite, as a column (remotely nodes)
+##   xtx_design_with(x, cols)   the design with the nodes of the columns of a
+##                            list in its source, so that their SQL reads
+##                            it; in memory x
 ##   xtx_colsum(col)           sums over rows: a number per column
 ##   xtx_c_sums(...)            sums over rows of several columns (one query)
 ##   xtx_p_colnorms(col)        Euclidean norms of the columns
@@ -172,13 +166,13 @@
 ##   xtx_p_materialize(x, cols = NULL)
 ##                            the design over a copy of its rows: remotely a
 ##                            temporary table of the rows used with every
-##                            column of its frame (later queries scan it
-##                            instead of recomputing the frame's views and
-##                            joins), or, given `cols` (a list of the
-##                            columns to re-make on it), the columns of the
-##                            data and the internal ones (lookups) that the
-##                            design and `cols` read; a new design
-##                            (re-make columns with xtx_c_on()); in memory x
+##                            column of its source (later queries scan it
+##                            instead of recomputing joins), or, given
+##                            `cols` (a list of the columns to carry over
+##                            to it), the columns of the data and the
+##                            internal ones (stored values, nodes) that the
+##                            design and `cols` read; a new design (carry
+##                            columns over with xtx_c_on()); in memory x
 ##   xtx_p_subset(x, keep)      the design of the rows where the logical column
 ##                            keep is TRUE (remotely also a DBI::SQL()
 ##                            predicate); a new remote design
@@ -1832,8 +1826,8 @@ xtx_p_y <- function(x, y) {
 
 ## The design of the rows where `keep` (a logical column, NA counting as
 ## FALSE) is TRUE: x[keep, ] in memory; remotely, the same design with its
-## filter restricted (a new design: columns of x must be re-made on it,
-## for instance with xtx_c_on()).
+## filter restricted: a new design, another row domain even when every row
+## is kept (columns of x are carried over to it explicitly, xtx_c_on()).
 xtx_p_subset <- function(x, keep) {
     if (!inherits(x, "xtx_remote")) {
         if (xtx_is_column(keep)) stop("A remote column cannot select rows of a design in memory.", call. = FALSE)

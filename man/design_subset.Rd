@@ -11,7 +11,7 @@ design_subset(x, keep = NULL, cols = list())
 
 \item{keep}{The rows to keep: a logical vector in memory (missing values
 count as \code{FALSE}), a logical \code{\link[=design_column]{design_column()}} of \code{x} remotely; or
-\code{NULL}, to keep every row and only align the design and the columns.}
+\code{NULL}, to keep every row (the design and the columns as they are).}
 
 \item{cols}{Columns over the rows of \code{x}: a list, possibly nested, of
 columns (vectors, matrices or data frames in memory, \code{\link[=design_column]{design_column()}}s
@@ -27,12 +27,11 @@ shape of \code{cols}).
 \code{design_subset()} keeps the rows of a design where a logical column is
 \code{TRUE}, as \code{x[keep, ]} does, and carries other columns over the rows to
 the new design: in memory their values on the rows kept; remotely the
-same SQL over the new design. With \code{keep = NULL} no row is dropped, and
-the design and the columns are only aligned: a remote design is moved to
-the latest frame among columns computed from it (products, lookups,
-columns computed once) and the columns are returned as columns of that
-design, so that the design and the columns can be combined again; in
-memory the arguments are returned as they are.
+same expressions over the new design (a subset is another design, and
+its columns do not combine with those of the design it was made from;
+only columns of that design can be carried over). With \code{keep = NULL} no
+row is dropped and nothing changes: the design is returned as it is,
+with the columns (a remote design and its columns always combine).
 }
 \examples{
 d <- data.frame(y = rnorm(10), x = rnorm(10))

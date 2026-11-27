@@ -192,7 +192,7 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     ## the SQL of a read names each node once, and only the nodes it reads
     pq <- xtx_c_cbind(pa, xtx_p_mult(D, c(0, 1)))
     fr <- xtx:::xtx_frame_ready(unclass(pq)$frame, unclass(pq[, 1] - pq[, 1])$sql)
-    expect_equal(lengths(regmatches(fr$src$select, gregexpr(paste0(nodes(pa), "_1\"? AS"), fr$src$select))), 1L)
+    expect_equal(lengths(regmatches(fr$src$select, gregexpr(paste0(" AS \"?", nodes(pa), "_1"), fr$src$select))), 1L)
     expect_false(grepl(nodes(pq)[2L], fr$src$select, fixed = TRUE))
     ## two products and a lookup, none read
     pb <- xtx_p_mult(D, c(0, 3))

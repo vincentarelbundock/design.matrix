@@ -3,16 +3,14 @@
 ## xtx_c_codes(), xtx_p_groupsum_codes(), xtx_p_crosstab_codes(), xtx_c_lookup(),
 ## xtx_p_nested(); see primitives.R and primitives_lookup.R). A grouping
 ## (class design_groups) holds integer codes 1..G of the rows of a design
-## (an integer vector in memory, a pending lookup column remotely), G, and
+## (an integer vector in memory, a lookup column remotely), G, and
 ## the levels of the key per code, sorted as the levels of fixed effects.
 ##
-## Remotely, every use of a grouping makes a fresh lookup of its codes (a
-## new recipe on the same lookup table, written once by design_groups()):
-## the join then binds on top of the other columns of that use, whatever
-## frames earlier uses of the grouping settled on, so that a grouping
-## combines with any column of its design and with other groupings, used in
-## any order. Re-making the recipe runs no statement (the join is part of
-## the SQL of the query that reads it).
+## Remotely, the codes are a lookup node on the table of levels written
+## once by design_groups(): the join is part of the SQL of each query that
+## reads the codes, with the other columns of that query, so that a
+## grouping combines with any column of its design and with other
+## groupings, used in any order.
 
 #' Groupings of the rows of a design
 #'

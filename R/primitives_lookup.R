@@ -16,10 +16,9 @@
 ##       In memory: values[codes] (C), or values[match(keys)] (key: a vector,
 ##       or a list or data frame of vectors, one per part), as doubles.
 ##       Remotely: the lookup table is written to a temporary table at
-##       once, and the column is pending (see primitives.R): at its first
-##       use the table is joined (LEFT JOIN) to the latest frame among the
-##       operands of that use (at least the frame of the key), which gives
-##       a new frame keeping every column of the old one; integer `values`
+##       once, and the column is a node (see primitives.R): each read that
+##       names it joins the table (LEFT JOIN) to the source relation of the
+##       read, once, after the nodes its key reads; integer `values`
 ##       (codes) give an integer column.
 ##   xtx_c_key(x, vars, data = NULL)
 ##       the values of variables (columns of the data, of any type) as a key
@@ -32,12 +31,10 @@
 ##       list(codes = xtx_c_codes(), levels = data frame): the levels of the
 ##       key that occur, sorted, and each row's level as an integer code. In
 ##       memory from the values (integer coding in C); remotely a SELECT
-##       DISTINCT of the levels and a lookup of their codes (pending: codes
-##       of several keys that are used one by one but must combine later
-##       are bound together with xtx_c_bind()).
+##       DISTINCT of the levels and a lookup of their codes (a node).
 ##   xtx_c_subset(col, keep, x2)
 ##       a column of x restricted to the rows of x2 = xtx_p_subset(x, keep): in
-##       memory col[keep]; remotely the same SQL over x2 (xtx_c_on()).
+##       memory col[keep]; remotely the column carried over to x2 (xtx_c_on()).
 ##   xtx_p_nested(a, b)
 ##       for two xtx_c_codes() groupings: is each level of b in one level of
 ##       a? (In memory one pass in C; remotely from the crosstab.)
@@ -49,7 +46,7 @@
 ##       column I(x^2) or log(x) is shifted on its own, not rebuilt from a
 ##       shifted x); remotely the variables' SQL (or the chunks' shift)
 ##       changes, as in xtx_center(), each variable on its own. The shifted
-##       design is a new design: re-make columns with xtx_c_on().
+##       design is a new design: carry columns over with xtx_c_on().
 
 xtx_c_lookup <- function(values, key, levels = NULL) {
     mat <- is.matrix(values)
@@ -81,8 +78,7 @@ xtx_c_lookup <- function(values, key, levels = NULL) {
     }
     vm <- if (mat) values else matrix(values, ncol = 1L)
     vcols <- paste0("v", seq_len(ncol(vm)))
-    ## (the key's frame, possibly pending: the lookup binds on top of the
-    ## key's recipes)
+    ## (the key's frame, with its nodes: the lookup reads them)
     frame <- unclass(key)$frame
     con <- xtx_con(frame)
     q <- function(x) xtx_qi(frame, x)
@@ -114,16 +110,6 @@ xtx_c_lookup <- function(values, key, levels = NULL) {
                      sprintf(" LEFT JOIN %s AS l ON %s", q(tn), on),
                      ref = list(table = tn, key = ksql, type = if (int) "integer" else "double"))
     xtx_column(xtx_frame_add(xtx_remote_unscaled(frame), node), sprintf("s.%s", q(col)))
-}
-
-## The columns of the frame of a remote design (or column) plus the new
-## columns `cols` (all of the prototype `type`): from the frame's
-## prototype when it has one, else from the database (query `sql`).
-xtx_proto_add <- function(frame, cols, type, sql) {
-    proto <- frame$src$proto
-    if (is.null(proto) || any(cols %in% names(proto))) return(DBI::dbGetQuery(xtx_con(frame), sql))
-    for (cn in cols) proto[[cn]] <- type
-    proto
 }
 
 ## A data frame written to the temporary table `name`: registered with
