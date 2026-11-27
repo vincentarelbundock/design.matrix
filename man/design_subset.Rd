@@ -2,24 +2,22 @@
 % Please edit documentation in R/rows.R
 \name{design_subset}
 \alias{design_subset}
-\alias{design_align}
 \title{Rows of a design, with the columns that go with them}
 \usage{
-design_subset(x, keep, cols = list())
-
-design_align(x, cols = list())
+design_subset(x, keep = NULL, cols = list())
 }
 \arguments{
 \item{x}{A design: a \code{design_matrix} or a remote design.}
 
 \item{keep}{The rows to keep: a logical vector in memory (missing values
-count as \code{FALSE}), a logical \code{\link[=design_column]{design_column()}} of \code{x} remotely.}
+count as \code{FALSE}), a logical \code{\link[=design_column]{design_column()}} of \code{x} remotely; or
+\code{NULL}, to keep every row and only align the design and the columns.}
 
 \item{cols}{Columns over the rows of \code{x}: a list, possibly nested, of
 columns (vectors, matrices or data frames in memory, \code{\link[=design_column]{design_column()}}s
-remotely) and \code{NULL}s. For \code{design_align()} it may also hold groupings
-(see \code{\link[=group_codes]{group_codes()}}), whose codes are carried over; \code{design_subset()}
-refuses groupings, since codes change with the rows.}
+remotely) and \code{NULL}s. With \code{keep = NULL} it may also hold bare group
+codes (see \code{\link[=key_codes]{key_codes()}}), which are carried over; otherwise groupings
+are refused, since codes change with the rows.}
 }
 \value{
 A list with \code{x} (the design) and \code{cols} (the columns, in the
@@ -29,11 +27,12 @@ shape of \code{cols}).
 \code{design_subset()} keeps the rows of a design where a logical column is
 \code{TRUE}, as \code{x[keep, ]} does, and carries other columns over the rows to
 the new design: in memory their values on the rows kept; remotely the
-same SQL over the new design. \code{design_align()} moves a remote design to
+same SQL over the new design. With \code{keep = NULL} no row is dropped, and
+the design and the columns are only aligned: a remote design is moved to
 the latest frame among columns computed from it (products, lookups,
-columns computed once) and returns the columns as columns of that
+columns computed once) and the columns are returned as columns of that
 design, so that the design and the columns can be combined again; in
-memory it returns its arguments.
+memory the arguments are returned as they are.
 }
 \examples{
 d <- data.frame(y = rnorm(10), x = rnorm(10))
@@ -41,3 +40,4 @@ D <- design_matrix(y ~ x, d)
 s <- design_subset(D, d$x > 0, list(y = d$y))
 nrow(s$x) == length(s$cols$y)
 }
+\keyword{internal}

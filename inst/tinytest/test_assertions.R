@@ -2,14 +2,14 @@ library(xtx)
 
 d <- data.frame(y = rnorm(10), x = rnorm(10), f = gl(2, 5))
 D <- design_matrix(y ~ x * f, d)
-p <- xtx:::design_plan(y ~ x * f, d)
+p <- xtx:::xtx_plan_of(y ~ x * f, d)
 
 expect_error(design_matrix(y ~ x, d, contrasts.arg = "contr.sum"), "list")
 expect_error(design_matrix(y ~ x, d, xlev = 1), "list")
 expect_error(design_matrix(p), "required")
 
-expect_error(xtx:::design_plan("y ~ x", d), "formula")
-expect_error(xtx:::design_plan(y ~ x, as.list(d)), "data.frame")
+expect_error(xtx:::xtx_plan_of("y ~ x", d), "formula")
+expect_error(xtx:::xtx_plan_of(y ~ x, as.list(d)), "data.frame")
 
 expect_error(quadratic_diagonal(as.matrix(D), diag(4)), "xtx_matrix")
 expect_error(D %*% 1:3, "length")

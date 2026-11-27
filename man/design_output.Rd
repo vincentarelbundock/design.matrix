@@ -40,8 +40,8 @@ as fitted values and residuals), on both backends: in memory
 \code{memory(d)}, with \code{d} the data frame of the columns; for a remote design, a
 table in the database (the name of a temporary view, of class
 \code{xtx_remote_table}, with every column of the remote data and the columns
-\code{cols}), padded by \code{\link[=napredict]{napredict()}} with \code{na} (for instance a
-\code{xtx.fit::design_exclude()}), with the attributes \code{attrs}; with \code{design = TRUE}, the
+\code{cols}), padded by \code{\link[=napredict]{napredict()}} with \code{na} (for instance the \code{na.action}
+of a remote fit of 'xtx.fit' with \code{na.exclude}), with the attributes \code{attrs}; with \code{design = TRUE}, the
 remote design with the columns added to its data (so that they can scale
 its rows: \code{crossprod(R, DBI::SQL('".resid"^2') * R)}).
 }
@@ -54,3 +54,4 @@ D <- design_matrix(y ~ x, d)
 f <- drop(D \%*\% c(0, 1))
 head(design_output(D, list(.fitted = f, .resid = d$y - f)))
 }
+\keyword{internal}

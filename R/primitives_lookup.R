@@ -26,8 +26,8 @@
 ##       over the rows of design x: in memory a data frame (from `data`, or
 ##       from the model frame the design keeps); remotely one SQL column per
 ##       variable.
-##   xtx_c_complete(key)
-##       a logical column: no part of the key is missing.
+##   (is.na(key): xtx_c_present(), which takes the columns of a key of
+##       any type)
 ##   xtx_c_dense_codes(key)
 ##       list(codes = xtx_c_codes(), levels = data frame): the levels of the
 ##       key that occur, sorted, and each row's level as an integer code. In
@@ -155,23 +155,6 @@ xtx_c_key <- function(x, vars, data = NULL) {
     out <- as.data.frame(lapply(vars, function(v) d[[v]]), stringsAsFactors = FALSE)
     names(out) <- vars
     out
-}
-
-## TRUE where no key column is missing: NA or NaN (as complete.cases() in
-## memory; was xtx_c_not_na, renamed in tapx: xtx_c_present() is the same rule
-## for one numeric column). Remotely, a key column of the data (s."v") that is not double
-## cannot be NaN: only IS NOT NULL (isnan() would not take text); a double
-## column, or any other expression, is NaN-checked as well.
-xtx_c_complete <- function(key) {
-    if (!xtx_is_column(key)) return(if (anyNA(key)) stats::complete.cases(key) else rep(TRUE, NROW(key)))
-    frame <- unclass(key)$frame
-    sql <- unclass(key)$sql
-    types <- frame$src$types
-    cols <- names(types)[match(sql, sprintf("(s.%s)", xtx_qi(frame, names(types))))]
-    plain <- !is.na(cols) & !types[cols] %in% "double"
-    one <- ifelse(plain, sprintf("(%s) IS NOT NULL", sql),
-                  sprintf("COALESCE(NOT isnan(CAST(%s AS DOUBLE)), FALSE)", sql))
-    xtx_column(frame, sprintf("(%s)", paste(one, collapse = " AND ")))
 }
 
 xtx_c_dense_codes <- function(key, raw = FALSE) {

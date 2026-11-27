@@ -66,3 +66,4 @@ ch <- pivoted_chol(G, diag(G), 1e-14)
 ch$rank
 ch$pivot
 }
+\keyword{internal}

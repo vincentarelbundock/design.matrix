@@ -150,3 +150,7 @@ fuzz_contrasts <- function(d) {
     out
 }
 
+
+# The plan of a formula and training data, or of a fitted model (internal
+# to xtx; users reach plans through design_matrix(, newdata = )).
+plan_of <- function(...) get("xtx_plan_of", asNamespace("xtx"))(...)

@@ -280,7 +280,7 @@ set.seed(11)
 tr <- fuzz_data(60)
 nd <- fuzz_data(40, na = TRUE)
 fo <- y ~ x1 * f1 + o1 + ch + poly(z, 2)
-plan <- xtx:::design_plan(fo, tr)
+plan <- plan_of(fo, tr)
 for (na in list(na.pass, na.omit, na.exclude, "na.omit")) {
     for (newd in list(nd, tr, tr[sample(60), ])) {
         ref <- capture(function() stats::model.matrix(

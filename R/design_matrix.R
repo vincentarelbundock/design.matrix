@@ -29,6 +29,29 @@
 #' @return `design_matrix()` returns a design matrix object or, with explicit
 #'   `newdata = NULL`, a reusable specification.
 #'
+#' @section Reusing a design or a fitted model on new data:
+#' `design_matrix(fit, newdata = batch)` builds the model matrix of new data
+#' the way [stats::predict.lm()] does, from the pieces the model stores (see
+#' [design_parts()]): the terms, with the parameters of transformations such
+#' as [stats::poly()] or [splines::ns()] fixed by the training data, the
+#' factor levels and the contrasts. `design_matrix(D, newdata = batch)` does
+#' the same from a design `D` built on training data. Its dense matrix is
+#' identical to
+#' ```
+#' model.matrix(tt, model.frame(tt, batch, xlev = xlevels, na.action = na.action),
+#'              contrasts.arg = contrasts)
+#' ```
+#' with `tt` the training terms without the response.
+#'
+#' `design_matrix(fit, newdata = NULL)` returns that compiled specification
+#' (a plan) without applying it, for repeated use: `design_matrix(plan,
+#' batch)`. When a batch is a data frame whose variables have the same
+#' types, levels and column names as the first one, the plan skips
+#' [stats::model.frame()] and the contrast set-up, which makes small calls
+#' much faster; anything else takes the general path, so results never
+#' depend on the path taken. Plans of fitted models are cached: two models
+#' with identical terms, levels and contrasts share one.
+#'
 #' @details
 #' For a formula, `as.matrix(design_matrix(f, d))` is identical to
 #' `stats::model.matrix(f, d)` in the strict sense of
@@ -84,7 +107,7 @@ design_matrix <- function(object, data = environment(object),
                              class = "xtx_formula"))
         }
         if (!inherits(object, c("formula", "xtx_matrix", "xtx_formula", "xtx_plan")))
-            object <- design_plan(object, ...)
+            object <- xtx_plan_of(object, ...)
         if (is.null(newdata)) {
             if (inherits(object, "xtx_matrix")) return(xtx_plan_for_design(object))
             return(object)

@@ -7,7 +7,6 @@
 \alias{col_ifelse}
 \alias{col_pmin}
 \alias{col_pmax}
-\alias{col_math}
 \alias{col_sums}
 \alias{col_const}
 \alias{cbind.xtx_column}
@@ -18,16 +17,11 @@
 
 \method{mean}{xtx_column}(x, trim = 0, na.rm = FALSE, ...)
 
-col_ifelse(test, yes, no)
+col_ifelse(test, yes, no, missing = NULL)
 
 col_pmin(a, b, checked = TRUE)
 
 col_pmax(a, b, checked = TRUE)
-
-col_math(
-  x,
-  fun = c("pnorm", "qnorm", "dnorm", "pcauchy", "log_positive", "one_minus_exp_neg")
-)
 
 col_sums(..., na.rm = FALSE)
 
@@ -54,19 +48,15 @@ the first release). For \code{rowSums()}, only the default.}
 \item{yes, no, a, b}{Columns (vectors in memory, \code{design_column}s remotely)
 or numbers.}
 
+\item{missing}{For \code{col_ifelse()}: \code{NULL} (default: a missing \code{test} gives a
+missing value, as \code{\link[=ifelse]{ifelse()}}), or one number, the value where \code{test} is
+missing.}
+
 \item{checked}{For \code{col_pmin()} and \code{col_pmax()}: \code{TRUE} (default)
 follows \code{\link[=pmin]{pmin()}} and \code{\link[=pmax]{pmax()}} on missing values (\code{NA} or \code{NaN} if either
 operand is). \code{FALSE} is for operands known to have no missing values:
 remotely plain \code{least()} and \code{greatest()}, whose SQL is shorter; in
 memory the same values.}
-
-\item{fun}{For \code{col_math()}, a function that base R cannot dispatch on:
-\code{"pnorm"}, \code{"qnorm"}, \code{"dnorm"} and \code{"pcauchy"} (the standard
-distributions, as \code{\link[stats:pnorm]{stats::pnorm()}} and the others compute them);
-\code{"log_positive"}, the natural logarithm of values known to be positive
-(remotely without the guards of \code{log()} at zero and below); and
-\code{"one_minus_exp_neg"}, \code{1 - exp(-x)} for \code{x >= 0}, accurate near zero
-(\code{-expm1(-x)}).}
 
 \item{like}{A column, or a design: the rows of the constant column.}
 
@@ -77,7 +67,7 @@ distributions, as \code{\link[stats:pnorm]{stats::pnorm()}} and the others compu
 \item{dims}{For \code{rowSums()}, only the default.}
 }
 \value{
-\code{col_ifelse()}, \code{col_pmin()}, \code{col_pmax()}, \code{col_math()}: a column (a double
+\code{col_ifelse()}, \code{col_pmin()}, \code{col_pmax()}: a column (a double
 vector in memory, a \code{design_column} remotely). \code{col_sums()}: a double
 vector. The \code{Summary} methods and \code{mean()}: a number, two for
 \code{range()}, a logical value for \code{any()} and \code{all()}.

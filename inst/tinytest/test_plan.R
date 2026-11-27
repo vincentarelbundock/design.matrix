@@ -9,7 +9,7 @@ reference <- function(plan, newdata, na.action = stats::na.pass) {
 set.seed(2)
 train <- fuzz_data(300, special = FALSE)
 fo <- y ~ x1 * f1 + poly(z, 2) + ch + lg + o1 + m + splines::ns(x2, 3)
-p <- xtx:::design_plan(fo, train)
+p <- plan_of(fo, train)
 expect_inherits(p, "xtx_plan")
 expect_false(is.null(p$fast))
 
@@ -52,7 +52,7 @@ expect_identical(D$path, "general")
 expect_true(strict_identical(as.matrix(D), reference(p, nd, stats::na.omit)))
 
 # contrasts.arg in the plan; plan without response; numeric given as integer
-p2 <- xtx:::design_plan(~ f2 * x1 + i1, train, contrasts.arg = list(f2 = "contr.sum"))
+p2 <- plan_of(~ f2 * x1 + i1, train, contrasts.arg = list(f2 = "contr.sum"))
 nd <- train[5:9, ]
 nd$i1 <- as.double(nd$i1)
 D <- design_matrix(p2, nd)
@@ -68,7 +68,7 @@ for (k in 1:60) {
     # leaves a term without variables, and R's C routine returns that
     # column uninitialised: the reference itself is not deterministic.
     if ("y" %in% all.vars(fk[[3L]])) next
-    pk <- tryCatch(xtx:::design_plan(fk, tr), error = function(e) NULL, warning = function(w) NULL)
+    pk <- tryCatch(plan_of(fk, tr), error = function(e) NULL, warning = function(w) NULL)
     if (is.null(pk)) next
     rows <- sample(nrow(tr), sample(1:12, 1), replace = TRUE)
     nd <- tr[rows, ]
@@ -84,7 +84,7 @@ expect_stdout(print(design_matrix(p, train[1:3, ])), "design_matrix")
 # Rebinding uses training levels and the training polynomial basis on every batch.
 train <- data.frame(y = 1:8, x = 1:8, f = factor(rep(c("a", "b"), 4)), l = c(TRUE, FALSE))
 fo <- y ~ poly(x, 2) + f + l
-p <- xtx:::design_plan(fo, train)
+p <- plan_of(fo, train)
 original <- design_matrix(fo, train)
 a <- data.frame(x = c(10, 12), f = "a", l = TRUE)
 b <- data.frame(x = c(-3, -1), f = "b", l = FALSE)
@@ -104,7 +104,7 @@ expect_error(design_matrix(original, transform(a, f = "new")), "new level")
 # Retain the fitted transformation even when model.matrix subsets a supplied frame.
 mf <- model.frame(fo, train)
 subdesign <- design_matrix(~ poly(x, 2), mf)
-expect_identical(as.matrix(design_matrix(subdesign, b)), as.matrix(design_matrix(xtx:::design_plan(~ poly(x, 2), train), b)))
+expect_identical(as.matrix(design_matrix(subdesign, b)), as.matrix(design_matrix(plan_of(~ poly(x, 2), train), b)))
 
 fit <- lm(fo, train)
 trained <- design_matrix(fit, newdata = NULL)
@@ -113,4 +113,5 @@ expect_identical(as.matrix(design_matrix(fit, newdata = b)), as.matrix(design_ma
 expect_identical(as.matrix(design_matrix(design_matrix(deferred, train), newdata = b)), as.matrix(design_matrix(trained, b)))
 expect_identical(as.matrix(design_matrix(fit)), model.matrix(fit))
 ## (exported for package developers since jf7f)
-expect_true(all(c("design_plan", "design_parts") %in% getNamespaceExports("xtx")))
+expect_true("design_parts" %in% getNamespaceExports("xtx"))
+expect_false("design_plan" %in% getNamespaceExports("xtx"))

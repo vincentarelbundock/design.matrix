@@ -1,21 +1,193 @@
-## Arguments of a fit as columns of a remote design: a formula and remote
-## data (see remote.R) with a response, weights, an offset and a subset,
-## turned into the remote design of the rows used and columns over them (in
+## The remote frame of a model: a formula and remote data (see remote.R)
+## with weights, an offset and a subset, turned into the remote design of
+## the rows used, the response and the arguments as columns over them (in
 ## SQL, or evaluated in R, batch by batch, into a temporary table):
-## design_remote_frame(), the remote counterpart of design_frame(), on which the
-## input stage of the fits is built (design_problem() of xtx.fit). Also
-## design_resolve() (arguments as columns of an existing design) and
-## is_remote_source().
+## xtx_frame_remote(), the remote path of design_frame(), on which the
+## input stage of the fits is built (xtx.fit). Also design_resolve()
+## (arguments, and a response, as columns of an existing design).
 
-## The arguments of remote data that a fit on a formula takes in `...`.
+## The arguments of remote data that design_matrix() and design_frame() take.
 xtx_remote_keys <- c("table", "sql", "engine", "chunk_size")
 
-## The remote design of a fit and the columns of its arguments (one code
-## path for lm_xtx(), glm_xtx() and fixed effects).
+## The remote path of design_frame() (its arguments, documented there).
+## `weights`, `offset` and `subset` are taken unevaluated; the other
+## arguments in `...` are bare names of columns that must be present on the
+## rows used. `.caller`: the frame design_frame() was called from, where R
+## expressions are evaluated when the formula has no environment.
+## The steps, in order (the errors of each are those of lm() and glm() on a
+## data frame where they have one): `na.action`; unknown arguments; the
+## source (one query for its columns); the response of the formula, by the
+## type of its columns (xtx_response_spec()); the types of the columns
+## given as weights and offset (xtx_frame_arg_types()); the design and the
+## columns (xtx_remote_frame()); the response over the rows used
+## (xtx_response_result()).
+xtx_frame_remote <- function(formula, data, ..., subset, weights, na.action, offset, contrasts = NULL,
+                             table = NULL, sql = NULL, engine = NULL, chunk_size = NULL, .caller = parent.frame()) {
+    na <- if (missing(na.action)) "omit" else xtx_frame_na_kind(na.action)
+    extra <- eval(substitute(alist(...)))
+    bad <- !vapply(extra, is.name, NA)
+    if (any(bad)) {
+        nm <- names(extra) %||% rep("", length(extra))
+        nm <- ifelse(nzchar(nm), nm, vapply(extra, deparse2, ""))
+        stop("Unknown arguments: ", paste(nm[bad], collapse = ", "), call. = FALSE)
+    }
+    xtx_need_duckdb()
+    src <- xtx_source(data, table, sql)
+    ## (R expressions are evaluated in the formula's environment, as
+    ## model.frame() evaluates them in memory)
+    env <- environment(formula) %||% .caller
+    tt <- stats::terms(formula, data = src$proto)
+    resp <- attr(tt, "response")
+    spec <- if (resp > 0L) xtx_response_spec(attr(tt, "variables")[[resp + 1L]], src$types, src$holder$con)
+            else list(kind = "none", ncol = 0L, args = list(), present = character())
+    args <- list(weights = if (!missing(weights)) substitute(weights),
+                 offset = if (!missing(offset)) substitute(offset),
+                 subset = if (!missing(subset)) substitute(subset))
+    tv <- xtx_terms_vars(tt)
+    xtx_frame_arg_types(src$types, args$weights, args$offset,
+                        lapply(attr(tt, "offset"), function(k) tv$exprs[[k]][[2L]]))
+    dots <- Filter(Negate(is.null), list(table = table, sql = sql, engine = engine, chunk_size = chunk_size))
+    f <- xtx_remote_frame(formula, src, c(spec$args, args), env, dots, contrasts, logical = "subset",
+                          present = unique(c(vapply(extra, as.character, ""), spec$present)), na = na)
+    D <- f$x
+    structure(list(x = D, response = xtx_response_result(D, spec, f$cols, f$yk),
+                   weights = f$cols$weights, offset = f$off, ncol = c(weights = f$wk, offset = f$offk),
+                   types = src$types, terms = tt, contrasts = D$plan$contrasts, xlevels = D$plan$xlevels,
+                   na.action = na),
+              class = "xtx_remote_frame")
+}
+
+#' @export
+print.xtx_remote_frame <- function(x, ...) {
+    d <- dim(x$x)
+    cat(sprintf("<remote model frame: %s rows, design of %d columns>\n", xtx_fmt_count(d[1L]), d[2L]))
+    r <- x$response
+    cat("response:", switch(r$kind, none = "none", matrix = sprintf("matrix of %d columns", r$ncol),
+                            factor = sprintf("factor with %d levels", length(r$levels)), r$kind), "\n")
+    given <- c(weights = !is.null(x$weights), offset = !is.null(x$offset))
+    if (any(given)) cat("with:", paste(names(given)[given], collapse = ", "), "\n")
+    invisible(x)
+}
+
+## na.action of a remote frame as one of "omit", "exclude", "fail", "pass":
+## the functions of stats, or their names.
+xtx_frame_na_kind <- function(na.action) {
+    if (is.null(na.action)) return("omit")
+    for (nm in c("omit", "exclude", "fail", "pass")) {
+        f <- get(paste0("na.", nm), envir = asNamespace("stats"))
+        if (identical(na.action, f) || identical(na.action, paste0("na.", nm))) return(nm)
+    }
+    stop("`na.action` must be na.omit, na.exclude, na.fail, na.pass.", call. = FALSE)
+}
+
+## The left-hand side `lhs` of a formula on remote data, by the types of
+## the columns it names, as model.frame() returns a response of any type:
+## list(kind, ncol, args, present).
+##   kind "numeric": an expression (a numeric column, or any expression
+##     over the columns), resolved as argument `y`;
+##   kind "logical": a logical column, as 0/1 (`y`);
+##   kind "factor": a character or factor column, which no SQL makes
+##     numeric: it only selects the rows where it is present (`present`);
+##   kind "other": a column of another type (a date, say), likewise;
+##   kind "matrix": cbind() of `ncol` expressions; the first two are
+##     resolved as arguments `a` and `b`, and the columns named beyond
+##     them only select rows. cbind() of one expression is that expression,
+##     as a one-column matrix is its column in memory (but cbind() of a
+##     factor gives its codes there: it stays a matrix of one column, the
+##     call itself resolved as `a`, which R evaluates).
+xtx_response_spec <- function(lhs, types, con) {
+    col <- function(e) if (is.name(e) && as.character(e) %in% names(types)) as.character(e)
+    ty <- function(e) if (is.null(col(e))) "" else types[[col(e)]]
+    if (is.call(lhs) && identical(lhs[[1L]], as.name("cbind"))) {
+        es <- unname(as.list(lhs)[-1L])
+        k <- length(es)
+        if (k == 1L && ty(es[[1L]]) != "factor") return(xtx_response_spec(es[[1L]], types, con))
+        if (k == 1L) return(list(kind = "matrix", ncol = 1L, args = list(a = lhs), present = col(es[[1L]])))
+        return(list(kind = "matrix", ncol = k, args = if (k >= 2L) list(a = es[[1L]], b = es[[2L]]) else list(),
+                    present = as.character(unlist(lapply(if (k >= 2L) es[-(1:2)] else es, col)))))
+    }
+    t <- ty(lhs)
+    if (t %in% c("character", "factor", "other"))
+        return(list(kind = if (t == "other") "other" else "factor", ncol = 1L, args = list(), present = col(lhs)))
+    if (t == "logical") {
+        y <- DBI::SQL(sprintf("CAST(s.%s AS DOUBLE)", DBI::dbQuoteIdentifier(con, col(lhs))))
+        return(list(kind = "logical", ncol = 1L, args = list(y = y), present = character()))
+    }
+    list(kind = "numeric", ncol = 1L, args = list(y = lhs), present = character())
+}
+
+## The response of a remote frame over the rows of design D, from its
+## description (xtx_response_spec()) and the columns resolved for it
+## (`cols`: y, or a and b): list(kind, ncol) with
+##   numeric, logical: `y`, a column; `ncol` is more than 1 when the
+##     expression, evaluated in R, gave a matrix (`yk` columns; `y` is then
+##     its first column);
+##   factor: `y`, the values as a text column (which compares with a
+##     string: y == "a"), and `levels`, those of the rows of D (in the
+##     order of the levels of a factor column; sorted for a character
+##     column): one query;
+##   matrix: `cols`, the columns resolved (the first two, when `ncol` is at
+##     least 2; the codes of cbind() of one factor column);
+##   other, none: nothing.
+xtx_response_result <- function(D, spec, cols, yk = 1L) {
+    out <- list(kind = spec$kind, ncol = spec$ncol)
+    if (spec$kind %in% c("numeric", "logical")) {
+        out$y <- cols$y
+        out$ncol <- yk
+    } else if (spec$kind == "matrix") {
+        out$cols <- unname(Filter(Negate(is.null), cols[c("a", "b")]))
+    } else if (spec$kind == "factor") {
+        col <- spec$present
+        q <- xtx_qi(D, col)
+        vals <- xtx_query(D, sprintf("SELECT DISTINCT s.%s AS v FROM (%s) AS s WHERE %s", q, D$src$select, D$filter))$v
+        proto <- D$src$proto[[col]]
+        f <- if (is.factor(proto)) factor(as.character(vals), levels = levels(proto)) else factor(vals)
+        out$levels <- levels(droplevels(f))
+        out$y <- xtx_column(D, sprintf("CAST(s.%s AS VARCHAR)", q))
+    }
+    out
+}
+
+## The types of the columns that a model on remote data takes as its
+## `weights` and `offset` (and the expressions of its offset() terms,
+## `offt`), checked before their SQL translation, with the errors of lm()
+## and glm() on a data frame, in their order: the weights, then the offset
+## (model.offset()). Only bare names of columns are checked here (an
+## expression over a column of the wrong type fails when evaluated, as in
+## memory).
+xtx_frame_arg_types <- function(types, weights, offset, offt) {
+    ty <- function(e) if (is.name(e) && as.character(e) %in% names(types)) types[[as.character(e)]] else NA_character_
+    wt <- ty(weights)
+    if (!is.na(wt) && !wt %in% c("double", "integer")) stop("'weights' must be a numeric vector", call. = FALSE)
+    omsg <- xtx_offset_type_msg(ty(offset), vapply(offt, ty, ""))
+    if (!is.null(omsg)) stop(omsg, call. = FALSE)
+    invisible()
+}
+
+## The error of model.offset() for an `offset` argument and offset() terms
+## of these column types (NA: not a column, taken as numeric), or NULL: the
+## argument alone must be numeric; with offset() terms, model.offset()
+## adds them up (`+` fails on text, gives NA on a factor) and the sum must
+## be numeric.
+xtx_offset_type_msg <- function(arg, terms) {
+    num <- c("double", "integer")
+    if (!length(terms)) return(if (!is.na(arg) && !arg %in% num) "'offset' must be numeric")
+    s <- if (is.na(arg)) "double" else arg
+    for (t in terms) {
+        if (is.na(t)) t <- "double"
+        if ("character" %in% c(s, t)) return("non-numeric argument to binary operator")
+        s <- if ("factor" %in% c(s, t)) "logical" else if ("other" %in% c(s, t)) "other"
+             else if (s == "logical" && t == "logical") "integer" else "double"
+    }
+    if (!s %in% num) "'offset' must be numeric"
+}
+
+## The remote design of a model and the columns of its arguments (one code
+## path for linear models, GLMs and fixed effects).
 ##   formula: the model formula; the design is that of its right-hand side
 ##     (offset() terms included; their values are columns too), and its
-##     response is given by the caller in `args`.
-##   src: an opened source (design_source()).
+##     response is given by the caller in `args` (`y`, or `a` and `b`).
+##   src: an opened source (xtx_source()).
 ##   args: named list of unevaluated arguments (NULL: absent), resolved in
 ##     env: column names, DBI::SQL() or R expressions over the columns.
 ##     Numeric, except those named in `logical` (`subset`, which restricts
@@ -24,8 +196,6 @@ xtx_remote_keys <- c("table", "sql", "engine", "chunk_size")
 ##     factor response).
 ##   na: "omit" (or "exclude": the same rows), "fail" or "pass" (lm()'s
 ##     errors when a row has a missing value).
-##   mresp: the error for a response `y` evaluated in R that gives a
-##     matrix with several columns (NULL: no check).
 ## R expressions with no SQL translation are evaluated in R into a
 ## temporary table (`engine = "sql"` refuses). The
 ## rows used are those of the subset where no model variable, argument or
@@ -35,11 +205,10 @@ xtx_remote_keys <- c("table", "sql", "engine", "chunk_size")
 ## absent arguments), off = the offset (offset() terms plus the `offset`
 ## argument) or NULL, offk = the largest number of columns of an offset
 ## evaluated in R (a matrix: the caller reports its length, as in memory),
-## wk = the number of columns of the weights evaluated in R (likewise)).
-#' @rdname design_source
-#' @export
-design_remote_frame <- function(formula, src, args, env, dots = list(), contrasts = NULL, logical = character(),
-                          present = character(), na = "omit", mresp = NULL) {
+## wk = the number of columns of the weights evaluated in R (likewise),
+## yk = that of the response `y` (likewise)).
+xtx_remote_frame <- function(formula, src, args, env, dots = list(), contrasts = NULL, logical = character(),
+                             present = character(), na = "omit") {
     miss <- setdiff(present, names(src$types))
     if (length(miss)) stop(sprintf("No column `%s` in the remote data.", miss[1L]), call. = FALSE)
     tt <- stats::terms(formula, data = src$proto)
@@ -69,8 +238,9 @@ design_remote_frame <- function(formula, src, args, env, dots = list(), contrast
         col <- paste0("__xtx_eval", length(exprs) + 1L)
         items[[label(nm)]] <- a
         exprs[[col]] <- a$expr
-        if (nm %in% c("offset", "weights") || nm %in% names(offt)) mat[[col]] <- "count"
-        if (nm == "y" && !is.null(mresp)) mat[[col]] <- mresp
+        ## (`a` alone: cbind() of one factor column, a one-column matrix)
+        if (nm %in% c("y", "offset", "weights") || nm %in% names(offt) || (nm == "a" && is.null(all[["b"]])))
+            mat[[col]] <- "count"
         res[[nm]] <- list(sql = if (nm %in% logical) sprintf("s.%s", q(col)) else sprintf("CAST(s.%s AS DOUBLE)", q(col)),
                           inputs = col, logical = nm %in% logical)
     }
@@ -86,6 +256,7 @@ design_remote_frame <- function(formula, src, args, env, dots = list(), contrast
     ncols <- function(nms) max(c(1L, unlist(nc[unlist(lapply(res[intersect(nms, names(res))], `[[`, "inputs"))])))
     offk <- ncols(c("offset", names(offt)))
     wk <- ncols("weights")
+    yk <- ncols("y")
     dots$table <- dots$sql <- NULL
     nonlog <- setdiff(names(res), c(logical, names(offt)))
     extra <- stats::setNames(lapply(res[nonlog], function(r) list(sql = r$sql, inputs = r$inputs, kind = "numeric")),
@@ -113,7 +284,7 @@ design_remote_frame <- function(formula, src, args, env, dots = list(), contrast
     names(cols) <- names(args)
     off <- c(res[["offset"]]$sql, vapply(res[names(offt)], `[[`, "", "sql"))
     list(x = D, cols = cols, off = if (length(off)) xtx_column(D, paste(sprintf("(%s)", off), collapse = " + ")),
-         offk = offk, wk = wk)
+         offk = offk, wk = wk, yk = yk)
 }
 
 ## na.fail and na.pass: the errors of lm() when rows have missing values.
@@ -150,7 +321,7 @@ xtx_remote_fit_na <- function(D, res, na, args, offt) {
 ##     "ncol" of the result, for the caller's error), or the message of the
 ##     error for a matrix with several columns. A one-column matrix is its
 ##     column.
-## Returns the new source (design_source() of the temporary table),
+## Returns the new source (xtx_source() of the temporary table),
 ## which keeps the original one alive.
 xtx_materialize <- function(src, exprs, env, logical = character(), chunk_size = 250000, model = list(),
                            matrix = list()) {
@@ -228,7 +399,7 @@ xtx_materialize <- function(src, exprs, env, logical = character(), chunk_size =
         chunk <- evaluate(src$proto)
         write(chunk)
     }
-    new <- design_source(con, out, NULL)
+    new <- xtx_source(con, out, NULL)
     new$parent <- src$holder
     new$label <- paste(src$label, "(with columns computed in R)")
     attr(new, "model") <- info
@@ -323,23 +494,20 @@ xtx_untranslated_engine <- function(items, dots) {
     dots
 }
 
-#' Remote data sources and arguments as columns
+#' Arguments of a model as columns of a design
 #'
-#' `is_remote_source()` tells whether `x` is remote data that
-#' [design_matrix()] and the fits accept: a DuckDB connection (`DBI`
-#' connection) or Parquet paths (a character vector of paths ending in
-#' `.parquet`, or a directory of them). `design_resolve()` turns arguments of
-#' a fit, given unevaluated, into columns over the rows of a design: for a
-#' remote design, column names, `DBI::SQL()` expressions, or R expressions
-#' over the columns (those with a SQL translation run in the database; the
-#' others are evaluated in R, batch by batch, into a temporary table, which
-#' becomes the source of the design returned); in memory, the arguments are
-#' evaluated in `data`.
+#' `design_resolve()` turns arguments of a model, given unevaluated, into
+#' columns over the rows of a design: for a remote design, column names,
+#' `DBI::SQL()` expressions, or R expressions over the columns (those with a
+#' SQL translation run in the database; the others are evaluated in R,
+#' batch by batch, into a temporary table, which becomes the source of the
+#' design returned); in memory, the arguments are evaluated in `data`.
+#' The remote path of [design_frame()] does the same for a formula and
+#' remote data, and builds the design too.
 #'
 #' Names may change before the first release.
 #'
-#' @param x For `is_remote_source()`, any value. For `design_resolve()`, a
-#'   design (a `design_matrix` or a remote design).
+#' @param x A design: a `design_matrix` or a remote design.
 #' @param exprs A named list of unevaluated arguments (a column name, a
 #'   `DBI::SQL()` expression, an R expression), `NULL` for an absent one.
 #' @param env The environment in which R expressions are evaluated.
@@ -347,23 +515,31 @@ xtx_untranslated_engine <- function(items, dots) {
 #'   subset); the others are numeric.
 #' @param data In memory, the data frame of the rows of `x` in which the
 #'   arguments are evaluated.
-#' @return `is_remote_source()`: `TRUE` or `FALSE`. `design_resolve()`: a
-#'   list with `x` (the design, on a new source when an argument was
-#'   evaluated in R), `cols` (a named list of columns: vectors in memory,
-#'   [design_column()]s remotely; `NULL` for absent arguments) and
-#'   `evaluated` (the arguments evaluated in R, with the reason).
+#' @param response For a remote design, `NULL` or the unevaluated left-hand
+#'   side of a formula (a column name, `cbind()` of two, an expression):
+#'   it is resolved by the types of its columns and returned as `response`,
+#'   as the remote path of [design_frame()] returns it. No rows are dropped:
+#'   the rows are those of `x`.
+#' @return A list with `x` (the design, on a new source when an argument
+#'   was evaluated in R), `cols` (a named list of columns: vectors in
+#'   memory, [design_column()]s remotely; `NULL` for absent arguments),
+#'   `evaluated` (the arguments evaluated in R, with the reason) and, with
+#'   `response`, `response` (see [design_frame()]).
 #' @examples
-#' is_remote_source(data.frame(x = 1))
 #' d <- data.frame(y = rnorm(5), x = 1:5)
 #' D <- design_matrix(y ~ x, d)
 #' design_resolve(D, list(w = quote(x / 2)), environment(), data = d)$cols$w
+#' @keywords internal
 #' @export
-is_remote_source <- function(x) xtx_is_remote_source(x)
-
-#' @rdname is_remote_source
-#' @export
-design_resolve <- function(x, exprs, env = parent.frame(), logical = character(), data = NULL) {
+design_resolve <- function(x, exprs, env = parent.frame(), logical = character(), data = NULL, response = NULL) {
     checkmate::assert_multi_class(x, c("xtx_matrix", "xtx_remote"))
     checkmate::assert_list(exprs, names = "unique")
-    xtx_p_resolve(x, exprs, env, logical = logical, data = data)
+    if (is.null(response)) return(xtx_p_resolve(x, exprs, env, logical = logical, data = data))
+    if (!inherits(x, "xtx_remote")) stop("`response` applies only to a remote design.", call. = FALSE)
+    spec <- xtx_response_spec(response, x$src$types, xtx_con(x))
+    if (any(names(spec$args) %in% names(exprs))) stop("With `response`, `exprs` cannot be named `y`, `a` or `b`.", call. = FALSE)
+    r <- xtx_p_resolve(x, c(spec$args, exprs), env, logical = logical)
+    r$response <- xtx_response_result(r$x, spec, r$cols)
+    r$cols <- r$cols[names(exprs)]
+    r
 }

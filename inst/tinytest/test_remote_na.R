@@ -16,7 +16,14 @@ xtx_c_count <- xtx:::xtx_c_count
 xtx_c_present <- xtx:::xtx_c_present
 xtx_c_is_finite <- xtx:::xtx_c_is_finite
 xtx_c_key <- xtx:::xtx_c_key
-xtx_c_complete <- xtx:::xtx_c_complete
+## a complete key, from is.na() of its variables (as xtx.fit computes it)
+key_complete <- function(key) {
+    if (!inherits(key, "xtx_column")) return(stats::complete.cases(key))
+    na <- is.na(key)
+    ok <- !na[, 1L]
+    for (j in seq_len(ncol(na))[-1L]) ok <- ok & !na[, j]
+    ok
+}
 xtx_colsum <- xtx:::xtx_colsum
 
 vals <- c(NA, NaN, Inf, -Inf, 0, 1, -2.5)
@@ -204,7 +211,7 @@ expect_equal(xtx_colsum(xtx_c_count(is.na(a))), sum(is.na(d$a)))
 for (vars in list("a", c("a", "b"), "f", c("f", "i"), c("f", "b"))) {
     kl <- xtx_c_key(NULL, vars, data = d)
     kr <- xtx_c_key(R, vars)
-    check(xtx_c_complete(kr), xtx_c_complete(kl), paste("not_na", paste(vars, collapse = ",")))
+    check(key_complete(kr), key_complete(kl), paste("not_na", paste(vars, collapse = ",")))
 }
 
 test_con_done(con)

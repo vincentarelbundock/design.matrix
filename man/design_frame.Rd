@@ -2,27 +2,60 @@
 % Please edit documentation in R/frame.R
 \name{design_frame}
 \alias{design_frame}
-\title{Build a model frame without redundant copies}
+\title{Build a model frame without redundant copies, or the remote frame of a model}
 \usage{
 design_frame(...)
 }
 \arguments{
 \item{...}{Arguments of \code{\link[stats:model.frame]{stats::model.frame()}}: \code{formula}, \code{data},
 \code{subset}, \code{na.action}, \code{drop.unused.levels}, \code{xlev}, and further
-variables such as \code{weights} or \code{offset}.}
+variables such as \code{weights} or \code{offset}. With remote data, see
+\emph{Remote data}.}
 }
 \value{
-A model frame, as returned by \code{\link[stats:model.frame]{stats::model.frame()}}.
+In memory, a model frame, as returned by \code{\link[stats:model.frame]{stats::model.frame()}}.
+
+With remote data, a list of class \code{xtx_remote_frame}:
+\itemize{
+\item \code{x}: the remote design of the rows used.
+\item \code{response}: a list with \code{kind} and \code{ncol}, and by kind:
+\code{"numeric"} (a numeric column or an expression) and \code{"logical"} (a
+logical column, as 0/1): \code{y}, a \code{\link[=design_column]{design_column()}} (\code{ncol} is more
+than 1 when an expression evaluated in R gave a matrix; \code{y} is then
+its first column); \code{"factor"} (a character or factor column): \code{y},
+its values as a text column, which compares with a string
+(\code{y == "a"}), and \code{levels}, the levels on the rows used;
+\code{"matrix"} (\code{cbind()} of \code{ncol} expressions): \code{cols}, a list of its
+first two columns (\code{cbind()} of one expression is that expression,
+but for a factor column, whose codes are then the one column of
+\code{cols}, as in memory); \code{"other"} (a column
+of another type, such as a date) and \code{"none"} (a one-sided formula):
+nothing.
+\item \code{weights}: a column, or \code{NULL}.
+\item \code{offset}: the sum of the \code{offset()} terms of the formula and of the
+\code{offset} argument, a column, or \code{NULL}.
+\item \code{ncol}: the numbers of columns of the \code{weights} and of the \code{offset},
+more than 1 when an expression evaluated in R gave a matrix (which a
+caller refuses, as \code{\link[stats:lm]{stats::lm()}} does).
+\item \code{types}: the kind of each column of the data (\code{"double"},
+\code{"integer"}, \code{"logical"}, \code{"character"}, \code{"factor"} or \code{"other"}).
+\item \code{terms}, \code{contrasts}, \code{xlevels}: the terms of the formula, and the
+contrasts and factor levels of the design.
+\item \code{na.action}: \code{"omit"}, \code{"exclude"}, \code{"fail"} or \code{"pass"}.
+}
 }
 \description{
 \code{design_frame()} takes the arguments of \code{\link[stats:model.frame]{stats::model.frame()}} and returns
 the same model frame, faster on large data. \code{\link[=design_matrix]{design_matrix()}} uses it to
-build its model frames.
+build its model frames. When \code{data} is remote data (a DuckDB connection,
+or Parquet paths), it returns the \emph{remote frame} of the model instead:
+the remote design of the rows the model uses, with its response, weights
+and offset as columns over those rows.
 }
 \details{
-The result is identical to that of \code{model.frame()} in the strict sense
-described in \code{\link[=design_matrix]{design_matrix()}}: same values, same attributes in the same
-order, same row names; warnings and errors are the same too.
+\strong{In memory.} The result is identical to that of \code{model.frame()} in the
+strict sense described in \code{\link[=design_matrix]{design_matrix()}}: same values, same attributes
+in the same order, same row names; warnings and errors are the same too.
 \code{design_frame()} skips two steps of \code{model.frame()} when they would
 return their input unchanged:
 \itemize{
@@ -48,8 +81,54 @@ the data frame methods of \code{na.omit()} and \code{na.exclude()} or
 self-test at load finds a difference, the corresponding shortcut is
 turned off; without shortcuts, \code{design_frame()} is \code{model.frame()}.
 Option \code{xtx.skip_na_copy = FALSE} turns both shortcuts off.
+
+\strong{Remote data.} \code{data} is looked at first (it is evaluated before the
+other arguments, after \code{formula}). When it is a DuckDB connection or a
+character vector of Parquet paths, the arguments are, all by name except
+\code{formula} and \code{data}:
+\itemize{
+\item \code{formula}: a model formula. The design is that of its right-hand side
+(see \link{design_remote}).
+\item \code{weights}, \code{offset}, \code{subset}: taken unevaluated, as \code{model.frame()}
+takes them: the name of a column, a \code{DBI::SQL()} expression, or an R
+expression over the columns. Expressions with a SQL translation run in
+the database; the others are evaluated in R, batch by batch, into a
+temporary table (with a message; \code{engine = "sql"} refuses). R
+expressions are evaluated in the environment of the formula.
+\item \code{na.action}: \code{\link[stats:na.omit]{stats::na.omit()}} (the default) or \code{\link[stats:na.exclude]{stats::na.exclude()}}
+(the same rows), \code{\link[stats:na.fail]{stats::na.fail()}} or \code{\link[stats:na.pass]{stats::na.pass()}} (the errors
+of \code{\link[stats:lm]{stats::lm()}} when a row has a missing value), or their names.
+\item \code{contrasts}: as the \code{contrasts.arg} of \code{\link[stats:model.matrix]{stats::model.matrix()}}.
+\item \code{table}, \code{sql}, \code{engine}, \code{chunk_size}: as \code{\link[=design_matrix]{design_matrix()}} takes
+them for remote data (see \link{design_remote}).
+\item other arguments: bare names of columns that are not in the model but
+must not be missing on the rows used (the variables of fixed effects
+or clusters, say), as \code{model.frame()} keeps the extra variables it is
+given.
+}
+
+The rows used are those of the subset where no variable of the model,
+response, weight, offset or extra column is missing, and the levels of
+factors are those of these rows, as
+\code{model.frame(drop.unused.levels = TRUE)} gives them in memory. The
+response is returned whatever its type, as \code{model.frame()} does; a
+column given as \code{weights} or \code{offset} must be numeric (the errors of
+\code{lm()}: \verb{'weights' must be a numeric vector}, \verb{'offset' must be numeric}).
 }
 \examples{
 d <- data.frame(y = rnorm(10), x = rnorm(10), f = gl(2, 5))
 identical(design_frame(y ~ x * f, d), model.frame(y ~ x * f, d))
+
+if (requireNamespace("duckdb", quietly = TRUE)) {
+    con <- DBI::dbConnect(duckdb::duckdb())
+    d$w <- runif(10)
+    d$id <- rep(1:5, 2)
+    DBI::dbWriteTable(con, "d", d)
+    fr <- design_frame(y ~ x * f, con, table = "d", weights = 2 * w, subset = x > -1, id)
+    fr
+    dim(fr$x)
+    sum(fr$weights)
+    b <- solve(crossprod(fr$x), crossprod(fr$x, fr$response$y))
+    DBI::dbDisconnect(con)
+}
 }

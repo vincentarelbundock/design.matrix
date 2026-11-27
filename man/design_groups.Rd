@@ -48,8 +48,8 @@ key variable). A list combines several of these.}
 of a fit, instead of the levels that occur in \code{x}. Rows whose key is
 missing or not among \code{levels} get the code \code{NA} (no error): such a
 grouping works with \code{group_lookup()} (\code{NA} for those rows) and
-\code{xtx.fit::design_absorb_fitted()}, not with \code{group_sums()}, \code{group_crosstab()} or
-\code{group_nested()}. Names may change before the first release.}
+the predictions of \code{xtx.fit::lm_xtx()} with fixed effects, not with
+\code{group_sums()}, \code{group_crosstab()} or \code{group_nested()}. Names may change before the first release.}
 
 \item{col}{A column: in memory a numeric (or logical) vector with one
 value per row, or a matrix or data frame of such columns; for a remote
@@ -61,7 +61,7 @@ number is a constant column: \code{group_sums(1, g)} counts the rows of each
 group.}
 
 \item{g, g1, g2}{Groupings made by \code{design_groups()}, of the same design,
-or bare codes (see \code{\link[=group_codes]{group_codes()}}), which are used as given, without
+or bare codes (see \code{\link[=key_codes]{key_codes()}}), which are used as given, without
 the checks. For \code{group_sums()}, \code{g} can also be a list of groupings:
 the sums within each of them, from one pass over the rows.}
 

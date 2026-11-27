@@ -26,7 +26,7 @@ cross products of the centered design keep their accuracy when a variable
 is far from zero. In memory the design is rebuilt from its model frame;
 remotely the variables' SQL changes. Coefficients \verb{b~} on the centered
 design map back to the design as \verb{b = T b~}, and their covariance \code{V} as
-\verb{T V T'} (see \code{xtx.fit::design_uncenter()} for fits with fixed effects).
+\verb{T V T'} (as the fits with fixed effects of 'xtx.fit' do).
 }
 \details{
 Names may change before the first release.
@@ -37,3 +37,4 @@ D <- design_matrix(y ~ x, d)
 ctr <- design_center(D)
 colMeans(as.matrix(ctr$x))
 }
+\keyword{internal}

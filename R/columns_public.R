@@ -176,6 +176,9 @@ xtx_summary_aggregates <- function(args, what) {
 #' their first argument: put a column first (`sum(r, 1)`, not `sum(1, r)`).
 #'
 #' @param test A logical column (in memory a logical vector).
+#' @param missing For `col_ifelse()`: `NULL` (default: a missing `test` gives a
+#'   missing value, as [ifelse()]), or one number, the value where `test` is
+#'   missing.
 #' @param yes,no,a,b Columns (vectors in memory, `design_column`s remotely)
 #'   or numbers.
 #' @param ... For `col_sums()`, columns or numbers, optionally named. For
@@ -185,13 +188,6 @@ xtx_summary_aggregates <- function(args, what) {
 #'   operand is). `FALSE` is for operands known to have no missing values:
 #'   remotely plain `least()` and `greatest()`, whose SQL is shorter; in
 #'   memory the same values.
-#' @param fun For `col_math()`, a function that base R cannot dispatch on:
-#'   `"pnorm"`, `"qnorm"`, `"dnorm"` and `"pcauchy"` (the standard
-#'   distributions, as [stats::pnorm()] and the others compute them);
-#'   `"log_positive"`, the natural logarithm of values known to be positive
-#'   (remotely without the guards of `log()` at zero and below); and
-#'   `"one_minus_exp_neg"`, `1 - exp(-x)` for `x >= 0`, accurate near zero
-#'   (`-expm1(-x)`).
 #' @param like A column, or a design: the rows of the constant column.
 #' @param value One number.
 #' @param deparse.level Not used.
@@ -201,7 +197,7 @@ xtx_summary_aggregates <- function(args, what) {
 #' @param dims For `rowSums()`, only the default.
 #' @param x A remote column.
 #' @param trim Only `0` is supported for a remote column.
-#' @return `col_ifelse()`, `col_pmin()`, `col_pmax()`, `col_math()`: a column (a double
+#' @return `col_ifelse()`, `col_pmin()`, `col_pmax()`: a column (a double
 #'   vector in memory, a `design_column` remotely). `col_sums()`: a double
 #'   vector. The `Summary` methods and `mean()`: a number, two for
 #'   `range()`, a logical value for `any()` and `all()`.
@@ -417,7 +413,11 @@ xtx_math_sql <- function(x, generic, ...) {
 
 #' @rdname column_arithmetic
 #' @export
-col_ifelse <- function(test, yes, no) {
+col_ifelse <- function(test, yes, no, missing = NULL) {
+    if (!is.null(missing)) {
+        checkmate::assert_number(missing, na.ok = TRUE)
+        return(xtx_ifelse_missing(test, yes, no, missing))
+    }
     if (is.null(xtx_column_frame(test, yes, no))) {
         if (!is.logical(test)) {
             if (!is.numeric(test)) stop("`test` must be logical.", call. = FALSE)
@@ -453,14 +453,59 @@ col_pmax <- function(a, b, checked = TRUE) {
     if (checked) xtx_c_pmax(a, b) else xtx_fast_pmax(a, b)
 }
 
-#' @rdname column_arithmetic
+#' Functions of a column that base R cannot dispatch on
+#'
+#' `col_math()` applies to a column, in memory or remote, one of the
+#' functions that GLM families need and that have no generic in base R:
+#' the standard distribution functions, and forms of `log()` and
+#' `1 - exp(-x)` for values in a known range. See [column_arithmetic] for
+#' the arithmetic of columns.
+#'
+#' Names may change before the first release.
+#'
+#' @param x A column: a numeric vector in memory, a [design_column()]
+#'   remotely.
+#' @param fun `"pnorm"`, `"qnorm"`, `"dnorm"` and `"pcauchy"` (the standard
+#'   distributions, as [stats::pnorm()] and the others compute them); and
+#'   `"log_positive"`, the natural logarithm of values known to be positive
+#'   (remotely without the guards of `log()` at zero and below).
+#' @return A column (a double vector in memory, a `design_column` remotely).
+#' @examples
+#' col_math(c(-1, 0, 1), "pnorm")
+#' @keywords internal
 #' @export
-col_math <- function(x, fun = c("pnorm", "qnorm", "dnorm", "pcauchy", "log_positive", "one_minus_exp_neg")) {
+col_math <- function(x, fun = c("pnorm", "qnorm", "dnorm", "pcauchy", "log_positive")) {
     fun <- match.arg(fun)
     xtx_col_check(x, "x")
     switch(fun,
            pnorm = xtx_c_pnorm(x), qnorm = xtx_c_qnorm(x), dnorm = xtx_c_dnorm(x), pcauchy = xtx_c_pcauchy(x),
-           log_positive = xtx_fast_log(x), one_minus_exp_neg = xtx_c_mexpm1m(x))
+           log_positive = xtx_fast_log(x))
+}
+
+## col_ifelse() with a value where the test is missing. In memory, the
+## values of col_ifelse() with `missing` on the rows of a missing test;
+## remotely one CASE: WHEN test THEN yes ELSE no when `missing` is `no`
+## (the test named once, the shortest form: counts of rows), otherwise a
+## third branch.
+xtx_ifelse_missing <- function(test, yes, no, missing) {
+    if (is.null(xtx_column_frame(test, yes, no))) {
+        out <- col_ifelse(test, yes, no)
+        na <- is.na(test)
+        if (any(na)) out[na] <- missing
+        return(out)
+    }
+    xtx_col_check(test, "test")
+    xtx_col_check(yes, "yes")
+    xtx_col_check(no, "no")
+    if (!xtx_is_column(test)) return(col_ifelse(test, yes, no))
+    f <- xtx_column_frame(test, yes, no)
+    y <- xtx_column_operand(yes)
+    n <- xtx_column_operand(no)
+    same <- !xtx_is_column(no) && length(no) == 1L && identical(as.double(no), as.double(missing))
+    sql <- if (same) sprintf("(CASE WHEN %s THEN %s ELSE %s END)", xtx_column_operand(test), y, n)
+           else sprintf("(CASE %s WHEN TRUE THEN %s WHEN FALSE THEN %s ELSE %s END)", xtx_column_operand(test), y, n,
+                        xtx_column_operand(missing))
+    xtx_column(f, sql, notnull = all(xtx_operand_notnull(yes)) && all(xtx_operand_notnull(no)) && !is.na(missing))
 }
 
 #' @rdname column_arithmetic

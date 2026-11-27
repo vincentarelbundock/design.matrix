@@ -1,7 +1,7 @@
 #' Terms, factor levels and contrasts of a fitted model
 #'
 #' `design_parts()` extracts from a fitted model the pieces that
-#' [design_plan()] needs to build the model matrix of new data: the terms, the
+#' `design_matrix(model, newdata = )` needs to build the model matrix of new data: the terms, the
 #' levels of the factors and the contrasts. Each method reads the pieces that
 #' the model's own `predict()` method uses.
 #'
@@ -34,7 +34,7 @@
 #' its own model class by writing a method `design_parts.<class>()` and
 #' registering it (with `S3method(xtx::design_parts, <class>)` in
 #' the NAMESPACE of a package that only suggests \pkg{xtx}, or
-#' `S3method(design_parts, <class>)` when it imports it). [design_plan()],
+#' `S3method(design_parts, <class>)` when it imports it). [design_matrix()],
 #' and therefore `design_matrix(fit, newdata = ...)`, then work for that
 #' class. A method returns a list with elements:
 #' * `terms`: a `terms` object, with the response or without. Its
@@ -65,7 +65,7 @@
 #' @return A list with elements `terms`, `xlevels` and `contrasts`, and
 #'   optionally `drop_intercept` (see the section *Methods for other
 #'   classes*).
-#' @seealso [design_plan()], which compiles these pieces into a reusable
+#' @seealso [design_matrix()], which compiles these pieces into a reusable
 #'   plan.
 #' @examples
 #' fit <- lm(mpg ~ poly(hp, 2) + factor(cyl), data = mtcars)
@@ -83,7 +83,7 @@
 #' }
 #' # (in a package: S3method(xtx::design_parts, toyfit))
 #' .S3method("design_parts", "toyfit", design_parts.toyfit)
-#' p <- design_plan(toy)
+#' p <- design_matrix(toy, newdata = NULL)
 #' as.matrix(design_matrix(p, head(mtcars)))
 #' @export
 design_parts <- function(model, ...) {

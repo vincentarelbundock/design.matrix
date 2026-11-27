@@ -54,7 +54,7 @@ A `design_matrix` is the result of the setup plus the variables. The fill perfor
 
 == Plans
 
-A `design_plan` keeps what a fitted design fixes for later data: the terms, the data-dependent transformations (`poly()`, `ns()`, `scale()`) with their training parameters, the factor levels and the contrasts (`R/plan.R`). `design_matrix(plan, batch)` applies it to new rows without repeating the checks. Remote designs carry a plan too: it fixes their terms, levels and contrasts, so that their columns are those of `model.matrix()`. `design_plan()` and `design_parts()` are exported generics: a package supports its own model class with a `design_parts()` method that returns the terms, levels and contrasts its `predict()` method uses (`R/parts.R`).
+A plan keeps what a fitted design fixes for later data: the terms, the data-dependent transformations (`poly()`, `ns()`, `scale()`) with their training parameters, the factor levels and the contrasts (`R/plan.R`). `design_matrix(plan, batch)` applies it to new rows without repeating the checks. Remote designs carry a plan too: it fixes their terms, levels and contrasts, so that their columns are those of `model.matrix()`. `design_matrix(fit, newdata = NULL)` returns the plan of a fitted model, and `design_parts()` is an exported generic: a package supports its own model class with a `design_parts()` method that returns the terms, levels and contrasts its `predict()` method uses (`R/parts.R`).
 
 = Products from the structure
 
@@ -131,11 +131,11 @@ When the data have few design patterns, the scan of the SQL engine also groups b
 
 == The API of the fitting code
 
-The fitting code is the package `xtx.fit`: the fits (`lm.R`, `glm.R`, `fe.R`, `fe_glm.R`, `remote_fit.R`, `checks.R`, `na_action.R`) and the layers they are built on, which are exported from `xtx.fit` (names may change before the first release):
+The fitting code is the package `xtx.fit`, which exports `lm_xtx()` and `glm_xtx()` only: the fits (`lm.R`, `glm.R`, `fe.R`, `fe_glm.R`, `remote_fit.R`, `checks.R`, `na_action.R`) and the layers they are built on, which are internal to `xtx.fit` (they are documented in its sources, and its tests reach them through the namespace):
 
 #table(
   columns: 2,
-  table.header([Function of `xtx.fit`], [Role]),
+  table.header([Internal function of `xtx.fit`], [Role]),
   [`design_problem()`], [The input stage: a formula and a data frame or remote data, a design matrix or a remote design, as the design of the rows used and the response, weights and offset as columns (class `xtx_problem`)],
   [`design_exclude()`], [`na.exclude` for remote fits (`napredict()` and `naresid()` methods)],
   [`design_wls()`], [Weighted least squares with `lm()`'s pivoting, in memory or remote],
@@ -145,23 +145,22 @@ The fitting code is the package `xtx.fit`: the fits (`lm.R`, `glm.R`, `fe.R`, `f
   [`design_absorb_fitted()`, `design_uncenter()`], [$X b$ plus the FE values of the rows' levels; the map of a fit on a centered design back to the design],
 )
 
-`xtx.fit` reaches `xtx` only through its documented, exported functions (no internal function is exported for it). Besides base generics on designs and columns (`%*%`, arithmetic, `sum()`, `is.na()`, `is.finite()`, `round()`, `log()`, `cbind()`, `x[, j]`, `rowSums()`), it uses:
+`xtx.fit` reaches `xtx` only through its documented, exported functions (no internal function is exported for it). The functions that exist only for fitting code are exported and documented but kept out of the help index (`@keywords internal`): `design_resolve()`, `design_output()`, `design_center()`, `design_moments()`, `pivoted_chol()`, `design_subset()`, `design_key()`, `key_codes()`, `design_group_sums()` and `col_math()`. Besides base generics on designs and columns (`%*%`, arithmetic, `sum()`, `is.na()`, `is.finite()`, `round()`, `log()`, `cbind()`, `x[, j]`, `rowSums()`, `==` of a text column and a string), it uses:
 
 #table(
   columns: 2,
   table.header([Function of `xtx`], [Role]),
-  [`design_matrix()`, `design_frame()`], [The design and the model frame],
-  [`design_resolve()`, `is_remote_source()`], [Arguments of a fit as columns of a design (SQL, or evaluated in R into a table); remote data or not],
+  [`design_matrix()`, `design_frame()`], [The design and the model frame. With remote data (a DuckDB connection or Parquet paths as `data`), `design_frame()` is the single entry point of a model: it opens the data, takes `weights`, `offset` and `subset` unevaluated (SQL, or evaluated in R into a table), the variables of fixed effects and clusters as extra columns that must be present, and returns a remote frame (class `xtx_remote_frame`): the remote design of the rows used, the response with its kind (numeric, logical, a factor with its levels, the columns of `cbind()`, or a type no fit takes), the weights and offset as columns, and the column types. What a fit makes of the response (a factor needs a binomial family, its first level is the reference, the trials of `cbind()`) is decided in `xtx.fit`, which branches on the class of the result],
+  [`design_resolve(response =)`], [Arguments of a fit as columns of an existing design (SQL, or evaluated in R into a table), and a response resolved as in a remote frame],
   [`design_patterns(check = FALSE, fit =)`], [Compression: rows that share a design pattern and their sufficient statistics],
   [`design_output()`], [Results with one value per row: vectors in memory, tables remotely],
   [`col_sums()`, `col_ifelse()`, `col_pmax()`, `col_const()`, `col_compute(table = FALSE)`], [Sums of several columns in one query (one `na.rm` per argument), conditionals, constants, columns computed once in a projection],
   [`design_center()`, `design_groups(levels =)`], [Exact centering of numeric variables; groupings of new rows coded against the levels of a fit],
   [`design_moments()`, `qr(D, y =)`, `pivoted_chol()`], [The weighted moments of a design and a response; the factorization with $X'y$ from the same scan; the pivoted Cholesky factor with `lm()`'s rule and the recheck of suspect columns],
-  [`design_subset()`, `design_align()`], [The rows of a design where a column is true, and a design moved to the frame of columns computed from it, with the columns that go with the rows],
-  [`design_key()`, `key_complete()`, `key_codes()`, `group_codes()`], [Keys that can have missing values, and bare group codes: remotely the stored values themselves, so that the database groups without a join],
-  [`group_sums()`, `group_crosstab()`, `group_lookup()`, `group_nested()`, `design_group_sums()`], [Sums, crosstabs, lookups and nesting of groupings or bare codes; the grouped sums of a design for several groupings in one pass],
+  [`design_subset()`], [The rows of a design where a column is true, with the columns that go with the rows; with `keep = NULL`, no row is dropped and the design is moved to the frame of the columns computed from it],
+  [`design_key()`, `is.na()` of a key, `key_codes()`], [Keys that can have missing values (of any type: `is.na()` of a stored column that is not double is `IS NULL`), and bare group codes: remotely the stored values themselves, so that the database groups without a join],
+  [`group_sums()`, `group_crosstab()`, `group_lookup()`, `group_nested()`, `design_group_sums()`], [Sums, crosstabs, lookups and nesting of groupings or bare codes; the grouped sums of a design for several groupings (bare codes or groupings of `design_groups()`) in one pass],
   [`col_math()`, `col_pmin()`, `col_pmax(checked = FALSE)`], [The functions of columns that base R cannot dispatch on: distributions, and unchecked forms for columns known to have no missing values],
-  [`design_source()`, `design_remote_frame()`], [Remote data described before a design is built; the remote counterpart of `design_frame()`: the design of the rows a model uses and its arguments as columns],
 )
 
 The estimators, the IRLS loop, the checks and messages of `lm()` and `glm()`, the covariance matrices, the small sample corrections and the methods of the fits are all in `xtx.fit`.

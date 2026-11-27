@@ -15,6 +15,13 @@ convert() {
     local man=$1 out=$2 setup=$3
     rm -rf "$out"
     rd2qmd convert "$man" -o "$out" -f typ -q
+    # pages marked internal (\keyword{internal}: functions exported for
+    # xtx.fit, package pages) are documented but not part of the reference
+    for rd in "$man"/*.Rd; do
+        if grep -q '\\keyword{internal}' "$rd"; then
+            rm -f "$out/$(basename "$rd" .Rd).typ"
+        fi
+    done
     for f in "$out"/*.typ; do
         # sidebar title: the first alias, e.g. "design_matrix"
         alias=$(grep -m1 -o 'aliases: ("[^"]*"' "$f" | sed 's/.*("//; s/"$//')

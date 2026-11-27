@@ -1,82 +1,29 @@
-#' Compile a formula or a fitted model into a reusable plan
-#'
-#' A plan records everything needed to build the model matrix of new data
-#' the way [stats::predict.lm()] does: the terms (with the parameters of
-#' transformations such as [stats::poly()] or [splines::ns()] fixed by the
-#' training data), the factor levels, and the contrasts.
-#'
-#' From a formula and training data, every piece comes from stats functions:
-#' [stats::terms()], [stats::model.frame()], [stats::.getXlevels()] and
-#' `contrasts<-`. From a fitted model, the pieces are those the model stores,
-#' as returned by [design_parts()]; the training data is not needed.
-#'
-#' Apply a plan with `design_matrix(plan, newdata)`. Its dense matrix,
-#' `as.matrix(design_matrix(plan, newdata))`, is identical (in the strict
-#' sense described in [design_matrix()]) to
-#' ```
-#' model.matrix(plan$terms,
-#'              model.frame(plan$terms, newdata, xlev = plan$xlevels,
-#'                          na.action = na.action),
-#'              contrasts.arg = plan$contrasts)
-#' ```
-#' where `plan$terms` is the training terms with the response removed.
-#'
-#' When `newdata` is a data frame whose variables have the same types,
-#' levels and column names as the training data, the plan skips
-#' [stats::model.frame()] and the contrast set-up entirely, which makes
-#' small calls much faster. Anything else goes through the general path
-#' above, so results never depend on which path was taken. A plan built from
-#' a formula prepares this fast path from the training data; a plan built
-#' from a fitted model prepares it from the first data it is applied to.
-#'
-#' @param object A model formula or `terms` object, or a fitted model with a
-#'   [design_parts()] method (the default method covers most models with a
-#'   [stats::terms()] method).
-#' @param data The training data frame, for a formula.
-#' @param contrasts.arg,xlev As in [stats::model.matrix()], for a formula.
-#' @param ... Passed to [design_parts()] for a fitted model, for example
-#'   `component = "precision"` for a `betareg` model.
-#' @section Methods:
-#' `design_plan()` is an S3 generic with two methods: one for formulas (and
-#' `terms` objects), and a default method for fitted models, which calls
-#' [design_parts()] and checks what it returns. To support a new model
-#' class, write a [design_parts()] method rather than a `design_plan()`
-#' method: the default method then builds and caches the plan. A
-#' `design_plan()` method for a class that is not a fitted model must return
-#' a `design_plan` object, as one of the two methods does.
-#'
-#' Plans of fitted models are cached: two calls on models with identical
-#' terms (with their environment), levels and contrasts return the same plan,
-#' so that the fast path learned by the first call is reused.
-#'
-#' @return A `design_plan` object: a list whose elements `terms` (the terms
-#'   without the response), `xlevels`, `contrasts` and `drop_intercept` are
-#'   those of the reference computation above. Other elements are internal.
-#'   Apply it with [design_matrix()].
-#' @seealso [design_parts()], to support a new class of fitted models.
-#' @examples
-#' train <- data.frame(y = rnorm(20), x = runif(20), f = gl(4, 5))
-#' newdata <- data.frame(x = c(0.2, 0.8), f = factor(c("b", "d"), levels = levels(train$f)))
-#'
-#' # from a formula and training data
-#' p <- design_plan(y ~ poly(x, 2) + f, train)
-#' p
-#' X <- as.matrix(design_matrix(p, newdata))
-#' X
-#'
-#' # from a fitted model: the same columns as predict() uses
-#' fit <- lm(y ~ poly(x, 2) + f, train)
-#' pf <- design_plan(fit)
-#' all.equal(drop(as.matrix(design_matrix(pf, newdata)) %*% coef(fit)),
-#'           predict(fit, newdata), check.attributes = FALSE)
-#' @export
-design_plan <- function(object, ...) {
-    UseMethod("design_plan")
+## Plans: a formula or a fitted model compiled for reuse on new data
+## (internal: users get the plan of a model with design_matrix(fit, newdata =
+## NULL), or reuse a design, design_matrix(D, newdata = batch); see "Reusing
+## a design or a fitted model on new data" in ?design_matrix).
+##
+## A plan records what building the model matrix of new data needs, as
+## stats::predict.lm() does it: the terms (with the parameters of
+## transformations such as poly() or ns() fixed by the training data), the
+## factor levels and the contrasts. From a formula and training data, every
+## piece comes from stats functions (terms(), model.frame(), .getXlevels(),
+## `contrasts<-`); from a fitted model, the pieces are those of
+## design_parts(), and the training data is not needed.
+##
+## When new data is a data frame whose variables have the same types, levels
+## and column names as the training data, the plan skips model.frame() and
+## the contrast set-up (the fast path); anything else goes through the
+## general path, so results never depend on the path taken. A plan built
+## from a formula prepares the fast path from the training data; one built
+## from a fitted model, from the first data it is applied to. Plans of
+## fitted models are cached (below).
+xtx_plan_of <- function(object, ...) {
+    if (inherits(object, "formula")) xtx_plan_formula(object, ...) else xtx_plan_model(object, ...)
 }
 
-#' @rdname design_plan
-#' @export
-design_plan.formula <- function(object, data, contrasts.arg = NULL, xlev = NULL, ...) {
+## From a formula (or a terms object) and training data.
+xtx_plan_formula <- function(object, data, contrasts.arg = NULL, xlev = NULL, ...) {
     checkmate::assert_data_frame(data)
     checkmate::assert_list(contrasts.arg, null.ok = TRUE)
     checkmate::assert_list(xlev, null.ok = TRUE)
@@ -93,9 +40,8 @@ design_plan.formula <- function(object, data, contrasts.arg = NULL, xlev = NULL,
     xtx_new_plan(tt, xlevels, contr, data)
 }
 
-#' @rdname design_plan
-#' @export
-design_plan.default <- function(object, ...) {
+## From a fitted model: the pieces of design_parts(), checked; cached.
+xtx_plan_model <- function(object, ...) {
     parts <- design_parts(object, ...)
     checkmate::assert_list(parts)
     checkmate::assert_class(parts$terms, "terms", .var.name = "design_parts()$terms")

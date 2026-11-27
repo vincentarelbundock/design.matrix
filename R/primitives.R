@@ -637,13 +637,32 @@ xtx_column_operand <- function(x) {
 Ops.xtx_column <- function(e1, e2) {
     op <- .Generic
     if (nargs() == 1L) {
-        a <- xtx_column_operand(e1)
-        sql <- switch(op, "-" = sprintf("(-%s)", a), "+" = a, "!" = sprintf("(NOT %s)", a),
+        u <- unclass(e1)
+        if (op == "!") {
+            ## (the negation of a negation is the column negated: !is.na(x)
+            ## is the short SQL of "present", not NOT (NOT ...))
+            if (!is.null(u$neg)) return(u$neg)
+            out <- xtx_column_logical(xtx_column(u$frame, sprintf("(NOT %s)", u$sql), notnull = xtx_operand_notnull(e1)))
+            out <- unclass(out)
+            out$neg <- xtx_column_logical(e1)
+            return(structure(out, class = "xtx_column"))
+        }
+        a <- xtx_column_arith(e1)
+        sql <- switch(op, "-" = sprintf("(-%s)", a), "+" = a,
                       stop(sprintf("`%s` is not supported for remote columns.", op), call. = FALSE))
-        ## (NOT of a column that is never NULL is never NULL)
-        return(xtx_column(unclass(e1)$frame, sql, notnull = op == "!" & xtx_operand_notnull(e1)))
+        return(xtx_column(u$frame, sql))
     }
     frame <- xtx_column_frame(e1, e2)
+    ## a column of text against a string (the response of a remote frame
+    ## that is a factor: design_frame()): equal or not, NULL where the
+    ## column is
+    if (op %in% c("==", "!=") && (is.character(e1) || is.character(e2))) {
+        str <- if (is.character(e1)) e1 else e2
+        if (length(str) != 1L || is.na(str)) stop("A remote column compares with one string.", call. = FALSE)
+        col <- unclass(if (is.character(e1)) e2 else e1)$sql
+        return(xtx_column_logical(xtx_column(frame, sprintf("(%s %s %s)", col, if (op == "==") "=" else "<>",
+                                                            DBI::dbQuoteString(xtx_con(frame), str)))))
+    }
     a <- xtx_column_operand(e1)
     b <- xtx_column_operand(e2)
     k <- max(length(a), length(b))
@@ -663,6 +682,11 @@ Ops.xtx_column <- function(e1, e2) {
         a <- nn(a, e1)
         b <- nn(b, e2)
     }
+    if (op %in% c("+", "-", "*", "/", "^")) {
+        ## (a logical column is 0/1 in arithmetic, as in R)
+        a <- rep_len(xtx_column_arith(e1), k)
+        b <- rep_len(xtx_column_arith(e2), k)
+    }
     sql <- switch(op,
         "+" = , "-" = , "*" = , "/" = sprintf("(%s %s %s)", a, op, b),
         "^" = xtx_sql_pow(a, b, e2),
@@ -673,7 +697,26 @@ Ops.xtx_column <- function(e1, e2) {
     ## (AND, OR of columns that are never NULL are never NULL; the sums of a
     ## column known never NULL need no count of NULL values)
     nn <- op %in% c("&", "|") & rep_len(xtx_operand_notnull(e1), k) & rep_len(xtx_operand_notnull(e2), k)
-    xtx_column(frame, sql, notnull = nn)
+    out <- xtx_column(frame, sql, notnull = nn)
+    if (op %in% c("==", "!=", "<", ">", "<=", ">=", "&", "|")) out <- xtx_column_logical(out)
+    out
+}
+
+## A column marked as logical (comparisons, &, |, !, is.na() and the like):
+## SQL has no arithmetic on BOOLEAN, so that such a column is cast to DOUBLE
+## when it enters arithmetic (xtx_column_arith()), as R takes TRUE as 1.
+xtx_column_logical <- function(x) {
+    u <- unclass(x)
+    u$lgl <- TRUE
+    structure(u, class = "xtx_column")
+}
+
+## The operand of an arithmetic operator: xtx_column_operand(), with logical
+## columns (and TRUE, FALSE) as numbers.
+xtx_column_arith <- function(x) {
+    if (!xtx_is_column(x)) return(xtx_column_operand(if (is.logical(x) && length(x) == 1L && !is.na(x)) as.numeric(x) else x))
+    u <- unclass(x)
+    if (isTRUE(u$lgl)) sprintf("CAST(%s AS DOUBLE)", u$sql) else u$sql
 }
 
 ## Is an operand never NULL (per column)? A remote column: its flags; a
@@ -691,16 +734,16 @@ is.na.xtx_column <- function(x) !xtx_c_present(x)
 
 #' @export
 is.nan.xtx_column <- function(x)
-    xtx_column(unclass(x)$frame, sprintf("COALESCE(isnan(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
-             notnull = TRUE)
+    xtx_column_logical(xtx_column(unclass(x)$frame, sprintf("COALESCE(isnan(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
+                                  notnull = TRUE))
 
 #' @export
 is.finite.xtx_column <- function(x) xtx_c_is_finite(x)
 
 #' @export
 is.infinite.xtx_column <- function(x)
-    xtx_column(unclass(x)$frame, sprintf("COALESCE(isinf(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
-             notnull = TRUE)
+    xtx_column_logical(xtx_column(unclass(x)$frame, sprintf("COALESCE(isinf(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
+                                  notnull = TRUE))
 
 #' @export
 Math.xtx_column <- function(x, ...) {
@@ -711,7 +754,11 @@ Math.xtx_column <- function(x, ...) {
     a <- unclass(x)$sql
     sql <- switch(.Generic,
         exp = sprintf("exp(%s)", a), sqrt = sprintf("sqrt(%s)", a),
-        abs = sprintf("abs(%s)", a), log1p = xtx_sql_log1p(sprintf("CAST(%s AS DOUBLE)", a)), expm1 = sprintf("(exp(%s) - 1)", a),
+        abs = sprintf("abs(%s)", a), log1p = xtx_sql_log1p(sprintf("CAST(%s AS DOUBLE)", a)), expm1 = {
+            ## (accurate near zero: the macro xtx_expm1)
+            xtx_sql_macro_expm1(unclass(x)$frame)
+            sprintf("xtx_expm1(CAST(%s AS DOUBLE))", a)
+        },
         cos = sprintf("cos(%s)", a), sin = sprintf("sin(%s)", a), tan = sprintf("tan(%s)", a),
         floor = sprintf("floor(%s)", a), ceiling = sprintf("ceil(%s)", a),
         ## (DuckDB's sign(NaN) is 0, R's NaN)
@@ -1117,12 +1164,22 @@ xtx_p_quad <- function(x, V) {
     }
     zero <- xtx_column(x, "CAST(0 AS DOUBLE)")
     if (ncol(V) == 0L) return(zero)
-    e <- eigen(V, symmetric = TRUE)
-    keep <- e$values > 0
-    if (!any(keep)) return(zero)
-    L <- e$vectors[, keep, drop = FALSE] %*% diag(sqrt(e$values[keep]), sum(keep))
+    ## x'Vx = x'Sx with S = (V + V') / 2 the symmetric part of V. With S =
+    ## sum_j l_j u_j u_j', it is sum_j l_j (x'u_j)^2: the squares of one
+    ## product X L, added for the positive eigenvalues and subtracted for
+    ## the negative ones (V need not be positive semi-definite).
+    e <- eigen((V + t(V)) / 2, symmetric = TRUE)
+    pos <- which(e$values > 0)
+    neg <- which(e$values < 0)
+    keep <- c(pos, neg)
+    if (!length(keep)) return(zero)
+    L <- e$vectors[, keep, drop = FALSE] %*% diag(sqrt(abs(e$values[keep])), length(keep))
     P <- xtx_p_mult(x, L)
-    xtx_c_rowsums(P * P)
+    P2 <- P * P
+    if (!length(neg)) return(xtx_c_rowsums(P2))
+    qn <- xtx_c_rowsums(P2[, length(pos) + seq_along(neg)])
+    if (!length(pos)) return(-qn)
+    xtx_c_rowsums(P2[, seq_along(pos)]) - qn
 }
 
 ## Compressed least squares (see the header); the in-memory method groups
@@ -1202,8 +1259,8 @@ xtx_p_output <- function(x, cols, memory = identity, na = NULL, design = FALSE, 
 #' `memory(d)`, with `d` the data frame of the columns; for a remote design, a
 #' table in the database (the name of a temporary view, of class
 #' `xtx_remote_table`, with every column of the remote data and the columns
-#' `cols`), padded by [napredict()] with `na` (for instance a
-#' `xtx.fit::design_exclude()`), with the attributes `attrs`; with `design = TRUE`, the
+#' `cols`), padded by [napredict()] with `na` (for instance the `na.action`
+#' of a remote fit of 'xtx.fit' with `na.exclude`), with the attributes `attrs`; with `design = TRUE`, the
 #' remote design with the columns added to its data (so that they can scale
 #' its rows: `crossprod(R, DBI::SQL('".resid"^2') * R)`).
 #'
@@ -1226,6 +1283,7 @@ xtx_p_output <- function(x, cols, memory = identity, na = NULL, design = FALSE, 
 #' D <- design_matrix(y ~ x, d)
 #' f <- drop(D %*% c(0, 1))
 #' head(design_output(D, list(.fitted = f, .resid = d$y - f)))
+#' @keywords internal
 #' @export
 design_output <- function(x, cols, memory = identity, na = NULL, design = FALSE, attrs = list()) {
     checkmate::assert_multi_class(x, c("xtx_matrix", "xtx_remote"))
@@ -1239,6 +1297,21 @@ design_output <- function(x, cols, memory = identity, na = NULL, design = FALSE,
 ## computes them (from the GLM work, kata/402b-glm): xtx_pnorm, xtx_qnorm
 ## (one ulp), xtx_dnorm, xtx_pcauchy and xtx_mexpm1m(u) = -expm1(-u). Created
 ## once per connection.
+## The macro of expm1() of a remote column, created at its first use on a
+## connection (apart from the macros of the GLM links, so that fits that
+## never call expm1() send no statement for it): Kahan's trick for either
+## sign, (w - 1) x / ln(w) with w = exp(x); x itself when w rounds to 1, -1
+## when w - 1 rounds to -1, exp(x) when it is large (and for NaN, which
+## DuckDB orders above every number).
+xtx_sql_macro_expm1 <- function(D) {
+    if (isTRUE(D$src$holder$xtx_macro_expm1)) return(invisible())
+    xtx_execute(D, paste("CREATE OR REPLACE TEMP MACRO xtx_expm1(x) AS (CASE WHEN x > 40 THEN exp(x)",
+                         "WHEN exp(x) = 1 THEN x WHEN exp(x) - 1 = -1 THEN -1.0",
+                         "ELSE (exp(x) - 1) * x / ln(exp(x)) END)"))
+    D$src$holder$xtx_macro_expm1 <- TRUE
+    invisible()
+}
+
 xtx_sql_macros <- function(D) {
     if (isTRUE(D$src$holder$xtx_macros)) return(invisible())
     horner <- function(x, co) {
@@ -1300,6 +1373,7 @@ xtx_sql_macros <- function(D) {
     pc <- "CASE WHEN abs(x) > 1 THEN (CASE WHEN x > 0 THEN 1 - atan(1 / x) / pi() ELSE -atan(1 / x) / pi() END) ELSE 0.5 + atan(x) / pi() END"
     ## -expm1(-u) for u >= 0, Kahan's trick: (1 - w) u / -ln(w), w = exp(-u)
     em <- "CASE WHEN u > 40 THEN 1.0 WHEN exp(-u) = 1 THEN u ELSE (1 - exp(-u)) * u / (-ln(exp(-u))) END"
+
     for (m in list(c("xtx_pnorm", "x", pn), c("xtx_qnorm", "p", qn), c("xtx_dnorm", "x", dn),
                    c("xtx_pcauchy", "x", pc), c("xtx_mexpm1m", "u", em)))
         xtx_execute(D, sprintf("CREATE OR REPLACE TEMP MACRO %s(%s) AS (%s)", m[1L], m[2L], m[3L]))
@@ -1583,22 +1657,35 @@ xtx_c_round <- function(x) {
 ## is.finite, NaN-safe (in DuckDB, NaN = NaN and NaN > 0 are true)
 xtx_c_is_finite <- function(x) {
     if (!xtx_is_column(x)) return(is.finite(x))
-    xtx_column(unclass(x)$frame, sprintf("COALESCE(isfinite(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
-             notnull = TRUE)
+    xtx_column_logical(xtx_column(unclass(x)$frame, sprintf("COALESCE(isfinite(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
+                                  notnull = TRUE))
 }
 
 ## TRUE where x is not missing, FALSE where it is NA or NaN (NULL remotely);
 ## infinite values count as present (= !is.na(x); was xtx_c_notnan, renamed
-## in tapx: it never tested NaN alone. The key version is xtx_c_complete().) Never NA, so that !xtx_c_present(x)
+## in tapx: it never tested NaN alone.) Never NA, so that !xtx_c_present(x)
 ## counts the missing values. (In memory one pass in C for a plain vector.)
+## Remotely, a column of the data as it is stored (s."v", a column of a
+## key: design_key()) that is not double cannot be NaN, and may not be
+## numeric at all: only IS NOT NULL (isnan() would not take text). A double
+## column, or any other expression, is NaN-checked as well.
 xtx_c_present <- function(x) {
     if (!xtx_is_column(x)) {
         if (is.null(attributes(x)) && (is.double(x) || is.integer(x) || is.logical(x)))
             return(.Call(C_xtx_notnan, x))
         return(!is.na(x))
     }
-    xtx_column(unclass(x)$frame, sprintf("COALESCE(NOT isnan(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
-             notnull = TRUE)
+    sql <- unclass(x)$sql
+    one <- sprintf("COALESCE(NOT isnan(CAST(%s AS DOUBLE)), FALSE)", sql)
+    ## (stored columns: only an expression that reads `s.` can be one)
+    if (any(startsWith(sql, "(s."))) {
+        frame <- unclass(x)$frame
+        types <- frame$src$types
+        cols <- names(types)[match(sql, sprintf("(s.%s)", xtx_qi(frame, names(types))))]
+        plain <- !is.na(cols) & !types[cols] %in% "double"
+        one[plain] <- sprintf("(%s IS NOT NULL)", sql[plain])
+    }
+    xtx_column_logical(xtx_column(unclass(x)$frame, one, notnull = TRUE))
 }
 
 ## The rows where a logical column is TRUE (with negate, where it is not

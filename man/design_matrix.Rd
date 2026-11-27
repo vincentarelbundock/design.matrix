@@ -76,6 +76,31 @@ kernels for products with finite designs (see \link{design_algebra}).
 \item \code{xtx.dedup}: see \link{design_algebra}.
 }
 }
+\section{Reusing a design or a fitted model on new data}{
+
+\code{design_matrix(fit, newdata = batch)} builds the model matrix of new data
+the way \code{\link[stats:predict.lm]{stats::predict.lm()}} does, from the pieces the model stores (see
+\code{\link[=design_parts]{design_parts()}}): the terms, with the parameters of transformations such
+as \code{\link[stats:poly]{stats::poly()}} or \code{\link[splines:ns]{splines::ns()}} fixed by the training data, the
+factor levels and the contrasts. \code{design_matrix(D, newdata = batch)} does
+the same from a design \code{D} built on training data. Its dense matrix is
+identical to
+
+\if{html}{\out{<div class="sourceCode">}}\preformatted{model.matrix(tt, model.frame(tt, batch, xlev = xlevels, na.action = na.action),
+             contrasts.arg = contrasts)
+}\if{html}{\out{</div>}}
+
+with \code{tt} the training terms without the response.
+
+\code{design_matrix(fit, newdata = NULL)} returns that compiled specification
+(a plan) without applying it, for repeated use: \code{design_matrix(plan, batch)}. When a batch is a data frame whose variables have the same
+types, levels and column names as the first one, the plan skips
+\code{\link[stats:model.frame]{stats::model.frame()}} and the contrast set-up, which makes small calls
+much faster; anything else takes the general path, so results never
+depend on the path taken. Plans of fitted models are cached: two models
+with identical terms, levels and contrasts share one.
+}
+
 \examples{
 d <- data.frame(y = rnorm(10), x = rnorm(10), f = gl(2, 5))
 X <- as.matrix(design_matrix(y ~ x * f, d))

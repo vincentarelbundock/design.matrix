@@ -27,7 +27,7 @@ expect_identical(w, "problem with term 2 in model.matrix: no columns are assigne
 # 2. The fast path evaluates the variables together, as model.frame() does
 dd <- data.frame(x = rnorm(10), z = rnorm(10))
 fo <- ~ I({ z <- x + 1; z }) + z
-p <- xtx:::design_plan(fo, dd)
+p <- plan_of(fo, dd)
 nd <- dd[3:6, ]
 ref <- stats::model.matrix(p$terms, stats::model.frame(p$terms, nd, xlev = p$xlevels,
                            na.action = stats::na.pass), contrasts.arg = p$contrasts)

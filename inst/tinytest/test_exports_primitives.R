@@ -1,6 +1,6 @@
 ## The exported functions that fitting code builds on (the fits themselves
 ## are in xtx.fit, which tests its own API): design_resolve(),
-## is_remote_source(), design_patterns(fit =, check =), design_output(),
+## design_patterns(fit =, check =), design_output(),
 ## col_const(), cbind() and rowSums() of columns, col_compute(table =
 ## FALSE), col_sums() with one na.rm per argument, design_groups(levels =).
 ## In memory and on DuckDB, against base R. Only exported functions.
@@ -19,9 +19,7 @@ d$yp <- rpois(n, exp(0.3 * d$x))
 ## a singleton level of a
 d$a[1] <- 99L
 
-## ---- is_remote_source(), design_resolve() ----
-expect_false(is_remote_source(d))
-expect_false(is_remote_source(1))
+## ---- design_resolve() ----
 M <- design_matrix(y ~ x + f, d)
 expect_equal(design_resolve(M, list(w = quote(2 * w), z = NULL), environment(), data = d)$cols$w, 2 * d$w)
 
@@ -68,7 +66,6 @@ expect_error(group_sums(1, gn), "no level")
 if (requireNamespace("duckdb", quietly = TRUE)) {
     con <- test_con()
     DBI::dbWriteTable(con, "d", d)
-    expect_true(is_remote_source(con))
     R <- design_matrix(y ~ x + f, con, table = "d")
     yr <- design_column(R, "y")
     wr <- design_column(R, "w")

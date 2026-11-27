@@ -32,16 +32,19 @@
 ## that fails it is dropped. With no patch left, design_frame() is
 ## stats::model.frame().
 
-#' Build a model frame without redundant copies
+#' Build a model frame without redundant copies, or the remote frame of a model
 #'
 #' `design_frame()` takes the arguments of [stats::model.frame()] and returns
 #' the same model frame, faster on large data. [design_matrix()] uses it to
-#' build its model frames.
+#' build its model frames. When `data` is remote data (a DuckDB connection,
+#' or Parquet paths), it returns the *remote frame* of the model instead:
+#' the remote design of the rows the model uses, with its response, weights
+#' and offset as columns over those rows.
 #'
 #' @details
-#' The result is identical to that of `model.frame()` in the strict sense
-#' described in [design_matrix()]: same values, same attributes in the same
-#' order, same row names; warnings and errors are the same too.
+#' **In memory.** The result is identical to that of `model.frame()` in the
+#' strict sense described in [design_matrix()]: same values, same attributes
+#' in the same order, same row names; warnings and errors are the same too.
 #' `design_frame()` skips two steps of `model.frame()` when they would
 #' return their input unchanged:
 #'
@@ -67,13 +70,86 @@
 #' turned off; without shortcuts, `design_frame()` is `model.frame()`.
 #' Option `xtx.skip_na_copy = FALSE` turns both shortcuts off.
 #'
+#' **Remote data.** `data` is looked at first (it is evaluated before the
+#' other arguments, after `formula`). When it is a DuckDB connection or a
+#' character vector of Parquet paths, the arguments are, all by name except
+#' `formula` and `data`:
+#'
+#' * `formula`: a model formula. The design is that of its right-hand side
+#'   (see [design_remote]).
+#' * `weights`, `offset`, `subset`: taken unevaluated, as `model.frame()`
+#'   takes them: the name of a column, a `DBI::SQL()` expression, or an R
+#'   expression over the columns. Expressions with a SQL translation run in
+#'   the database; the others are evaluated in R, batch by batch, into a
+#'   temporary table (with a message; `engine = "sql"` refuses). R
+#'   expressions are evaluated in the environment of the formula.
+#' * `na.action`: [stats::na.omit()] (the default) or [stats::na.exclude()]
+#'   (the same rows), [stats::na.fail()] or [stats::na.pass()] (the errors
+#'   of [stats::lm()] when a row has a missing value), or their names.
+#' * `contrasts`: as the `contrasts.arg` of [stats::model.matrix()].
+#' * `table`, `sql`, `engine`, `chunk_size`: as [design_matrix()] takes
+#'   them for remote data (see [design_remote]).
+#' * other arguments: bare names of columns that are not in the model but
+#'   must not be missing on the rows used (the variables of fixed effects
+#'   or clusters, say), as `model.frame()` keeps the extra variables it is
+#'   given.
+#'
+#' The rows used are those of the subset where no variable of the model,
+#' response, weight, offset or extra column is missing, and the levels of
+#' factors are those of these rows, as
+#' `model.frame(drop.unused.levels = TRUE)` gives them in memory. The
+#' response is returned whatever its type, as `model.frame()` does; a
+#' column given as `weights` or `offset` must be numeric (the errors of
+#' `lm()`: `'weights' must be a numeric vector`, `'offset' must be numeric`).
+#'
 #' @param ... Arguments of [stats::model.frame()]: `formula`, `data`,
 #'   `subset`, `na.action`, `drop.unused.levels`, `xlev`, and further
-#'   variables such as `weights` or `offset`.
-#' @return A model frame, as returned by [stats::model.frame()].
+#'   variables such as `weights` or `offset`. With remote data, see
+#'   *Remote data*.
+#' @return In memory, a model frame, as returned by [stats::model.frame()].
+#'
+#'   With remote data, a list of class `xtx_remote_frame`:
+#'   * `x`: the remote design of the rows used.
+#'   * `response`: a list with `kind` and `ncol`, and by kind:
+#'     `"numeric"` (a numeric column or an expression) and `"logical"` (a
+#'     logical column, as 0/1): `y`, a [design_column()] (`ncol` is more
+#'     than 1 when an expression evaluated in R gave a matrix; `y` is then
+#'     its first column); `"factor"` (a character or factor column): `y`,
+#'     its values as a text column, which compares with a string
+#'     (`y == "a"`), and `levels`, the levels on the rows used;
+#'     `"matrix"` (`cbind()` of `ncol` expressions): `cols`, a list of its
+#'     first two columns (`cbind()` of one expression is that expression,
+#'     but for a factor column, whose codes are then the one column of
+#'     `cols`, as in memory); `"other"` (a column
+#'     of another type, such as a date) and `"none"` (a one-sided formula):
+#'     nothing.
+#'   * `weights`: a column, or `NULL`.
+#'   * `offset`: the sum of the `offset()` terms of the formula and of the
+#'     `offset` argument, a column, or `NULL`.
+#'   * `ncol`: the numbers of columns of the `weights` and of the `offset`,
+#'     more than 1 when an expression evaluated in R gave a matrix (which a
+#'     caller refuses, as [stats::lm()] does).
+#'   * `types`: the kind of each column of the data (`"double"`,
+#'     `"integer"`, `"logical"`, `"character"`, `"factor"` or `"other"`).
+#'   * `terms`, `contrasts`, `xlevels`: the terms of the formula, and the
+#'     contrasts and factor levels of the design.
+#'   * `na.action`: `"omit"`, `"exclude"`, `"fail"` or `"pass"`.
 #' @examples
 #' d <- data.frame(y = rnorm(10), x = rnorm(10), f = gl(2, 5))
 #' identical(design_frame(y ~ x * f, d), model.frame(y ~ x * f, d))
+#'
+#' if (requireNamespace("duckdb", quietly = TRUE)) {
+#'     con <- DBI::dbConnect(duckdb::duckdb())
+#'     d$w <- runif(10)
+#'     d$id <- rep(1:5, 2)
+#'     DBI::dbWriteTable(con, "d", d)
+#'     fr <- design_frame(y ~ x * f, con, table = "d", weights = 2 * w, subset = x > -1, id)
+#'     fr
+#'     dim(fr$x)
+#'     sum(fr$weights)
+#'     b <- solve(crossprod(fr$x), crossprod(fr$x, fr$response$y))
+#'     DBI::dbDisconnect(con)
+#' }
 #' @export
 design_frame <- function(...) {
     ## stats::model.frame() does the dispatch, called from an environment
@@ -83,6 +159,16 @@ design_frame <- function(...) {
     ## substitute() and missing() give in the method what they give under
     ## model.frame().
     env <- caller <- parent.frame()
+    ## Remote data: `data` (by name, or the argument after the formula) is
+    ## the only argument looked at, after the formula: the two that
+    ## model.frame() evaluates first, in its order (remote_resolve.R).
+    if (...length() > 1L) {
+        i <- xtx_frame_data_arg(...names(), ...length())
+        if (i[2L] > 0L) {
+            if (i[1L] > 0L) ...elt(i[1L])
+            if (xtx_is_remote_source(...elt(i[2L]))) return(xtx_frame_remote(..., .caller = caller))
+        }
+    }
     frame <- the$frame
     if (!is.null(frame) && isTRUE(getOption("xtx.skip_na_copy", TRUE)) &&
         xtx_frame_default_is_stats(frame$original, caller)) {
@@ -96,6 +182,20 @@ design_frame <- function(...) {
     generic <- xtx_frame_generic
     environment(generic) <- env
     generic(...)
+}
+
+## Among `n` arguments named `nm` (NULL: none is named), the positions of
+## `formula` and `data` as model.frame() matches them: by name, else the
+## first and the next unnamed arguments. 0: not given.
+xtx_frame_data_arg <- function(nm, n) {
+    if (is.null(nm)) return(c(1L, 2L))
+    un <- which(is.na(nm) | !nzchar(nm))
+    f <- match("formula", nm, 0L)
+    d <- match("data", nm, 0L)
+    k <- 0L
+    if (f == 0L) f <- if (length(un) > k) un[k <- k + 1L] else 0L
+    if (d == 0L) d <- if (length(un) > k) un[k + 1L] else 0L
+    c(f, d)
 }
 
 xtx_frame_generic <- function(...) stats::model.frame(...)

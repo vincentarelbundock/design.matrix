@@ -464,6 +464,7 @@ xtx_qr_dense <- function(x, tol) {
 #' ch <- pivoted_chol(G, diag(G), 1e-14)
 #' ch$rank
 #' ch$pivot
+#' @keywords internal
 #' @export
 pivoted_chol <- function(G, scale, tol, ties = c("keep", "drop"), band = NULL, recheck = NULL,
                        lup = ncol(G), dres = rep(NA_real_, ncol(G))) {

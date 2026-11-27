@@ -33,6 +33,7 @@ xtx_plain <- function(x) is.double(x) && is.null(attributes(x))
 #' D <- design_matrix(y ~ x + f, d)
 #' m <- design_moments(D, d$y)
 #' all.equal(unname(solve(m$xtx, m$xty)[, 1]), unname(coef(lm(y ~ x + f, d))))
+#' @keywords internal
 #' @export
 design_moments <- function(x, z, w = NULL, n = NULL, centered = TRUE) {
     if (is.null(n)) n <- xtx_nrows(x)

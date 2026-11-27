@@ -1,10 +1,10 @@
-## The exported layer for package developers: design_parts(), design_plan()
+## The exported layer for package developers: design_parts(), plan_of()
 ## and design_patterns(). Only exported functions are called here (and base
 ## R / stats), in memory and on a DuckDB table.
 source("helpers.R")
 library(xtx)
 
-expect_true(all(c("design_parts", "design_plan", "design_patterns") %in% getNamespaceExports("xtx")))
+expect_true(all(c("design_parts", "design_patterns") %in% getNamespaceExports("xtx")))
 
 same <- function(a, b, tol = 1e-9) isTRUE(all.equal(unname(a), unname(b), tolerance = tol))
 
@@ -161,7 +161,7 @@ if (requireNamespace("duckdb", quietly = TRUE) && requireNamespace("DBI", quietl
     test_con_done(con)
 }
 
-## ---- design_plan() and design_parts() ----
+## ---- plan_of() and design_parts() ----
 
 set.seed(3)
 tr <- data.frame(y = rnorm(50), x = runif(50, 1, 2), f = factor(sample(c("u", "v", "w"), 50, TRUE)))
@@ -170,12 +170,12 @@ nd <- data.frame(x = c(1.2, 1.9, 1.5), f = factor(c("w", "u", "w"), levels = lev
 fo2 <- y ~ poly(x, 2) + f
 
 ## on a formula: the matrix of model.matrix() on the training terms
-pf <- design_plan(fo2, tr)
+pf <- plan_of(fo2, tr)
 expect_inherits(pf, "xtx_plan")
 mf <- model.frame(pf$terms, nd, xlev = pf$xlevels)
 expect_true(strict_identical(as.matrix(design_matrix(pf, nd)),
                              model.matrix(pf$terms, mf, contrasts.arg = pf$contrasts)))
-expect_identical(design_plan(terms(fo2), tr)$xlevels, pf$xlevels)
+expect_identical(plan_of(terms(fo2), tr)$xlevels, pf$xlevels)
 
 ## on lm and glm fits: the columns predict() uses
 fl <- lm(fo2, tr)
@@ -183,25 +183,25 @@ parts <- design_parts(fl)
 expect_true(all(c("terms", "xlevels", "contrasts") %in% names(parts)))
 expect_inherits(parts$terms, "terms")
 expect_identical(parts$xlevels, fl$xlevels)
-pl <- design_plan(fl)
+pl <- plan_of(fl)
 expect_inherits(pl, "xtx_plan")
 expect_true(same(drop(as.matrix(design_matrix(pl, nd)) %*% coef(fl)), predict(fl, nd), 1e-12))
 fg <- glm(yb ~ poly(x, 2) + f, binomial, tr)
 expect_identical(design_parts(fg)$xlevels, fg$xlevels)
-pg <- design_plan(fg)
+pg <- plan_of(fg)
 expect_true(same(drop(as.matrix(design_matrix(pg, nd)) %*% coef(fg)), predict(fg, nd), 1e-12))
 ## the same plan as design_matrix(fit, newdata = NULL)
 expect_true(strict_identical(as.matrix(design_matrix(pg, nd)),
                              as.matrix(design_matrix(design_matrix(fg, newdata = NULL), nd))))
 
-## a toy class with its own design_parts() method works with design_plan()
+## a toy class with its own design_parts() method works with plan_of()
 toy <- structure(list(formula = y ~ log(x) + f, levels = list(f = levels(tr$f))), class = "toyfit")
 design_parts.toyfit <- function(model, ...) {
     list(terms = terms(model$formula), xlevels = model$levels, contrasts = list(f = "contr.sum"))
 }
 .S3method("design_parts", "toyfit", design_parts.toyfit)
 expect_identical(design_parts(toy)$contrasts, list(f = "contr.sum"))
-pt <- design_plan(toy)
+pt <- plan_of(toy)
 expect_inherits(pt, "xtx_plan")
 Xt <- as.matrix(design_matrix(pt, nd))
 expect_true(same(c(Xt), c(model.matrix(~ log(x) + f, nd, contrasts.arg = list(f = "contr.sum")))))
@@ -211,4 +211,4 @@ expect_true(same(c(as.matrix(design_matrix(toy, newdata = nd))), c(Xt)))
 ## a method that returns something else is caught
 design_parts.badfit <- function(model, ...) list(terms = "y ~ x", xlevels = NULL, contrasts = NULL)
 .S3method("design_parts", "badfit", design_parts.badfit)
-expect_error(design_plan(structure(list(), class = "badfit")), "terms")
+expect_error(plan_of(structure(list(), class = "badfit")), "terms")

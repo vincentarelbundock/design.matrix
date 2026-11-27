@@ -2,25 +2,18 @@
 % Please edit documentation in R/group_codes.R
 \name{design_key}
 \alias{design_key}
-\alias{key_complete}
 \alias{key_codes}
-\alias{group_codes}
 \alias{design_group_sums}
 \title{Keys and bare group codes}
 \usage{
 design_key(x, vars, data = NULL)
 
-key_complete(key)
-
 key_codes(key)
-
-group_codes(x)
 
 design_group_sums(x, groups, w = NULL, extra = NULL, pairs = NULL)
 }
 \arguments{
-\item{x}{A design: a \code{design_matrix} or a remote design. For
-\code{group_codes()}, a grouping.}
+\item{x}{A design: a \code{design_matrix} or a remote design.}
 
 \item{vars}{The names of the variables of the key.}
 
@@ -29,7 +22,8 @@ model frame the design keeps).}
 
 \item{key}{A key, from \code{design_key()}.}
 
-\item{groups}{A list of bare codes over the rows of \code{x}.}
+\item{groups}{A list of groupings over the rows of \code{x}: bare codes, or
+groupings of \code{\link[=design_groups]{design_groups()}}.}
 
 \item{w}{Weights, a column over the rows of \code{x}, or \code{NULL}.}
 
@@ -41,11 +35,10 @@ crosstabs are wanted: the sums and the crosstabs then come from one
 fused pass in memory, with \code{w} the weights of every sum.}
 }
 \value{
-\code{design_key()}: a key. \code{key_complete()}: a logical column.
-\code{key_codes()}: a list with \code{codes} (bare codes), \code{levels} (a data
+\code{design_key()}: a key. \code{key_codes()}: a list with \code{codes} (bare codes), \code{levels} (a data
 frame, one row per group in code order, with one column per variable of
 the key) and \code{n} (the rows per group).
-\code{group_codes()}: bare codes. \code{design_group_sums()}: without \code{pairs}, a
+\code{design_group_sums()}: without \code{pairs}, a
 list with, per grouping, \code{S} (a \code{G} by \code{ncol(x)} matrix of sums of
 the columns of \code{x}, scaled by \code{w}), \code{n} (the sums of the weights) and
 \code{extra}; with \code{pairs}, a list with \code{gs} (that list) and \code{ct} (one
@@ -61,12 +54,10 @@ fit with fixed effects, works on \emph{keys} and \emph{bare codes} instead:
 \item \code{design_key()} returns the values of variables of the data over the
 rows of a design, of any type: a data frame in memory, a
 \code{\link[=design_column]{design_column()}} with one SQL column per variable remotely.
-\item \code{key_complete()} is a logical column: \code{TRUE} on the rows where no
-variable of the key is missing.
+\code{is.na()} of a remote key works on columns of any type, one result
+per variable.
 \item \code{key_codes()} codes the combinations of values of a key that has no
 missing value: the bare codes, the levels and the rows per level.
-\item \code{group_codes()} returns the bare codes of a grouping of
-\code{\link[=design_groups]{design_groups()}} (and bare codes as they are).
 \item \code{design_group_sums()} computes, for several groupings at once, the
 sums of the columns of a design (and of its weights and other columns)
 within groups, and the crosstabs of pairs of groupings.
@@ -78,7 +69,8 @@ Remotely it is a column of the source (the key itself, or one sort key
 for a key of several variables) with \code{levels}, so that the database
 groups on stored values and no join is needed; results come back in the
 order of the levels. \code{\link[=group_sums]{group_sums()}}, \code{\link[=group_crosstab]{group_crosstab()}}, \code{\link[=group_lookup]{group_lookup()}}
-and \code{\link[=group_nested]{group_nested()}} accept bare codes, without checking them.
+and \code{\link[=group_nested]{group_nested()}} accept bare codes, without checking them, as does
+\code{design_group_sums()}, which also takes groupings of \code{\link[=design_groups]{design_groups()}}.
 
 Names may change before the first release.
 }
@@ -86,9 +78,10 @@ Names may change before the first release.
 d <- data.frame(y = rnorm(8), x = rnorm(8), id = c(1, 1, 2, 2, 3, 3, NA, 3))
 D <- design_matrix(y ~ x, d)
 k <- design_key(D, "id", d)
-ok <- key_complete(k)
+ok <- !is.na(d$id)
 s <- design_subset(D, ok, list(k = k, y = d$y))
 cd <- key_codes(s$cols$k)
 cd$levels
 group_sums(s$cols$y, cd$codes)
 }
+\keyword{internal}

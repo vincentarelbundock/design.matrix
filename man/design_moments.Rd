@@ -38,3 +38,4 @@ D <- design_matrix(y ~ x + f, d)
 m <- design_moments(D, d$y)
 all.equal(unname(solve(m$xtx, m$xty)[, 1]), unname(coef(lm(y ~ x + f, d))))
 }
+\keyword{internal}

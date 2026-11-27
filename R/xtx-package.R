@@ -25,17 +25,16 @@
 ## of the fit files -> xf_*); the classes xtx_lm, xtx_glm, xtx_lm_fe and
 ## xtx_glm_fe are defined there.
 ##
-## The fitting layers followed: weighted least squares (design_wls()), the
-## input stage (design_problem(), design_exclude()), the GLM families on
-## columns (column_family(), col_irls_working()), the absorption of fixed
-## effects (design_absorb*(), absorb_control(), design_uncenter()) and
+## The fitting layers followed: weighted least squares, the input stage,
+## the GLM families on columns, the absorption of fixed effects and
 ## their C kernels (the solver of the reduced system, the fused kernels of
 ## the fits) are in xtx.fit, internals xf_*. xtx keeps the designs, their
 ## products and decompositions, columns, groupings and remote designs, and
 ## has a documented public function for each operation xtx.fit is written
 ## with: bare group codes and keys (group_codes.R), rows with their columns
-## (rows.R), col_math(), design_moments(), pivoted_chol(), design_source()
-## and design_remote_frame(). No internal function is exported.
+## (rows.R), col_math(), design_moments(), pivoted_chol(), and the remote
+## path of design_frame() (remote_resolve.R). No internal function is
+## exported.
 
 #' xtx: Exact and Fast Model Matrices
 #'

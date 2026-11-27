@@ -172,7 +172,7 @@
 #' on the remote products and how they differ from fits in memory.
 #'
 #' @section Arguments of remote data:
-#' With remote data, [design_matrix()], `xtx.fit::lm_xtx()`, `xtx.fit::glm_xtx()` and
+#' With remote data, [design_matrix()], [design_frame()], `xtx.fit::lm_xtx()`, `xtx.fit::glm_xtx()` and
 #' `predict()` take, through `...`: `table` or `sql` (the remote rows: a
 #' table name, or a `SELECT` query; not with Parquet paths), `engine`
 #' (`"auto"`, or `"sql"` to refuse variables that must be evaluated in R)
@@ -212,14 +212,14 @@ xtx_need_duckdb <- function() {
 }
 
 
-## Entry point from design_matrix(), and from the fits (design_remote_frame()).
+## Entry point from design_matrix(), and from the fits (xtx_remote_frame()).
 ## For the fits: `subset` (SQL over the source) restricts the rows; `extra`
 ## (named list of list(sql, inputs, kind), kind "numeric" for a numeric
 ## argument such as weights, "present" for columns that must only be
 ## present) adds variables in no term, which select rows; factor levels
 ## absent from the rows used are dropped with `drop_unused`, as lm() builds
 ## its model frame. `source` can also be an opened source
-## (design_source()); `override` gives SQL for model variables whose
+## (xtx_source()); `override` gives SQL for model variables whose
 ## values were computed in R (xtx_materialize()).
 xtx_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = stats::na.pass,
                       drop_unused = FALSE, subset = NULL, extra = list(), override = list()) {
@@ -232,7 +232,7 @@ xtx_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = st
     checkmate::assert_choice(engine, c("auto", "sql"), .var.name = "engine")
     chunk_size <- ra$chunk_size %||% getOption("xtx.chunk_size", 250000)
     checkmate::assert_number(chunk_size, lower = 1, finite = TRUE, .var.name = "chunk_size")
-    src <- if (inherits(source, "xtx_src")) source else design_source(source, ra$table, ra$sql)
+    src <- if (inherits(source, "xtx_src")) source else xtx_source(source, ra$table, ra$sql)
     if (!is.null(subset)) {
         src$select <- sprintf("SELECT s.* FROM (%s) AS s WHERE %s", src$select, subset)
         src$base_table <- NULL
@@ -255,7 +255,7 @@ xtx_remote <- function(object, source, contrasts.arg, xlev, dots, na.action = st
         } else if (inherits(object, "xtx_matrix")) {
             xtx_plan_for_design(object)
         } else {
-            do.call(design_plan, c(list(object), rest))
+            do.call(xtx_plan_of, c(list(object), rest))
         }
         D <- xtx_remote_spec(plan, src, xtx_remote_na(na.action))
     }
@@ -272,69 +272,17 @@ xtx_remote_na <- function(na.action) {
     stop("For remote data, `na.action` must be na.pass or na.omit.", call. = FALSE)
 }
 
-## The source: connection (in a holder environment, so that a private
-## connection is closed once nothing refers to it) and a SELECT statement.
-#' Remote data as a source, and the remote frame of a model
-#'
-#' `design_source()` describes remote data before a design is built on it:
-#' the connection, the query that reads the rows, and the columns with
-#' their types. `design_remote_frame()` is the remote counterpart of
-#' [design_frame()]: from a formula, a source and other arguments of a model
-#' (a response, weights, an offset, a subset) given unevaluated, it builds
-#' the remote design of the rows a model uses and the arguments as columns
-#' over those rows. Expressions with a SQL translation run in the database;
-#' the others are evaluated in R, batch by batch, into a temporary table.
-#' The rows are those of the subset where no model variable, argument or
-#' `present` column is missing, and factor levels are those of these rows,
-#' as `model.frame(drop.unused.levels = TRUE)` gives them in memory.
-#'
-#' Names may change before the first release.
-#'
-#' @param source Remote data: a DuckDB connection, or Parquet paths (see
-#'   [is_remote_source()]).
-#' @param table,sql With a connection, the name of a table, or a query.
-#' @param formula A model formula; its response, if any, is not part of the
-#'   design.
-#' @param src A source, from `design_source()`.
-#' @param args A named list of unevaluated arguments to resolve as columns
-#'   (`NULL` for an absent one): column names, `DBI::SQL()` expressions or
-#'   R expressions over the columns.
-#' @param env The environment in which R expressions are evaluated.
-#' @param dots A named list with `engine` and `chunk_size`, as
-#'   [design_matrix()] takes them for remote data.
-#' @param contrasts As in [stats::model.matrix()].
-#' @param logical The names of the arguments that are logical (a subset);
-#'   the others are numeric.
-#' @param present Names of other columns of the data that must not be
-#'   missing on the rows used.
-#' @param na `"omit"` (or `"exclude"`: the same rows), `"fail"` or `"pass"`
-#'   (the errors of [lm()] when a row has a missing value).
-#' @param mresp `NULL`, or the error message for an argument `y` evaluated
-#'   in R that gives a matrix with several columns.
-#' @return `design_source()`: a list of class `xtx_src` with `holder` (an
-#'   environment holding the connection, `holder$con`), `select` (the query
-#'   that reads the rows), `proto` (a data frame with no rows and the
-#'   columns of the data) and `types` (the kind of each column: `"double"`,
-#'   `"integer"`, `"logical"`, `"character"`, `"factor"` or `"other"`).
-#'   `design_remote_frame()`: a list with `x` (the remote design), `cols`
-#'   (the arguments as columns, `NULL` for absent ones), `off` (the offset:
-#'   `offset()` terms plus the `offset` argument, or `NULL`), and `offk` and
-#'   `wk` (the numbers of columns of an offset and of weights evaluated in
-#'   R, more than one when they gave a matrix).
-#' @examples
-#' if (requireNamespace("duckdb", quietly = TRUE)) {
-#'     con <- DBI::dbConnect(duckdb::duckdb())
-#'     DBI::dbWriteTable(con, "d", data.frame(y = rnorm(20), x = rnorm(20), w = runif(20)))
-#'     src <- design_source(con, "d", NULL)
-#'     src$types
-#'     f <- design_remote_frame(y ~ x, src, list(y = quote(y), weights = quote(2 * w)),
-#'                              environment(), list())
-#'     dim(f$x)
-#'     sum(f$cols$weights)
-#'     DBI::dbDisconnect(con)
-#' }
-#' @export
-design_source <- function(source, table = NULL, sql = NULL) {
+## The source: remote data before a design is built on it. The connection
+## (in a holder environment, so that a private connection is closed once
+## nothing refers to it), the SELECT statement that reads the rows, and the
+## columns with their types. `source`: a DuckDB connection (with `table`, the
+## name of a table, or `sql`, a query), or Parquet paths. Returns a list of
+## class `xtx_src`: `holder` (holder$con, the connection), `select`,
+## `base_table` (a table that can be read in batches by rowid), `label`,
+## `proto` (a data frame with no rows and the columns of the data) and
+## `types` (the kind of each column: "double", "integer", "logical",
+## "character", "factor" or "other").
+xtx_source <- function(source, table = NULL, sql = NULL) {
     holder <- new.env(parent = emptyenv())
     base_table <- NULL
     if (is.character(source)) {
@@ -562,7 +510,7 @@ xtx_remote_formula <- function(formula, src, contrasts.arg, xlev, extra = list()
     if (!nrow(sample))
         stop(structure(class = c("xtx_no_rows", "error", "condition"),
                        list(message = "The remote data has no complete rows.", call = NULL)))
-    D$plan <- design_plan.formula(tt, sample, contrasts.arg = contrasts.arg,
+    D$plan <- xtx_plan_formula(tt, sample, contrasts.arg = contrasts.arg,
                                   xlev = if (length(xlevels)) xlevels else NULL)
     D$terms_full <- tt
     resp <- attr(tt, "response")

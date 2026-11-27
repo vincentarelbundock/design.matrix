@@ -212,7 +212,7 @@ on the remote products and how they differ from fits in memory.
 
 \section{Arguments of remote data}{
 
-With remote data, \code{\link[=design_matrix]{design_matrix()}}, \code{xtx.fit::lm_xtx()}, \code{xtx.fit::glm_xtx()} and
+With remote data, \code{\link[=design_matrix]{design_matrix()}}, \code{\link[=design_frame]{design_frame()}}, \code{xtx.fit::lm_xtx()}, \code{xtx.fit::glm_xtx()} and
 \code{predict()} take, through \code{...}: \code{table} or \code{sql} (the remote rows: a
 table name, or a \code{SELECT} query; not with Parquet paths), \code{engine}
 (\code{"auto"}, or \code{"sql"} to refuse variables that must be evaluated in R)

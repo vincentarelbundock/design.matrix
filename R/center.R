@@ -7,7 +7,7 @@
 #' is far from zero. In memory the design is rebuilt from its model frame;
 #' remotely the variables' SQL changes. Coefficients `b~` on the centered
 #' design map back to the design as `b = T b~`, and their covariance `V` as
-#' `T V T'` (see `xtx.fit::design_uncenter()` for fits with fixed effects).
+#' `T V T'` (as the fits with fixed effects of 'xtx.fit' do).
 #'
 #' Names may change before the first release.
 #'
@@ -23,6 +23,7 @@
 #' D <- design_matrix(y ~ x, d)
 #' ctr <- design_center(D)
 #' colMeans(as.matrix(ctr$x))
+#' @keywords internal
 #' @export
 design_center <- function(x, cols = list()) {
     checkmate::assert_multi_class(x, c("xtx_matrix", "xtx_remote"))

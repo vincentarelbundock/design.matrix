@@ -122,7 +122,7 @@
 #'   number is a constant column: `group_sums(1, g)` counts the rows of each
 #'   group.
 #' @param g,g1,g2 Groupings made by `design_groups()`, of the same design,
-#'   or bare codes (see [group_codes()]), which are used as given, without
+#'   or bare codes (see [key_codes()]), which are used as given, without
 #'   the checks. For `group_sums()`, `g` can also be a list of groupings:
 #'   the sums within each of them, from one pass over the rows.
 #' @param total For `group_sums()` with a list of groupings: `NULL`, or a
@@ -138,8 +138,8 @@
 #'   of a fit, instead of the levels that occur in `x`. Rows whose key is
 #'   missing or not among `levels` get the code `NA` (no error): such a
 #'   grouping works with `group_lookup()` (`NA` for those rows) and
-#'   `xtx.fit::design_absorb_fitted()`, not with `group_sums()`, `group_crosstab()` or
-#'   `group_nested()`. Names may change before the first release.
+#'   the predictions of `xtx.fit::lm_xtx()` with fixed effects, not with
+#'   `group_sums()`, `group_crosstab()` or `group_nested()`. Names may change before the first release.
 #' @param ... Not used.
 #' @return `design_groups()`: a grouping (see *The grouping object*).
 #'   `group_sums()` with a list of groupings: a list with `groups` (one
@@ -228,11 +228,11 @@ design_groups <- function(x, key, levels = NULL) {
 #' @rdname design_groups
 #' @export
 group_sums <- function(col, g, total = NULL) {
-    ## bare codes (group_codes(), key_codes()): unchecked; a list of them,
+    ## bare codes (key_codes()): unchecked; a list of them,
     ## every grouping (and the sum of `total`) in one pass over the rows
     if (xtx_is_codes(g)) return(xtx_p_groupsum(col, g))
     if (is.list(g) && is.null(oldClass(g)))
-        return(xtx_c_groupsums(col, lapply(g, group_codes), total = total))
+        return(xtx_c_groupsums(col, lapply(g, xtx_group_codes), total = total))
     if (!is.null(total)) stop("`total` applies only with a list of groupings.", call. = FALSE)
     xtx_groups_check(g, "g")
     col <- xtx_groups_col(col, g, "col")

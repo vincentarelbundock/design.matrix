@@ -6,8 +6,8 @@ set.seed(11)
 d <- fuzz_data(50, special = FALSE)
 
 # 1. A plan refuses a formula whose response is also on the right-hand side
-expect_error(xtx:::design_plan(y ~ y + x1, d), "right-hand side")
-expect_inherits(xtx:::design_plan(y ~ x1 + y:f1, d), "xtx_plan") # interactions with y are fine
+expect_error(plan_of(y ~ y + x1, d), "right-hand side")
+expect_inherits(plan_of(y ~ x1 + y:f1, d), "xtx_plan") # interactions with y are fine
 
 # 2. The stats fallback does not evaluate the caller's arguments twice
 calls <- 0
@@ -29,7 +29,7 @@ expect_identical(as.matrix(design_matrix(fo, xlev = list())), "xlev")
 counter <- new.env()
 counter$n <- 0
 tick <- function(x) { counter$n <- counter$n + 1; x }
-p <- xtx:::design_plan(y ~ tick(x1) + f1, d)
+p <- plan_of(y ~ tick(x1) + f1, d)
 nd <- d[1:5, ]
 nd$f1 <- factor(as.character(nd$f1), levels = rev(levels(d$f1))) # forces fallback
 counter$n <- 0

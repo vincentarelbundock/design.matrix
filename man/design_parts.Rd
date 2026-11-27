@@ -84,7 +84,7 @@ classes}).
 }
 \description{
 \code{design_parts()} extracts from a fitted model the pieces that
-\code{\link[=design_plan]{design_plan()}} needs to build the model matrix of new data: the terms, the
+\code{design_matrix(model, newdata = )} needs to build the model matrix of new data: the terms, the
 levels of the factors and the contrasts. Each method reads the pieces that
 the model's own \code{predict()} method uses.
 }
@@ -119,7 +119,7 @@ models.
 its own model class by writing a method \verb{design_parts.<class>()} and
 registering it (with \verb{S3method(xtx::design_parts, <class>)} in
 the NAMESPACE of a package that only suggests \pkg{xtx}, or
-\verb{S3method(design_parts, <class>)} when it imports it). \code{\link[=design_plan]{design_plan()}},
+\verb{S3method(design_parts, <class>)} when it imports it). \code{\link[=design_matrix]{design_matrix()}},
 and therefore \code{design_matrix(fit, newdata = ...)}, then work for that
 class. A method returns a list with elements:
 \itemize{
@@ -162,10 +162,10 @@ design_parts.toyfit <- function(model, ...) {
 }
 # (in a package: S3method(xtx::design_parts, toyfit))
 .S3method("design_parts", "toyfit", design_parts.toyfit)
-p <- design_plan(toy)
+p <- design_matrix(toy, newdata = NULL)
 as.matrix(design_matrix(p, head(mtcars)))
 }
 \seealso{
-\code{\link[=design_plan]{design_plan()}}, which compiles these pieces into a reusable
+\code{\link[=design_matrix]{design_matrix()}}, which compiles these pieces into a reusable
 plan.
 }
