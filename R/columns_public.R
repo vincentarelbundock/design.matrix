@@ -36,8 +36,8 @@
 ## neither, nonzero / zero).
 xtx_column_aggregates <- function(cols, what) {
     x <- do.call(xtx_c_cbind, cols)
-    fr <- xtx_frame_bind(unclass(x)$frame)
     sql <- unclass(x)$sql
+    fr <- xtx_frame_ready(unclass(x)$frame, sql)
     k <- length(sql)
     nan <- "CAST('NaN' AS DOUBLE)"
     d <- sprintf("CAST(%s AS DOUBLE)", sql)
@@ -387,7 +387,7 @@ xtx_sql_signif <- function(fr, a, digits) {
 ## The SQL of the Math functions that Math.xtx_column (primitives.R)
 ## leaves to this file, or an error. `...`: the digits of round()/signif().
 xtx_math_sql <- function(x, generic, ...) {
-    a <- unclass(x)$sql
+    a <- xtx_column_arith(x)
     fr <- unclass(x)$frame
     digits <- function(default) {
         args <- list(...)
@@ -561,8 +561,8 @@ col_sums <- function(..., na.rm = FALSE) {
 ## inline) are long.
 xtx_column_sums <- function(cols, narm) {
     x <- do.call(xtx_c_cbind, cols)
-    fr <- xtx_frame_bind(unclass(x)$frame)
     sql <- unclass(x)$sql
+    fr <- xtx_frame_ready(unclass(x)$frame, sql)
     k <- length(sql)
     nn <- unclass(x)$notnull %||% rep(FALSE, k)
     nan <- "CAST('NaN' AS DOUBLE)"

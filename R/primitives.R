@@ -247,14 +247,53 @@
 
 ## ---- remote columns ----
 
-## (`notnull`: columns known never to be NULL, whose sums need no count of
-## missing values. An optional `label` field, set by xtx_column_label() in
-## the public calls, names the values for as.data.frame().)
-xtx_column <- function(frame, sql, notnull = FALSE) {
+## A remote column: `frame` (the row domain, source relation and nodes, see
+## below) and, per output column, `sql` (its expression over the relation
+## `s` of the frame), `notnull` (known never to be NULL: its sums need no
+## count of missing values), `lgl` (logical-valued: BOOLEAN in SQL, cast to
+## DOUBLE where a number is needed, xtx_column_arith()) and `type` (the
+## type of a value read as it is stored, "character", "integer", "logical",
+## "factor" or "other"; "" for a double or a computed expression, which can
+## be NaN: xtx_c_present()). Optional: `label` (set by xtx_column_label() in
+## the public calls, names the values for as.data.frame()) and `neg` (the
+## logical column that `!` negated). The flags are per output column and
+## survive slicing, cbind(), storage and translation to another design.
+xtx_column <- function(frame, sql, notnull = FALSE, lgl = FALSE, type = "") {
     ## (parenthesized, so that expressions compose with any operator)
     sql <- as.character(sql)
     sql <- sprintf("(%s)", sql)
-    structure(list(frame = frame, sql = sql, notnull = rep_len(notnull, length(sql))), class = "xtx_column")
+    k <- length(sql)
+    structure(list(frame = frame, sql = sql, notnull = rep_len(notnull, k), lgl = rep_len(lgl, k),
+                   type = rep_len(type, k)), class = "xtx_column")
+}
+
+## The per-column flags of a column.
+xtx_column_lgl <- function(x) {
+    u <- unclass(x)
+    rep_len(u$lgl %||% FALSE, length(u$sql))
+}
+xtx_column_type <- function(x) {
+    u <- unclass(x)
+    rep_len(u$type %||% "", length(u$sql))
+}
+
+## The output columns `idx` of a column, with their flags and labels (the
+## expressions as they are: not parenthesized again).
+xtx_column_pick <- function(x, idx) {
+    u <- unclass(x)
+    out <- list(frame = u$frame, sql = u$sql[idx], notnull = (u$notnull %||% rep(FALSE, length(u$sql)))[idx],
+                lgl = xtx_column_lgl(x)[idx], type = xtx_column_type(x)[idx])
+    if (!is.null(u$label)) out$label <- u$label[idx]
+    structure(out, class = "xtx_column")
+}
+
+## The frame of a column replaced (same expressions and flags).
+xtx_column_reframe <- function(x, frame, sql = NULL) {
+    u <- unclass(x)
+    u$frame <- frame
+    if (!is.null(sql)) u$sql <- sprintf("(%s)", sql)
+    u$neg <- NULL
+    structure(u, class = "xtx_column")
 }
 
 xtx_is_column <- function(x) inherits(x, "xtx_column")
@@ -272,8 +311,8 @@ xtx_column_nrows <- function(x) {
     n <- xtx_nrows(fr)
     if (!is.null(n)) return(n)
     xtx_column_valid(x)
-    ## (the rows of the settled frame: binding recipes adds columns, not rows)
-    fr$pend <- NULL
+    ## (the rows of the design: nodes add columns, not rows)
+    fr <- xtx_frame_ready(fr)
     n <- as.numeric(xtx_query(fr, sprintf("SELECT COUNT(*) AS n FROM (%s) AS s WHERE %s",
                                          fr$src$select, fr$filter))$n)
     if (is.environment(fr$cache)) fr$cache$n <- n
@@ -286,301 +325,172 @@ dim.xtx_column <- function(x) c(xtx_column_nrows(x), xtx_ncols(x))
 #' @export
 length.xtx_column <- function(x) prod(dim.xtx_column(x))
 
-xtx_frame_depth <- function(D) D$depth %||% 0L
+## ---- frames, source relations and nodes ----
+##
+## The frame of a column is a remote design (its row domain `id`, filter,
+## connection and schema) with
+##
+##   a source relation (the *root*, xtx_frame_root()): the data of the
+##       design, or a relation stored from it (xtx_root_child()). A root is
+##       the `src` record of a design (holder, select, proto, types) with
+##       `path`, the tokens of the stores it descends from (none for the
+##       data), and `carried`, the ids of the nodes whose columns it holds;
+##   nodes (xtx_frame_nodes()): the dependencies that the expressions of
+##       the column name and the root does not hold, in dependency order.
+##
+## A node (xtx_node()) is an immutable value: its id (the stem of the names
+## of its columns, unique in the session), the SQL of its columns over the
+## relation `s` below it (`items`), a join (`join`) and the ids of the nodes
+## it reads (`deps`). The kinds are "mult" (a product X B: its SQL is that
+## of xtx_sql_predict(), written when the product is made), "lookup" (a
+## table of values joined on a key) and "proj" (expressions computed once:
+## col_compute(table = FALSE)). Nothing is created in the database for a
+## node, except the table of values of a lookup, written when it is made.
+##
+## A read renders the relation of its frame (xtx_frame_ready()): the root,
+## and on top of it one derived projection (or join) per node that the SQL
+## of the read names, each once, in dependency order. Rendering changes
+## neither the frame nor the columns: the same columns give the same SQL at
+## their next read, whatever was read in between.
+##
+## A design keeps the same fields, with its nodes (those its scale and
+## filter name) already rendered in `src` (and the root in `base`), so that
+## code that reads `D$src$select` with `D$filter` needs no change
+## (xtx_design_with()).
 
-## The lineage of a frame: the tokens of the frames derived one from the
-## other since the design was made (a design not yet derived has none), so
-## that a frame descends from another when its path extends the other's.
-## NULL when unknown (a derived frame made before frames had paths).
-xtx_frame_path <- function(D) {
-    if (!is.null(D$path)) return(D$path)
-    if (xtx_frame_depth(D) == 0L) character() else NULL
+xtx_frame_root <- function(fr) fr$base %||% fr$src
+xtx_frame_nodes <- function(fr) fr$nodes %||% list()
+
+## The stem of the column names of a new node.
+xtx_node_stem <- function(prefix) paste0("__xtx_", prefix, substr(xtx_tmp_name("n"), 3L, 10L))
+
+## A node; `on`: the nodes of the frame it is made on (those its SQL names
+## become its dependencies).
+xtx_node <- function(kind, id, cols, on, items, join = "", ref = NULL) {
+    list(id = id, kind = kind, cols = cols, deps = names(xtx_nodes_used(on, c(items, join))),
+         items = paste(items, collapse = ", "), join = join, ref = ref)
 }
 
-## Frame `fr`, derived from frame `parent`: its path is the parent's and a
-## new token. `steps` maps the tokens of the path made by binding a recipe
-## (a product or a lookup) to that recipe, so that the frame can be made
-## again on another branch (xtx_frame_replay()); other tokens (frozen or
-## stored columns, columns added to a design) cannot be replayed.
-xtx_frame_child <- function(fr, parent, recipe = NULL) {
-    p <- xtx_frame_path(parent)
-    if (is.null(p)) return(fr)
-    xtx_tmp$frames <- (xtx_tmp$frames %||% 0) + 1
-    tok <- sprintf("f%x", as.integer(xtx_tmp$frames))
-    fr$path <- c(p, tok)
-    fr$steps <- c(parent$steps, if (!is.null(recipe)) stats::setNames(list(recipe), tok))
+## Frame `fr` with one more node.
+xtx_frame_add <- function(fr, node) {
+    xtx_frame_set(fr, xtx_frame_root(fr), c(xtx_frame_nodes(fr), stats::setNames(list(node), node$id)))
+}
+
+## Frame `fr` on root `root` with the nodes `nodes`; with `render`, as a
+## design: the nodes rendered in its `src`.
+xtx_frame_set <- function(fr, root, nodes = list(), render = FALSE) {
+    fr$base <- NULL
+    fr$nodes <- NULL
+    fr$src <- root
+    if (!length(nodes)) return(fr)
+    fr$nodes <- nodes
+    if (render) {
+        fr$src <- xtx_root_render(root, nodes)
+        fr$base <- root
+    }
     fr
 }
 
-## Of two frames of the same design, the later one (which keeps the columns
-## of the earlier one): the descendant. For frames on two branches (neither
-## descends from the other), the steps of one branch since they split are
-## replayed on top of the other (xtx_frame_replay(): the result is pending
-## with those recipes), else that is an error. Without a known lineage,
-## the deeper frame. The frames of pending columns (xtx_frame_pending())
-## combine their recipes: the result is pending with the recipes of both
-## (in order, each once), on the later of their settled frames.
-xtx_frame_later <- function(a, b) {
-    if (is.null(a)) return(b)
-    if (is.null(b)) return(a)
-    pend <- xtx_pend_union(a$pend, b$pend)
-    a$pend <- NULL
-    b$pend <- NULL
-    out <- xtx_frame_later_settled(a, b)
-    ## (replayed recipes first: the pending ones may read their columns)
-    pend <- xtx_pend_union(out$pend, pend)
-    out$pend <- NULL
-    if (length(pend)) xtx_frame_pending(out, pend) else out
+## The relation of a root with nodes on top: one derived projection per
+## node that the root does not carry.
+xtx_root_render <- function(root, nodes) {
+    nodes <- nodes[!names(nodes) %in% root$carried]
+    if (!length(nodes)) return(root)
+    sel <- root$select
+    for (nd in nodes) sel <- sprintf("SELECT s.*, %s FROM (%s) AS s%s", nd$items, sel, nd$join)
+    root$select <- sel
+    ## (not a table that batches read by rowid)
+    root$base_table <- NULL
+    root
 }
 
-## (xtx_frame_later() of two settled frames; the result has a `pend` field
-## only when one branch is replayed on the other)
-xtx_frame_later_settled <- function(a, b) {
+## The nodes that SQL fragments name (by the stems of their columns), with
+## the nodes those read.
+xtx_nodes_used <- function(nodes, sql) {
+    if (!length(nodes)) return(nodes)
+    txt <- paste(sql, collapse = " ")
+    keep <- vapply(nodes, function(nd) grepl(nd$id, txt, fixed = TRUE), NA)
+    if (all(keep)) return(nodes)
+    ids <- names(nodes)
+    ## (dependencies come first: one pass from the end)
+    for (i in rev(seq_along(nodes))) if (keep[i]) keep[ids %in% nodes[[i]]$deps] <- TRUE
+    nodes[keep]
+}
+
+## A relation stored from root `parent` (a table, or the data of a design
+## with columns added): `root` is its source record; it descends from the
+## parent and carries the nodes `nodes` that were rendered into it.
+xtx_root_child <- function(root, parent, nodes = list()) {
+    xtx_tmp$roots <- (xtx_tmp$roots %||% 0) + 1
+    root$path <- c(parent$path, sprintf("t%x", as.integer(xtx_tmp$roots)))
+    root$carried <- unique(c(parent$carried, names(nodes)))
+    root
+}
+
+## Of two roots of one design, the one that holds what both hold: the
+## descendant. Two relations stored separately (neither descends from the
+## other) have no rows in common order and no key: an error.
+xtx_root_later <- function(a, b) {
+    pa <- a$path %||% character()
+    pb <- b$path %||% character()
+    la <- length(pa)
+    lb <- length(pb)
+    if (la == lb && (la == 0L || identical(pa, pb))) return(a)
+    if (la < lb && identical(pa, pb[seq_len(la)])) return(b)
+    if (lb < la && identical(pb, pa[seq_len(lb)])) return(a)
+    stop("Columns built on two different branches of the same remote design cannot be combined: ",
+         "each reads a table stored separately from the design (col_compute()), and ",
+         "remote rows have no key to align them. Combine the columns before storing them (store one ",
+         "column made from both, or one product `D %*% cbind(b1, b2)` and then `[, 1]` and `[, 2]`), or ",
+         "read them with as.data.frame(keep = ) and match them in R.",
+         call. = FALSE)
+}
+
+## The frame on which the columns of frames a and b both evaluate: the
+## later of their roots, with the nodes of both (those of a first, each
+## once). They must be frames of the same design. The result has the
+## fields of `a`.
+xtx_frame_merge <- function(a, b) {
+    if (is.null(a)) return(b)
+    if (is.null(b)) return(a)
     if (!identical(a$id, b$id))
         stop("Columns of different remote designs cannot be combined (a subset or a materialized design ",
              "is another design: make the columns again on it).", call. = FALSE)
-    pa <- xtx_frame_path(a)
-    pb <- xtx_frame_path(b)
-    if (!is.null(pa) && !is.null(pb) && !identical(pa, pb)) {
-        prefix <- function(u, v) length(u) < length(v) && identical(u, v[seq_along(u)])
-        if (prefix(pa, pb)) return(b)
-        if (prefix(pb, pa)) return(a)
-        ## (products and lookups bind on top of one another at their first
-        ## use, and a product or lookup already bound on a sibling frame is
-        ## replayed: users meet this only with a stored or frozen column on
-        ## each branch, as two columns each stored by col_compute())
-        out <- xtx_frame_replay(a, b)
-        if (!is.null(out)) return(out)
-        stop("Columns built on two different branches of the same remote design cannot be combined: ",
-             "on each branch a column was stored (col_compute()) or frozen after the branches split, and ",
-             "remote rows have no key to align them. Combine the columns before storing them (store one ",
-             "column made from both, or one product `D %*% cbind(b1, b2)` and then `[, 1]` and `[, 2]`), or ",
-             "read them with as.data.frame(keep = ) and match them in R; internally, freeze them together ",
-             "(xtx_c_cbind()) or bind them together first (xtx_c_bind()).",
-             call. = FALSE)
-    }
-    if (xtx_frame_depth(b) > xtx_frame_depth(a)) b else a
+    ra <- xtx_frame_root(a)
+    root <- xtx_root_later(ra, xtx_frame_root(b))
+    na <- xtx_frame_nodes(a)
+    nb <- xtx_frame_nodes(b)
+    new <- if (length(nb)) nb[!names(nb) %in% names(na)]
+    if (!length(new) && length(root$path) == length(ra$path)) return(a)
+    xtx_frame_set(a, root, c(na, new))
 }
 
-## Frames a and b of one design on two branches (paths known, neither a
-## prefix of the other): the frame of one of them, pending with copies of
-## the recipes that made the other branch since the two split (its steps
-## past their common ancestor), when all those steps are products or
-## lookups; NULL when neither branch can be replayed (a stored or frozen
-## column on each). The copies (xtx_recipe_replay()) bind at the next use as
-## any pending recipe does, on top of the frame: one view per product, no
-## statement for a lookup; a copy adds the same columns as its original
-## (same names), so every column of the other branch reads the same SQL
-## on the result. Steps whose columns the frame already has (an earlier
-## replay of the same recipe) are left out. Of two replayable branches,
-## the one with fewer products is replayed (a on a tie).
-xtx_frame_replay <- function(a, b) {
-    pa <- a$path
-    pb <- b$path
-    m <- min(length(pa), length(pb))
-    k <- 0L
-    while (k < m && identical(pa[k + 1L], pb[k + 1L])) k <- k + 1L
-    side <- function(f, p) {
-        toks <- p[seq_along(p) > k]
-        if (!all(toks %in% names(f$steps))) return(NULL)
-        unname(f$steps[toks])
-    }
-    sa <- side(a, pa)
-    sb <- side(b, pb)
-    need <- function(st, onto) {
-        have <- xtx_frame_keys(onto)
-        Filter(function(r) !xtx_recipe_key(r) %in% have, st)
-    }
-    views <- function(st) sum(vapply(st, function(r) identical(r$kind, "mult"), NA))
-    nb <- if (!is.null(sb)) need(sb, a)
-    na <- if (!is.null(sa)) need(sa, b)
-    if (!is.null(sb) && (is.null(sa) || views(nb) <= views(na))) {
-        out <- a
-        rep <- nb
-    } else if (!is.null(sa)) {
-        out <- b
-        rep <- na
-    } else {
-        return(NULL)
-    }
-    out$pend <- if (length(rep)) lapply(rep, xtx_recipe_replay)
-    out
+## The frame of a read: the frame with the nodes that the SQL of the read
+## (and the filter of the design) name rendered in its source, so that the
+## query is `SELECT ... FROM (fr$src$select) AS s WHERE fr$filter`.
+xtx_frame_ready <- function(fr, sql = character()) {
+    if (is.null(fr)) return(fr)
+    nodes <- xtx_frame_nodes(fr)
+    if (!length(nodes)) return(fr)
+    xtx_frame_set(fr, xtx_frame_root(fr), xtx_nodes_used(nodes, c(sql, fr$filter)), render = TRUE)
 }
 
-## The identity of a recipe across replays: its own id, or that of the
-## recipe it copies; and those of the recipes bound in a frame's lineage.
-xtx_recipe_key <- function(r) r$origin %||% r$id
-xtx_frame_keys <- function(fr) vapply(fr$steps %||% list(), xtx_recipe_key, "")
-
-## ---- pending columns: products and lookups bound at first use ----
-##
-## The frame of a pending column is a settled frame (the design's, or the
-## key's: the rows and columns its recipe reads) with a field `pend`, the
-## recipes still to bind on top of it, in order. A recipe is an environment
-## (kind "mult": design x and coefficients B, with the names of the product
-## columns as colnames; kind "lookup": the SQL of its join), with `deps`
-## (the recipes it reads, bound before it) and `frame`, NULL until bound,
-## then the frame it made (later uses read that frame: one view per
-## product). Every column made from a pending column copies its frame, so
-## arithmetic stays pending; the operations that read rows or make frames
-## call xtx_frame_bind() (through xtx_rebase() for designs).
-
-xtx_recipe <- function(kind, deps = list(), ...) {
-    r <- list2env(list(...), parent = emptyenv())
-    r$id <- xtx_recipe_id()
-    r$kind <- kind
-    r$deps <- deps
-    r$frame <- NULL
-    r
-}
-
-xtx_recipe_id <- function() {
-    xtx_tmp$recipes <- (xtx_tmp$recipes %||% 0) + 1
-    sprintf("r%x", as.integer(xtx_tmp$recipes))
-}
-
-## A copy of the bound recipe r, not bound, to bind again on another branch
-## (xtx_frame_replay()): the same design and coefficients (or lookup table
-## and join), so the same columns; `origin` names the recipe it copies. Its
-## dependencies are left out: they are steps of the same branch, replayed
-## before it (or below the branches' common ancestor).
-xtx_recipe_replay <- function(r) {
-    q <- list2env(as.list(r, all.names = TRUE), parent = emptyenv())
-    q$id <- xtx_recipe_id()
-    q$origin <- xtx_recipe_key(r)
-    q$deps <- list()
-    q$frame <- NULL
-    q
-}
-
-## the recipes of a and b, those of a first, each once (a replayed copy
-## counts as its original)
-xtx_pend_union <- function(a, b) {
-    if (!length(b)) return(a)
-    if (!length(a)) return(b)
-    keys <- vapply(a, xtx_recipe_key, "")
-    c(a, Filter(function(r) !xtx_recipe_key(r) %in% keys, b))
-}
-
-## the recipes with their dependencies before them, each once
-xtx_pend_order <- function(pend) {
-    out <- list()
-    keys <- character()
-    add <- function(r) {
-        if (xtx_recipe_key(r) %in% keys) return(invisible())
-        for (d in r$deps) add(d)
-        out[[length(out) + 1L]] <<- r
-        keys <<- c(keys, xtx_recipe_key(r))
-        invisible()
-    }
-    for (r in pend) add(r)
-    out
-}
-
-## Settled frame `fr` with the recipes `pend` on top: the recipes already
-## bound (by an earlier use of another column) are folded into the settled
-## frame (the later of it and their frames; for frames on two branches, one
-## replayed on the other, whose copies of recipes join the pending ones, or
-## an error); the others stay pending. (Copies made by a fold go before the
-## recipes already pending: those may sit on the lineage they remake.)
-xtx_frame_pending <- function(fr, pend) {
-    left <- list()
-    for (r in pend) {
-        if (is.null(r$frame)) {
-            left <- xtx_pend_union(left, list(r))
-            next
-        }
-        fr <- xtx_frame_later_settled(fr, r$frame)
-        if (length(fr$pend)) {
-            left <- xtx_pend_union(fr$pend, left)
-            fr$pend <- NULL
-        }
-    }
-    fr$pend <- if (length(left)) left
-    fr
-}
-
-## The settled frame of a (possibly pending) frame: its recipes bound one
-## on the other, in order, on the latest settled frame among it and the
-## frames of the recipes already bound. A recipe whose columns the frame
-## already has (a replayed copy of a recipe in its lineage) is not bound
-## again: it reads that frame.
-xtx_frame_bind <- function(fr) {
-    if (is.null(fr) || !length(fr$pend)) return(fr)
-    pend <- xtx_pend_order(fr$pend)
-    fr$pend <- NULL
-    fr <- xtx_frame_pending(xtx_remote_unscaled(fr), pend)
-    left <- fr$pend
-    fr$pend <- NULL
-    for (r in left) {
-        if (xtx_recipe_key(r) %in% xtx_frame_keys(fr)) {
-            r$frame <- fr
-            next
-        }
-        fr <- switch(r$kind, mult = xtx_bind_mult(r, fr), lookup = xtx_bind_lookup(r, fr),
-                     stop("internal error: unknown recipe", call. = FALSE))
-        r$frame <- fr
-    }
-    fr
-}
-
-## A column on its settled frame (unchanged if it is not pending).
-xtx_column_bind <- function(x) {
-    if (!xtx_is_column(x)) return(x)
+## The frame of a column with only the nodes its SQL (and filter) name.
+xtx_column_frame1 <- function(x) {
     u <- unclass(x)
-    if (!length(u$frame$pend)) return(x)
-    u$frame <- xtx_frame_bind(u$frame)
-    structure(u, class = "xtx_column")
+    fr <- u$frame
+    nodes <- xtx_frame_nodes(fr)
+    if (!length(nodes)) return(fr)
+    used <- xtx_nodes_used(nodes, c(u$sql, fr$filter))
+    if (length(used) == length(nodes)) fr else xtx_frame_set(fr, xtx_frame_root(fr), used)
 }
 
-## Does the column wait for recipes not yet bound?
-xtx_column_unbound <- function(x) {
-    xtx_is_column(x) && any(vapply(unclass(x)$frame$pend %||% list(), function(r) is.null(r$frame), NA))
-}
-
-## The product recipe r bound on settled frame fr: a view of X B over the
-## rows of fr, which keeps every column of fr.
-xtx_bind_mult <- function(r, fr) {
-    x <- r$x
-    if (!identical(x$id, fr$id)) stop("internal error: a product on another design", call. = FALSE)
-    x$src <- fr$src
-    x$depth <- xtx_frame_depth(fr)
-    x$path <- fr$path
-    x$steps <- fr$steps
-    view <- xtx_remote_predict(x, r$B, column = r$nm[1L])
-    out <- xtx_remote_unscaled(x)
-    out$src$select <- sprintf("SELECT * FROM %s", xtx_qi(x, unclass(view)[1L]))
-    out$src$base_table <- NULL
-    out$src$view <- c(out$src$view, list(view))
-    ## (the view keeps every column of the frame, and adds the products:
-    ## their type is known, no query)
-    proto <- xtx_proto_add(out, r$nm, double(0), sprintf("SELECT * FROM (%s) AS s LIMIT 0", out$src$select))
-    out$src$proto <- proto
-    out$src$types <- vapply(proto, xtx_col_type, "")
-    out$depth <- xtx_frame_depth(x) + 1L
-    xtx_frame_child(out, x, r)
-}
-
-## The lookup recipe r bound on settled frame fr: the lookup table joined
-## to the rows of fr (keeping every column of fr).
-xtx_bind_lookup <- function(r, fr) {
-    out <- xtx_remote_unscaled(fr)
-    out$src$select <- sprintf("SELECT s.*, %s FROM (%s) AS s LEFT JOIN %s AS l ON %s",
-                              r$items, fr$src$select, r$table, r$on)
-    out$src$base_table <- NULL
-    out$src$proto <- xtx_proto_add(fr, r$col, r$type, sprintf("SELECT * FROM (%s) AS s LIMIT 0", out$src$select))
-    out$src$types <- vapply(out$src$proto, xtx_col_type, "")
-    out$depth <- xtx_frame_depth(fr) + 1L
-    xtx_frame_child(out, fr, r)
-}
-
-## The (possibly pending) frame of the remote columns in `cols`: a column,
-## a xtx_c_codes() grouping, NULL, or a list of those (nested); NULL when
-## none is remote.
+## The frame of the remote columns in `cols`: a column, a xtx_c_codes()
+## grouping, NULL, or a list of those (nested); NULL when none is remote.
 xtx_cols_frame <- function(cols) {
     f <- NULL
     walk <- function(v) {
-        if (xtx_is_column(v)) f <<- xtx_frame_later(f, unclass(v)$frame)
+        if (xtx_is_column(v)) f <<- xtx_frame_merge(f, xtx_column_frame1(v))
         else if (xtx_is_codes(v)) walk(v$codes)
         else if (is.list(v) && is.null(oldClass(v))) for (e in v) walk(e)
         invisible()
@@ -600,27 +510,19 @@ xtx_cols_map <- function(v, fun) {
     v
 }
 
-## Columns used one by one that must still combine with each other later
-## (remotely, pending columns bound separately would sit on two branches):
-## the pending columns of `cols` (as xtx_cols_frame() takes it) bound
-## together, one on the other in order, and every remote column of `cols`
-## on that one frame (which keeps the columns of the frames below it). The
-## same structure is returned; in memory, `cols` itself.
-xtx_c_bind <- function(cols) {
-    fr <- xtx_cols_frame(cols)
-    if (is.null(fr)) return(cols)
-    fr <- xtx_frame_bind(fr)
-    xtx_cols_map(cols, function(v) {
-        u <- unclass(v)
-        u$frame <- fr
-        structure(u, class = "xtx_column")
-    })
-}
-
 xtx_column_frame <- function(...) {
     f <- NULL
-    for (v in list(...)) if (xtx_is_column(v)) f <- xtx_frame_later(f, unclass(v)$frame)
+    for (v in list(...)) if (xtx_is_column(v)) f <- xtx_frame_merge(f, unclass(v)$frame)
     f
+}
+
+## The identity of the values of a column: its design, its source relation
+## and its expressions, which name their nodes by ids unique in the session
+## (the same SQL text over another design or another stored relation is
+## another column).
+xtx_column_key <- function(x) {
+    u <- unclass(x)
+    list(id = u$frame$id, root = xtx_frame_root(u$frame)$path %||% character(), sql = u$sql)
 }
 
 ## SQL of an operand (a remote column, or a number)
@@ -642,9 +544,13 @@ Ops.xtx_column <- function(e1, e2) {
             ## (the negation of a negation is the column negated: !is.na(x)
             ## is the short SQL of "present", not NOT (NOT ...))
             if (!is.null(u$neg)) return(u$neg)
-            out <- xtx_column_logical(xtx_column(u$frame, sprintf("(NOT %s)", u$sql), notnull = xtx_operand_notnull(e1)))
-            out <- unclass(out)
-            out$neg <- xtx_column_logical(e1)
+            lg <- xtx_column_lgl(e1)
+            ## (a number is FALSE where it is 0, as in R: !x is x == 0, NA
+            ## where x is NA or NaN)
+            sql <- ifelse(lg, sprintf("(NOT %s)", u$sql), sprintf("(NULLIF(%s, CAST('NaN' AS DOUBLE)) = 0)", u$sql))
+            out <- unclass(xtx_column(u$frame, sql, notnull = xtx_operand_notnull(e1) & lg, lgl = TRUE))
+            ## (only the negation of a logical column is that column again)
+            if (all(lg)) out$neg <- e1
             return(structure(out, class = "xtx_column"))
         }
         a <- xtx_column_arith(e1)
@@ -660,8 +566,8 @@ Ops.xtx_column <- function(e1, e2) {
         str <- if (is.character(e1)) e1 else e2
         if (length(str) != 1L || is.na(str)) stop("A remote column compares with one string.", call. = FALSE)
         col <- unclass(if (is.character(e1)) e2 else e1)$sql
-        return(xtx_column_logical(xtx_column(frame, sprintf("(%s %s %s)", col, if (op == "==") "=" else "<>",
-                                                            DBI::dbQuoteString(xtx_con(frame), str)))))
+        return(xtx_column(frame, sprintf("(%s %s %s)", col, if (op == "==") "=" else "<>",
+                                         DBI::dbQuoteString(xtx_con(frame), str)), lgl = TRUE))
     }
     a <- xtx_column_operand(e1)
     b <- xtx_column_operand(e2)
@@ -675,12 +581,37 @@ Ops.xtx_column <- function(e1, e2) {
     ## made NULL (NULLIF(v, NaN), as NaN = NaN only for NaN, keeps v once in
     ## the expression), so that NaN or NULL on either side gives NULL.
     if (op %in% c("==", "!=", "<", ">", "<=", ">=")) {
-        nn <- function(v, e) {
-            if (xtx_is_column(e)) return(sprintf("NULLIF(%s, CAST('NaN' AS DOUBLE))", v))
-            if (is.nan(e)) "CAST(NULL AS DOUBLE)" else v
+        ## (two logical operands compare as they are; a logical column
+        ## against a number is 0 or 1, as in R)
+        la <- rep_len(xtx_operand_lgl(e1), k)
+        lb <- rep_len(xtx_operand_lgl(e2), k)
+        nn <- function(v, e, cast) {
+            if (xtx_is_column(e))
+                ## (a value stored as text or integer is never NaN)
+                return(ifelse(cast, sprintf("CAST(%s AS DOUBLE)", v),
+                              ifelse(rep_len(!xtx_column_type(e) %in% c("", "double"), k), v,
+                                     sprintf("NULLIF(%s, CAST('NaN' AS DOUBLE))", v))))
+            if (is.nan(e)) return("CAST(NULL AS DOUBLE)")
+            if (is.logical(e) && !is.na(e)) return(ifelse(la & lb, v, xtx_sql_double(as.numeric(e))))
+            v
         }
-        a <- nn(a, e1)
-        b <- nn(b, e2)
+        a <- nn(a, e1, la & !lb)
+        b <- nn(b, e2, lb & !la)
+        ## (two logical columns: no NaN to guard)
+        both <- la & lb
+        if (any(both)) {
+            if (xtx_is_column(e1)) a[both] <- rep_len(xtx_column_operand(e1), k)[both]
+            if (xtx_is_column(e2)) b[both] <- rep_len(xtx_column_operand(e2), k)[both]
+        }
+    }
+    if (op %in% c("&", "|")) {
+        ## (a number is TRUE where it is not 0, as in R)
+        tr <- function(v, e) {
+            if (!xtx_is_column(e)) return(if (is.numeric(e) && !is.na(e)) (if (e != 0) "TRUE" else "FALSE") else v)
+            ifelse(rep_len(xtx_column_lgl(e), k), v, sprintf("(NULLIF(%s, CAST('NaN' AS DOUBLE)) <> 0)", v))
+        }
+        a <- tr(a, e1)
+        b <- tr(b, e2)
     }
     if (op %in% c("+", "-", "*", "/", "^")) {
         ## (a logical column is 0/1 in arithmetic, as in R)
@@ -697,17 +628,18 @@ Ops.xtx_column <- function(e1, e2) {
     ## (AND, OR of columns that are never NULL are never NULL; the sums of a
     ## column known never NULL need no count of NULL values)
     nn <- op %in% c("&", "|") & rep_len(xtx_operand_notnull(e1), k) & rep_len(xtx_operand_notnull(e2), k)
-    out <- xtx_column(frame, sql, notnull = nn)
-    if (op %in% c("==", "!=", "<", ">", "<=", ">=", "&", "|")) out <- xtx_column_logical(out)
-    out
+    xtx_column(frame, sql, notnull = nn, lgl = op %in% c("==", "!=", "<", ">", "<=", ">=", "&", "|"))
 }
+
+## Is an operand logical-valued (per column)? A logical column, TRUE, FALSE.
+xtx_operand_lgl <- function(x) if (xtx_is_column(x)) xtx_column_lgl(x) else is.logical(x) && length(x) == 1L && !is.na(x)
 
 ## A column marked as logical (comparisons, &, |, !, is.na() and the like):
 ## SQL has no arithmetic on BOOLEAN, so that such a column is cast to DOUBLE
 ## when it enters arithmetic (xtx_column_arith()), as R takes TRUE as 1.
 xtx_column_logical <- function(x) {
     u <- unclass(x)
-    u$lgl <- TRUE
+    u$lgl <- rep(TRUE, length(u$sql))
     structure(u, class = "xtx_column")
 }
 
@@ -716,7 +648,7 @@ xtx_column_logical <- function(x) {
 xtx_column_arith <- function(x) {
     if (!xtx_is_column(x)) return(xtx_column_operand(if (is.logical(x) && length(x) == 1L && !is.na(x)) as.numeric(x) else x))
     u <- unclass(x)
-    if (isTRUE(u$lgl)) sprintf("CAST(%s AS DOUBLE)", u$sql) else u$sql
+    ifelse(xtx_column_lgl(x), sprintf("CAST(%s AS DOUBLE)", u$sql), u$sql)
 }
 
 ## Is an operand never NULL (per column)? A remote column: its flags; a
@@ -734,16 +666,16 @@ is.na.xtx_column <- function(x) !xtx_c_present(x)
 
 #' @export
 is.nan.xtx_column <- function(x)
-    xtx_column_logical(xtx_column(unclass(x)$frame, sprintf("COALESCE(isnan(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
-                                  notnull = TRUE))
+    xtx_column(unclass(x)$frame, sprintf("COALESCE(isnan(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
+               notnull = TRUE, lgl = TRUE)
 
 #' @export
 is.finite.xtx_column <- function(x) xtx_c_is_finite(x)
 
 #' @export
 is.infinite.xtx_column <- function(x)
-    xtx_column_logical(xtx_column(unclass(x)$frame, sprintf("COALESCE(isinf(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
-                                  notnull = TRUE))
+    xtx_column(unclass(x)$frame, sprintf("COALESCE(isinf(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
+               notnull = TRUE, lgl = TRUE)
 
 #' @export
 Math.xtx_column <- function(x, ...) {
@@ -751,7 +683,8 @@ Math.xtx_column <- function(x, ...) {
     ## (log2 and log10 as R: -Inf at 0, NaN below, where DuckDB refuses)
     if (.Generic == "log2") return(xtx_column_log(x, 2))
     if (.Generic == "log10") return(xtx_column_log(x, 10))
-    a <- unclass(x)$sql
+    ## (a logical column is 0/1)
+    a <- xtx_column_arith(x)
     sql <- switch(.Generic,
         exp = sprintf("exp(%s)", a), sqrt = sprintf("sqrt(%s)", a),
         abs = sprintf("abs(%s)", a), log1p = xtx_sql_log1p(sprintf("CAST(%s AS DOUBLE)", a)), expm1 = {
@@ -859,8 +792,8 @@ xtx_c_pmin <- function(x, y) {
 
 xtx_sql_pext <- function(f, x, y, fun, cmp) {
     num <- function(v) !xtx_is_column(v) && is.numeric(v) && length(v) == 1L && is.finite(v)
-    a <- xtx_column_operand(x)
-    b <- xtx_column_operand(y)
+    a <- xtx_column_arith(x)
+    b <- xtx_column_arith(y)
     nan <- "CAST('NaN' AS DOUBLE)"
     if (num(x) || num(y)) {
         if (num(x)) { cc <- a; v <- b } else { cc <- b; v <- a }
@@ -883,13 +816,13 @@ xtx_sql_pext <- function(f, x, y, fun, cmp) {
 xtx_fast_pmax <- function(x, y) {
     f <- xtx_column_frame(x, y)
     if (is.null(f)) return(pmax(x, y))
-    xtx_column(f, sprintf("greatest(%s, %s)", xtx_column_operand(x), xtx_column_operand(y)))
+    xtx_column(f, sprintf("greatest(%s, %s)", xtx_column_arith(x), xtx_column_arith(y)))
 }
 
 xtx_fast_pmin <- function(x, y) {
     f <- xtx_column_frame(x, y)
     if (is.null(f)) return(pmin(x, y))
-    xtx_column(f, sprintf("least(%s, %s)", xtx_column_operand(x), xtx_column_operand(y)))
+    xtx_column(f, sprintf("least(%s, %s)", xtx_column_arith(x), xtx_column_arith(y)))
 }
 
 ## Internal log for the fits (qpr8), only where x is positive by
@@ -924,29 +857,53 @@ xtx_c_ifelse <- function(test, yes, no) {
     ## (NULL where test is NULL, as NA in memory; the simple CASE names the
     ## test once; never NULL when no operand is)
     nn <- all(xtx_operand_notnull(test)) && all(xtx_operand_notnull(yes)) && all(xtx_operand_notnull(no))
-    xtx_column(f, sprintf("(CASE %s WHEN TRUE THEN %s WHEN FALSE THEN %s END)", xtx_column_operand(test),
-                        xtx_column_operand(yes), xtx_column_operand(no)), notnull = nn)
+    br <- xtx_branches(yes, no)
+    xtx_column(f, sprintf("(CASE %s WHEN TRUE THEN %s WHEN FALSE THEN %s END)", xtx_column_test(test),
+                        br$yes, br$no), notnull = nn, lgl = br$lgl)
 }
 
-## Columns side by side (cbind).
+## The branches of an ifelse (columns or numbers) as SQL of one type:
+## logical when both are, else numbers (a logical branch as 0/1, as R
+## coerces). list(yes, no, lgl).
+xtx_branches <- function(yes, no) {
+    lgl <- all(xtx_operand_lgl(yes)) && all(xtx_operand_lgl(no))
+    if (lgl) list(yes = xtx_column_operand(yes), no = xtx_column_operand(no), lgl = TRUE)
+    else list(yes = xtx_column_arith(yes), no = xtx_column_arith(no), lgl = FALSE)
+}
+
+## The test of an ifelse as a BOOLEAN: a logical column as it is, a number
+## TRUE where it is not 0 (NULL where it is NA or NaN).
+xtx_column_test <- function(test) {
+    if (!xtx_is_column(test)) return(xtx_column_operand(test))
+    ifelse(xtx_column_lgl(test), unclass(test)$sql,
+           sprintf("(NULLIF(%s, CAST('NaN' AS DOUBLE)) <> 0)", unclass(test)$sql))
+}
+
+## Columns side by side (cbind); each keeps its flags.
 xtx_c_cbind <- function(...) {
     args <- list(...)
     f <- do.call(xtx_column_frame, args)
     if (is.null(f)) return(do.call(cbind, args))
-    xtx_column(f, unlist(lapply(args, xtx_column_operand)),
-             notnull = unlist(lapply(args, function(a) if (xtx_is_column(a)) unclass(a)$notnull else !is.na(a))))
+    ## (the expressions of columns as they are: already parenthesized)
+    out <- xtx_column(f, unlist(lapply(args, function(a) if (xtx_is_column(a)) "" else xtx_column_operand(a))),
+             notnull = unlist(lapply(args, function(a) if (xtx_is_column(a)) unclass(a)$notnull else !is.na(a))),
+             lgl = unlist(lapply(args, xtx_operand_lgl)),
+             type = unlist(lapply(args, function(a) if (xtx_is_column(a)) xtx_column_type(a) else "")))
+    out <- unclass(out)
+    out$sql <- unlist(lapply(args, function(a) if (xtx_is_column(a)) unclass(a)$sql else sprintf("(%s)", xtx_column_operand(a))))
+    structure(out, class = "xtx_column")
 }
 
 xtx_c_rowsums <- function(x) {
     if (!xtx_is_column(x)) return(if (is.matrix(x)) rowSums(x) else x)
-    xtx_column(unclass(x)$frame, sprintf("(%s)", paste(unclass(x)$sql, collapse = " + ")))
+    xtx_column(unclass(x)$frame, sprintf("(%s)", paste(xtx_column_arith(x), collapse = " + ")))
 }
 
 ## distribution functions: stats in memory, DuckDB macros remotely
 xtx_c_macro <- function(x, fun, macro) {
     if (!xtx_is_column(x)) return(fun(x))
     xtx_sql_macros(unclass(x)$frame)
-    xtx_column(unclass(x)$frame, sprintf("%s(%s)", macro, unclass(x)$sql))
+    xtx_column(unclass(x)$frame, sprintf("%s(%s)", macro, xtx_column_arith(x)))
 }
 xtx_c_pnorm <- function(x) xtx_c_macro(x, stats::pnorm, "xtx_pnorm")
 xtx_c_qnorm <- function(x) xtx_c_macro(x, stats::qnorm, "xtx_qnorm")
@@ -957,8 +914,8 @@ xtx_c_mexpm1m <- function(x) xtx_c_macro(x, function(u) -expm1(-u), "xtx_mexpm1m
 ## The values of a column in R (remotely: all its rows; for small data).
 xtx_p_collect <- function(x) {
     if (!xtx_is_column(x)) return(x)
-    fr <- xtx_frame_bind(unclass(x)$frame)
     sql <- unclass(x)$sql
+    fr <- xtx_frame_ready(unclass(x)$frame, sql)
     res <- xtx_query(fr, sprintf("SELECT %s FROM (%s) AS s WHERE %s",
                                 paste(sprintf("CAST(%s AS DOUBLE) AS c%d", sql, seq_along(sql)), collapse = ", "),
                                 fr$src$select, fr$filter))
@@ -972,8 +929,8 @@ xtx_colsum <- function(x) {
         if (is.matrix(x)) return(colSums(x))
         return(sum(x))
     }
-    fr <- xtx_frame_bind(unclass(x)$frame)
     sql <- unclass(x)$sql
+    fr <- xtx_frame_ready(unclass(x)$frame, sql)
     k <- length(sql)
     nn <- unclass(x)$notnull %||% rep(FALSE, k)
     items <- c(sprintf("SUM(CAST(%s AS DOUBLE)) AS s%d", sql, seq_len(k)),
@@ -1017,50 +974,37 @@ xtx_p_column <- function(x, sql) {
     sql
 }
 
-## The remote design over the frame of columns (same plan, rows and scale);
-## a pending frame is bound first.
-xtx_rebase <- function(x, frame) {
-    frame <- xtx_frame_bind(frame)
-    if (is.null(frame) || identical(x$src$select, frame$src$select)) return(x)
-    if (!identical(x$id, frame$id)) stop("Columns of another remote design.", call. = FALSE)
-    x$src <- frame$src
-    x$depth <- xtx_frame_depth(frame)
-    x$path <- frame$path
-    x$steps <- frame$steps
-    x
-}
-
-## The remote design over the later of its frame and `frame` (the pending
-## columns of `frame` bound on top of the design's frame when it is the
-## later one). (A frame of another design: as xtx_rebase().)
-xtx_rebase_later <- function(x, frame) {
-    if (!is.null(frame) && identical(frame$id, x$id)) frame <- xtx_frame_later(frame, x)
-    xtx_rebase(x, frame)
-}
-
-## The design over the latest frame of the columns of `cols` (a list, as
-## xtx_c_bind() takes it): their pending columns bound together, on top of
-## the design's frame when it is the later one. In memory x.
-xtx_p_rebase <- function(x, cols) {
+## The remote design with the nodes of the columns `cols` (a design, or
+## columns as xtx_cols_frame() takes them: those their SQL names) rendered
+## in its source, on the later of its root and theirs, so that the SQL of
+## the columns, the scale and the filter of the design all read
+## `x$src$select` (same plan, rows and scale). The columns must be columns
+## of the design. In memory x.
+xtx_design_with <- function(x, cols, short = TRUE) {
     if (!inherits(x, "xtx_remote")) return(x)
-    xtx_rebase_later(x, xtx_cols_frame(cols))
+    fr <- if (inherits(cols, "xtx_remote")) cols else xtx_cols_frame(cols)
+    if (is.null(fr)) return(x)
+    if (short && !identical(x$id, fr$id)) stop("Columns of another remote design.", call. = FALSE)
+    m <- xtx_frame_merge(x, fr)
+    xtx_frame_set(x, xtx_frame_root(m), xtx_frame_nodes(m), render = TRUE)
 }
 
 xtx_p_scale <- function(x, s) {
     if (is.null(s)) return(x)
     if (!xtx_is_column(s)) return(s * x)
-    x <- xtx_rebase_later(x, unclass(s)$frame)
-    x$scale <- xtx_remote_scale_sql(x, DBI::SQL(unclass(s)$sql), "*")
+    x <- xtx_design_with(x, s)
+    ## (a logical column scales by 0 or 1)
+    x$scale <- xtx_remote_scale_sql(x, DBI::SQL(xtx_column_arith(s)), "*")
     x
 }
 
-## A remote design with the columns `col` added to its source (named nm).
+## A remote design with the columns `col` added to its source (named nm):
+## its source is a relation derived from the design's (a new root, which
+## carries the nodes of the columns), not a table.
 xtx_with_columns <- function(x, col, nm) {
-    x <- xtx_rebase(x, xtx_frame_later(unclass(col)$frame, x))
-    sc <- x$scale
-    x <- xtx_frame_child(xtx_remote_extend(xtx_remote_unscaled(x), stats::setNames(unclass(col)$sql, nm), "column"), x)
-    x$scale <- sc
-    x
+    x <- xtx_design_with(x, col, short = FALSE)
+    ext <- xtx_remote_extend(xtx_remote_unscaled(x), stats::setNames(unclass(col)$sql, nm), "column")
+    xtx_frame_set(x, xtx_root_child(ext$src, xtx_frame_root(x), xtx_frame_nodes(x)))
 }
 
 xtx_p_crossprod <- function(x, y = NULL, compress = TRUE) {
@@ -1084,9 +1028,9 @@ xtx_p_colsums <- function(x, group = NULL) {
 ## SQL GROUP BY over the frame of columns: list(groups (a data frame of the
 ## group values, sorted as rowsum() sorts them), sums (matrix)).
 xtx_group_query <- function(groups, values, nulls = FALSE) {
-    fr <- xtx_frame_bind(do.call(xtx_column_frame, c(groups, values)))
     gs <- vapply(groups, function(g) unclass(g)$sql, "")
     vs <- unlist(lapply(values, function(v) unclass(v)$sql))
+    fr <- xtx_frame_ready(do.call(xtx_column_frame, c(groups, values)), c(gs, vs))
     items <- c(sprintf("%s AS g%d", gs, seq_along(gs)),
                if (length(vs)) sprintf("SUM(CAST(%s AS DOUBLE)) AS v%d", vs, seq_along(vs)) else "COUNT(*) AS v1",
                if (nulls && length(vs)) sprintf("SUM(CASE WHEN (%s) IS NULL THEN 1 ELSE 0 END) AS n%d", vs, seq_along(vs)))
@@ -1134,19 +1078,22 @@ xtx_p_crosstab <- function(a, b, w = NULL) {
                          dimnames = list(as.character(ua), as.character(ub)))
 }
 
-## (remotely a pending column: the view of the product is made at its first
-## use, on the frame that use needs; B is checked now)
+## (remotely a node: the SQL of the product over the rows of the design, its
+## scale included, is written now and rendered by each read that names the
+## column; nothing is created in the database)
 xtx_p_mult <- function(x, B) {
     if (!inherits(x, "xtx_remote")) return(if (is.matrix(B)) x %*% B else drop(x %*% B))
     B <- if (is.matrix(B)) B else matrix(B, ncol = 1L)
     checkmate::assert_matrix(B, mode = "numeric", nrows = x$p, any.missing = FALSE, .var.name = "beta")
     checkmate::assert_true(all(is.finite(B)), .var.name = "all(is.finite(beta))")
     storage.mode(B) <- "double"
-    nm <- paste0("__xtx_p", substr(xtx_tmp_name("p"), 3L, 10L), "_", seq_len(ncol(B)))
-    colnames(B) <- nm
-    fr <- xtx_remote_unscaled(x)
-    fr$pend <- list(xtx_recipe("mult", x = x, B = B, nm = nm))
-    xtx_column(fr, sprintf("s.%s", xtx_qi(x, nm)))
+    stem <- xtx_node_stem("p")
+    nm <- paste0(stem, "_", seq_len(ncol(B)))
+    pr <- xtx_sql_predict(x, B)
+    preds <- if (is.null(x$scale)) pr$preds else sprintf("(%s) * (%s)", pr$preds, x$scale)
+    node <- xtx_node("mult", stem, nm, xtx_frame_nodes(x), sprintf("%s AS %s", preds, xtx_qi(x, nm)), pr$joins,
+                     ref = list(design = x$id, B = B, scale = x$scale))
+    xtx_column(xtx_frame_add(xtx_remote_unscaled(x), node), sprintf("s.%s", xtx_qi(x, nm)))
 }
 
 xtx_p_quad <- function(x, V) {
@@ -1188,8 +1135,8 @@ xtx_p_quad <- function(x, V) {
 xtx_p_patterns <- function(x, z, w = NULL, compress = "auto", keys = NULL, fit = "lm") {
     if (inherits(x, "xtx_remote")) {
         mode <- if (isTRUE(compress)) TRUE else if (isFALSE(compress)) FALSE else xtx_compress_mode()
-        ## (on the frame of z and w: their pending columns bound)
-        x <- xtx_rebase_later(x, xtx_column_frame(z, w))
+        ## (with the nodes of z and w)
+        x <- xtx_design_with(x, list(z, w))
         ## (extra key columns: more keys of the GROUP BY)
         if (!is.null(keys)) x <- xtx_remote_cols(x, keys, "keys")$D
         pt <- xtx_sql_patterns(x, unclass(z)$sql, if (!is.null(w)) unclass(w)$sql,
@@ -1236,7 +1183,7 @@ xtx_p_output <- function(x, cols, memory = identity, na = NULL, design = FALSE, 
     taken <- intersect(names(cols), names(x$src$types))
     if (length(taken)) stop(sprintf("The remote data already has a column `%s`.", taken[1L]), call. = FALSE)
     if (design) return(xtx_with_columns(x, do.call(xtx_c_cbind, unname(cols)), names(cols)))
-    fr <- xtx_rebase_later(xtx_remote_unscaled(x), do.call(xtx_column_frame, unname(cols)))
+    fr <- xtx_design_with(xtx_remote_unscaled(x), unname(cols))
     srccols <- names(x$src$types)
     items <- vapply(names(cols), function(nm) {
         v <- cols[[nm]]
@@ -1433,10 +1380,10 @@ xtx_c_groupsums <- function(col, groups, total = NULL) {
     if (!remote || length(groups) + (!is.null(total)) < 2L)
         return(list(groups = lapply(groups, function(g) xtx_p_groupsum(col, g)),
                     total = if (!is.null(total)) xtx_colsum(total)))
-    fr <- xtx_frame_bind(do.call(xtx_column_frame, c(list(col, total), lapply(groups, `[[`, "codes"))))
     gs <- vapply(groups, function(g) unclass(g$codes)$sql, "")
     vs <- unclass(col)$sql
     ts <- if (!is.null(total)) unclass(total)$sql else character()
+    fr <- xtx_frame_ready(do.call(xtx_column_frame, c(list(col, total), lapply(groups, `[[`, "codes"))), c(gs, vs, ts))
     k <- length(vs)
     sums <- function(e, p) c(sprintf("SUM(CAST(%s AS DOUBLE)) AS %s%d", e, p, seq_along(e)),
                              sprintf("SUM(CASE WHEN (%s) IS NULL THEN 1 ELSE 0 END) AS %sn%d", e, p, seq_along(e)))
@@ -1508,7 +1455,7 @@ xtx_p_colsums_groups <- function(x, groups, extra = NULL) {
         s <- x$scale
         one <- xtx_column(xtx_remote_unscaled(x), if (is.null(s)) "CAST(1 AS DOUBLE)" else s)
         totals <- if (is.null(extra)) one else xtx_c_cbind(one, one * extra)
-        x <- xtx_p_rebase(x, list(totals, groups))
+        x <- xtx_design_with(x, list(totals, groups))
         return(lapply(groups, function(g) {
             cs <- xtx_sql_colsums(x, unclass(g$codes)$sql, s, FALSE,
                                  group_totals = unclass(totals)$sql)
@@ -1633,7 +1580,7 @@ xtx_colsums_struct_ok <- function(D, G) {
 ## one column of a multi-column column
 xtx_c_col <- function(x, j) {
     if (!xtx_is_column(x)) return(if (is.matrix(x)) x[, j] else x)
-    xtx_column(unclass(x)$frame, unclass(x)$sql[j])
+    xtx_column_pick(x, j)
 }
 
 ## a constant column over the rows of a column's frame (or a design)
@@ -1645,20 +1592,20 @@ xtx_c_const <- function(like, value) {
 
 xtx_c_lgamma <- function(x) {
     if (!xtx_is_column(x)) return(lgamma(x))
-    xtx_column(unclass(x)$frame, sprintf("lgamma(%s)", unclass(x)$sql))
+    xtx_column(unclass(x)$frame, sprintf("lgamma(%s)", xtx_column_arith(x)))
 }
 
 ## round half to even, as R's round(x)
 xtx_c_round <- function(x) {
     if (!xtx_is_column(x)) return(round(x))
-    xtx_column(unclass(x)$frame, sprintf("round_even(%s, 0)", unclass(x)$sql))
+    xtx_column(unclass(x)$frame, sprintf("round_even(%s, 0)", xtx_column_arith(x)))
 }
 
 ## is.finite, NaN-safe (in DuckDB, NaN = NaN and NaN > 0 are true)
 xtx_c_is_finite <- function(x) {
     if (!xtx_is_column(x)) return(is.finite(x))
-    xtx_column_logical(xtx_column(unclass(x)$frame, sprintf("COALESCE(isfinite(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
-                                  notnull = TRUE))
+    xtx_column(unclass(x)$frame, sprintf("COALESCE(isfinite(CAST(%s AS DOUBLE)), FALSE)", unclass(x)$sql),
+               notnull = TRUE, lgl = TRUE)
 }
 
 ## TRUE where x is not missing, FALSE where it is NA or NaN (NULL remotely);
@@ -1676,16 +1623,11 @@ xtx_c_present <- function(x) {
         return(!is.na(x))
     }
     sql <- unclass(x)$sql
-    one <- sprintf("COALESCE(NOT isnan(CAST(%s AS DOUBLE)), FALSE)", sql)
-    ## (stored columns: only an expression that reads `s.` can be one)
-    if (any(startsWith(sql, "(s."))) {
-        frame <- unclass(x)$frame
-        types <- frame$src$types
-        cols <- names(types)[match(sql, sprintf("(s.%s)", xtx_qi(frame, names(types))))]
-        plain <- !is.na(cols) & !types[cols] %in% "double"
-        one[plain] <- sprintf("(%s IS NOT NULL)", sql[plain])
-    }
-    xtx_column_logical(xtx_column(unclass(x)$frame, one, notnull = TRUE))
+    ## (by the type of the column: a logical column or a value stored as
+    ## text, integer or logical is never NaN)
+    plain <- xtx_column_lgl(x) | !xtx_column_type(x) %in% c("", "double")
+    one <- ifelse(plain, sprintf("(%s IS NOT NULL)", sql), sprintf("COALESCE(NOT isnan(CAST(%s AS DOUBLE)), FALSE)", sql))
+    xtx_column(unclass(x)$frame, one, notnull = TRUE, lgl = TRUE)
 }
 
 ## The rows where a logical column is TRUE (with negate, where it is not
@@ -1701,28 +1643,50 @@ xtx_c_count <- function(cond, negate = FALSE) {
              notnull = TRUE)
 }
 
-## A column computed once: remotely, its expressions become columns of a
-## new frame (a projection over the frame of the column, one level deeper,
-## as products are), so that later expressions refer to them instead of
+## A column computed once. Remotely, without `table`: a node whose columns
+## are the expressions, so that later expressions name them instead of
 ## repeating them (DuckDB expands macros such as xtx_qnorm() inline, and
-## nested expressions would grow without bound). Columns frozen separately
-## from one frame live on sibling frames, which cannot be combined (a frozen
-## column is not replayed on another branch): freeze them together
-## (xtx_c_cbind()). In memory, the column itself. With table =
-## TRUE, the new frame is a temporary table of the rows used (computed once
-## for all later queries, which then scan it: for columns that many queries
-## read, such as the working weights and responses of a GLM with fixed
-## effects); its rows keep the filter of the design.
+## nested expressions would grow without bound); a projection in the
+## queries that read it, nothing in the database. Columns computed
+## separately this way combine (their nodes are rendered on the same
+## source). In memory, the column itself. With table = TRUE, a temporary
+## table of the rows used (computed once for all later queries, which then
+## scan it: for columns that many queries read, such as the working weights
+## and responses of a GLM with fixed effects) with the columns of the
+## source and the values (xtx_store()); its rows keep the filter of the
+## design.
 xtx_c_freeze <- function(col, table = FALSE) {
     if (!xtx_is_column(col)) return(col)
-    fr <- xtx_frame_bind(unclass(col)$frame)
-    sql <- unclass(col)$sql
-    nm <- paste0("__xtx_f", substr(xtx_tmp_name("f"), 3L, 10L), "_", seq_along(sql))
-    x <- xtx_remote_extend(xtx_remote_unscaled(fr), stats::setNames(sql, nm), "column")
-    if (table) x <- xtx_remote_to_table(x)
-    x$depth <- xtx_frame_depth(fr) + 1L
-    x <- xtx_frame_child(x, fr)
-    xtx_column(x, sprintf("s.%s", xtx_qi(x, nm)))
+    u <- unclass(col)
+    sql <- u$sql
+    stem <- xtx_node_stem("f")
+    nm <- paste0(stem, "_", seq_along(sql))
+    if (table) {
+        fr <- xtx_store(u$frame, stats::setNames(sql, nm))
+    } else {
+        fr <- xtx_column_frame1(col)
+        fr <- xtx_frame_add(fr, xtx_node("proj", stem, nm, xtx_frame_nodes(fr), sprintf("%s AS %s", sql, xtx_qi(fr, nm))))
+    }
+    xtx_column(fr, sprintf("s.%s", xtx_qi(fr, nm)), notnull = u$notnull %||% FALSE, lgl = xtx_column_lgl(col),
+               type = xtx_column_type(col))
+}
+
+## The values `exprs` (named SQL expressions of a column of frame `frame`)
+## stored with the rows of the frame: a table (temporary, or the permanent
+## table `name`, replaced if `overwrite`) of the rows used, with the columns
+## of the source of the frame, of the nodes that the expressions name, and
+## the values. Returns the frame on that table: a root that descends from
+## the frame's and carries those nodes, so that the columns of the design
+## evaluate on it. The expressions are checked (and the columns of the
+## table read) by a query without rows before the table is written; a
+## failed statement creates nothing and leaves a table of that name as it
+## was.
+xtx_store <- function(frame, exprs, name = NULL, overwrite = FALSE) {
+    fr <- xtx_frame_ready(xtx_remote_unscaled(frame), exprs)
+    root <- xtx_frame_root(fr)
+    nodes <- xtx_frame_nodes(fr)
+    tab <- xtx_remote_to_table(xtx_remote_extend(fr, exprs, "column"), name = name, overwrite = overwrite)
+    xtx_frame_set(fr, xtx_root_child(tab$src, root, nodes))
 }
 
 ## The frame of a remote design as a temporary table of its rows used (with
@@ -1738,8 +1702,12 @@ xtx_remote_to_table <- function(x, keep = NULL, name = NULL, overwrite = FALSE) 
     x$src$select <- sprintf("SELECT * FROM %s", tn)
     x$src$base_table <- tn
     if (!is.null(keep) && !is.null(x$src$proto)) {
-        x$src$proto <- x$src$proto[keep]
-        x$src$types <- x$src$types[keep]
+        proto <- x$src$proto[intersect(keep, names(x$src$proto))]
+        ## (columns of nodes, which the prototype of the source does not
+        ## list: doubles)
+        for (cn in setdiff(keep, names(proto))) proto[[cn]] <- double(0)
+        x$src$proto <- proto[keep]
+        x$src$types <- vapply(x$src$proto, xtx_col_type, "")
     }
     x
 }
@@ -1747,9 +1715,10 @@ xtx_remote_to_table <- function(x, keep = NULL, name = NULL, overwrite = FALSE) 
 ## The columns of the frame of remote design x to copy for the design and
 ## the columns `cols` (a list of columns, xtx_c_codes() groupings or NULL):
 ## the columns of the data (whose names do not start with "__xtx_"; results
-## on the rows keep them), and the internal columns (lookups, products of
-## earlier steps) that the design (the SQL and inputs of its variables, its
-## scale) or `cols` read: those whose names occur in their SQL.
+## on the rows keep them), and the internal columns (stored values, and the
+## columns of the nodes rendered in the source of x) that the design (the
+## SQL and inputs of its variables, its scale) or `cols` read: those whose
+## names occur in their SQL.
 xtx_remote_used <- function(x, cols) {
     sql <- function(v) {
         if (is.null(v)) return(character())
@@ -1760,27 +1729,41 @@ xtx_remote_used <- function(x, cols) {
     }
     txt <- c(sql(cols), unlist(lapply(x$vars, function(v) c(v$sql, v$col, v$inputs))), x$scale %||% character())
     txt <- paste(as.character(txt), collapse = " ")
-    nm <- names(x$src$proto)
+    carried <- xtx_frame_root(x)$carried
+    nodes <- xtx_frame_nodes(x)
+    nm <- c(names(x$src$proto), unlist(lapply(nodes[!names(nodes) %in% carried], `[[`, "cols"), use.names = FALSE))
+    nm <- unique(nm)
     nm[!startsWith(nm, "__xtx_") | vapply(nm, grepl, NA, x = txt, fixed = TRUE)]
 }
 
+## The design over a copy of its rows (see the header): a new design, whose
+## source holds the rows used, the columns of the data and (given `cols`)
+## the internal columns that the design and `cols` read. Columns of x carry
+## over to it with xtx_c_on().
 xtx_p_materialize <- function(x, cols = NULL) {
     if (!inherits(x, "xtx_remote")) return(x)
-    ## (the columns' pending recipes bound: the frame copied has them)
-    if (!is.null(cols)) x <- xtx_p_rebase(x, cols)
+    ## (with the nodes of the columns: the copy holds them)
+    if (!is.null(cols)) x <- xtx_design_with(x, cols)
     sc <- x$scale
+    root <- xtx_frame_root(x)
+    ids <- unique(c(root$carried, names(xtx_frame_nodes(x))))
     keep <- if (!is.null(cols) && !is.null(x$src$proto)) xtx_remote_used(x, cols)
     if (!length(keep)) keep <- NULL
-    x <- xtx_remote_to_table(xtx_remote_unscaled(x), keep)
-    x$filter <- "TRUE"
-    x$depth <- 0L
-    x$path <- character()
-    x$steps <- NULL
-    x$cache <- new.env(parent = emptyenv())
-    x$id <- xtx_tmp_name("xtx")
-    x$scale <- sc
-    x
+    tab <- xtx_remote_to_table(xtx_remote_unscaled(x), keep)$src
+    ## (the nodes whose columns were copied)
+    if (!is.null(keep)) ids <- ids[vapply(ids, function(id) any(startsWith(keep, id)), NA)]
+    tab$path <- NULL
+    tab$carried <- ids
+    tab$origin <- root$path %||% character()
+    out <- xtx_frame_set(x, tab)
+    out$filter <- "TRUE"
+    out$cache <- new.env(parent = emptyenv())
+    out$from <- c(x$id, x$from)
+    out$id <- xtx_tmp_name("xtx")
+    out$scale <- sc
+    out
 }
+
 
 ## ---- inputs of the methods of a design ----
 
@@ -1860,26 +1843,45 @@ xtx_p_subset <- function(x, keep) {
     if (!xtx_is_column(keep))
         stop("Rows of a remote design are selected by a logical remote column or a DBI::SQL() predicate.",
              call. = FALSE)
-    out <- xtx_rebase(x, xtx_frame_later(unclass(keep)$frame, x))
+    out <- xtx_design_with(x, keep, short = FALSE)
     out$filter <- sprintf("(%s) AND COALESCE(%s, FALSE)", out$filter, unclass(keep)$sql)
     out$n <- as.numeric(xtx_query(out, sprintf("SELECT COUNT(*) AS n FROM (%s) AS s WHERE %s",
                                               out$src$select, out$filter))$n)
     out$cache <- new.env(parent = emptyenv())
+    out$from <- c(x$id, x$from)
     out$id <- xtx_tmp_name("xtx")
     out
 }
 
-## The same column (its SQL) over the rows of design x (remote; in memory,
-## the column itself). Valid when its expressions read columns of the
-## source of x.
+## A column of a design translated onto design x, a design made from it (a
+## subset, a copy of its rows, the centered design: `x$from` names the
+## designs x was made from): the same expressions and nodes over the rows
+## of x. A column of any other design is refused. In memory, the column
+## itself.
 xtx_c_on <- function(col, x) {
     if (!xtx_is_column(col)) return(col)
-    ## (a pending column reads columns that its recipes make: bind it, on
-    ## the frame that x copies, before)
-    if (xtx_column_unbound(col))
-        stop("internal error: xtx_c_on() of a pending column (bind it first: xtx_p_rebase(), xtx_c_bind())",
-             call. = FALSE)
-    xtx_column(x, unclass(col)$sql)
+    u <- unclass(col)
+    fr <- xtx_column_frame1(col)
+    if (!identical(fr$id, x$id) && !fr$id %in% x$from)
+        stop("Columns of another remote design: only columns of the design that this one was made from ",
+             "(by a subset, a copy of its rows or centering) carry over to it.", call. = FALSE)
+    rx <- xtx_frame_root(x)
+    rc <- xtx_frame_root(fr)
+    if (!identical(fr$id, x$id) && !is.null(rx$origin)) {
+        ## (x reads a copy of the rows: it holds what the relation it was
+        ## copied from held)
+        pc <- rc$path %||% character()
+        if (length(pc) > length(rx$origin) || !identical(pc, rx$origin[seq_along(pc)]))
+            stop("This column reads a table stored apart from the rows that the design copied.", call. = FALSE)
+        root <- rx
+    } else {
+        root <- xtx_root_later(rx, rc)
+    }
+    nx <- xtx_frame_nodes(x)
+    nc <- xtx_frame_nodes(fr)
+    u$frame <- xtx_frame_set(xtx_remote_unscaled(x), root, c(nx, nc[!names(nc) %in% names(nx)]))
+    u$neg <- NULL
+    structure(u, class = "xtx_column")
 }
 
 ## ---- arguments of a fit (round 7 of 2hba) ----
@@ -1920,7 +1922,10 @@ xtx_p_resolve <- function(x, exprs, env, logical = character(), data = NULL) {
         }
     }
     if (length(later)) {
-        x$src <- xtx_materialize(x$src, later, env, logical = paste0("__xtx_eval_", logical), chunk_size = x$chunk_size)
+        ## (a table of the data with the values: a relation stored from the
+        ## source, which holds every column of it)
+        x$src <- xtx_root_child(xtx_materialize(x$src, later, env, logical = paste0("__xtx_eval_", logical),
+                                                chunk_size = x$chunk_size), x$src)
         for (nm in names(items)) {
             col <- DBI::dbQuoteIdentifier(con, paste0("__xtx_eval_", nm))
             sqls[[nm]] <- if (nm %in% logical) sprintf("s.%s", col) else sprintf("CAST(s.%s AS DOUBLE)", col)

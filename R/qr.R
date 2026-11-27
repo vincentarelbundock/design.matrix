@@ -231,7 +231,7 @@ xtx_qr_remote <- function(x, tol, Y = NULL) {
     structure(list(design = x, R = R, rank = ch$rank, pivot = ch$pivot, tol = tol, G = unname(G),
                    response_ss = if (is.null(mc)) mo$yty else mc$yty,
                    weight_sum = if (is.null(mc)) mo$sumw else mc$sumw,
-                   centered = ch$centered, xty = mo$xty, xty_of = if (!is.null(mo$xty)) unclass(Y)$sql),
+                   centered = ch$centered, xty = mo$xty, xty_of = if (!is.null(mo$xty)) xtx_column_key(Y)),
               class = "xtx_qr")
 }
 
@@ -244,7 +244,9 @@ xtx_qr_for <- function(x, tol, Y) {
 ## X'Y for the columns Y, from the scan of the factorization when it was
 ## made for them (xtx_qr_for()), else computed.
 xtx_qr_xty <- function(q, D, Y) {
-    if (!is.null(q$xty) && xtx_is_column(Y) && identical(q$xty_of, unclass(Y)$sql)) return(q$xty)
+    ## (the response by its identity, xtx_column_key(): the same SQL text
+    ## over another design or stored relation is another response)
+    if (!is.null(q$xty) && xtx_is_column(Y) && identical(q$xty_of, xtx_column_key(Y))) return(q$xty)
     xtx_p_crossprod(D, Y)
 }
 
@@ -276,7 +278,7 @@ xtx_qr_centered <- function(ch, G, Tm, xs, mc, Y = NULL) {
     }
     ch$R <- R
     ch$centered <- list(design = xs, T = Tm[keep, keep, drop = FALSE], Rt = Rt, xty = mc$xty,
-                        xty_of = if (!is.null(mc$xty)) unclass(Y)$sql)
+                        xty_of = if (!is.null(mc$xty)) xtx_column_key(Y))
     ch
 }
 

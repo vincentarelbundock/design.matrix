@@ -730,24 +730,37 @@ xtx_sql_colsums <- function(D, group, w, mean, cap = NULL, group_totals = NULL) 
     list(keys = ug, sums = out, totals = totals)
 }
 
-## X B for the rows used, as a temporary view (name NULL) or the table
-## `name`, with the columns `keep` of the source. Each term adds N_t times
-## the row of C_t B_t of the row's combined level: read off a list of
-## values by its index (codes by xtx_sql_code()), or, when a factor of the
-## term has no such code (text), from a table joined on the keys, one join
-## per set of factors shared by the terms that have them.
-xtx_sql_predict <- function(D, B, name, outcols, keep, overwrite) {
+## X B for the rows of the source `s` of the design, as SQL: list(preds, one
+## expression per column of B; joins, the joins they read, or ""). Each term
+## adds N_t times the row of C_t B_t of the row's combined level: read off
+## a list of values by its index (codes by xtx_sql_code()), or, when a
+## factor of the term has no such code (text), from a table joined on the
+## keys, one join per set of factors shared by the terms that have them.
+## The keys and numeric variables are those of the base query
+## (xtx_sql_base()), written in place. The caller selects the expressions
+## from `(source) AS s` followed by the joins (xtx_p_mult(): the node of a
+## product).
+xtx_sql_predict <- function(D, B) {
     con <- xtx_con(D)
     st <- D$sql_terms
     K <- ncol(B)
-    qk <- xtx_qi(D, keep)
-    base <- xtx_sql_base(D, stats::setNames(paste0("s.", qk), qk), asis = qk)
     joins <- character()
     pieces <- rep(list(character()), K)
+    ## the numeric columns of the base query, by name, and the factor keys
+    num <- unlist(lapply(seq_along(D$vars), function(j) {
+        v <- D$vars[[j]]
+        if (v$kind != "numeric") return(NULL)
+        stats::setNames(sprintf("(%s)", v$sql), xtx_sql_vnames(j, length(v$sql), seq_along(v$sql)))
+    }))
+    keys <- list()
+    key <- function(j) {
+        if (is.null(keys[[as.character(j)]])) keys[[as.character(j)]] <<- sprintf("(%s)", xtx_sql_key(D, D$vars[[j]]))
+        keys[[as.character(j)]]
+    }
     codes <- list()
     code <- function(j) {
         if (is.null(codes[[as.character(j)]]))
-            codes[[as.character(j)]] <<- xtx_sql_code(D, j, sprintf("b.__xtx_c%d", j)) %||% NA_character_
+            codes[[as.character(j)]] <<- xtx_sql_code(D, j, key(j)) %||% NA_character_
         codes[[as.character(j)]]
     }
     ## the joined tables: per set of factors, its key columns and values
@@ -756,7 +769,7 @@ xtx_sql_predict <- function(D, B, name, outcols, keep, overwrite) {
         Tt <- st[[k]]
         if (!length(Tt$cols)) next
         V <- Tt$C %*% B[Tt$cols, , drop = FALSE]
-        N <- if (length(Tt$M)) paste0(paste0("b.", sort(Tt$M), collapse = " * "), " * ") else ""
+        N <- if (length(Tt$M)) paste0(paste0(num[sort(Tt$M)], collapse = " * "), " * ") else ""
         if (Tt$Lt == 1L) {
             for (j in seq_len(K)) pieces[[j]] <- c(pieces[[j]], paste0(N, xtx_sql_double(V[1L, j])))
             next
@@ -764,10 +777,10 @@ xtx_sql_predict <- function(D, B, name, outcols, keep, overwrite) {
         cs <- vapply(Tt$S, code, "")
         if (!anyNA(cs) && Tt$Lt <= xtx_sql_max_inline) {
             ## (0-based combined level, as in xtx_sql_level())
-            key <- paste(sprintf("(%s - 1) * %.0f", cs, Tt$strides), collapse = " + ")
+            lev <- paste(sprintf("(%s - 1) * %.0f", cs, Tt$strides), collapse = " + ")
             for (j in seq_len(K))
                 pieces[[j]] <- c(pieces[[j]], sprintf("%slist_extract([%s], %s + 1)", N,
-                                                      paste(xtx_sql_double(V[, j]), collapse = ", "), key))
+                                                      paste(xtx_sql_double(V[, j]), collapse = ", "), lev))
             next
         }
         id <- paste(Tt$S, collapse = ",")
@@ -791,7 +804,7 @@ xtx_sql_predict <- function(D, B, name, outcols, keep, overwrite) {
                 on <<- c(on, sprintf("%s = %s.%s", cj, tb$alias, kcols[i]))
                 as.character(grid[[i]])
             } else {
-                on <<- c(on, sprintf("CAST(b.__xtx_c%d AS VARCHAR) = %s.%s", j, tb$alias, kcols[i]))
+                on <<- c(on, sprintf("CAST(%s AS VARCHAR) = %s.%s", key(j), tb$alias, kcols[i]))
                 as.character(DBI::dbQuoteString(con, D$vars[[j]]$levels[grid[[i]]]))
             }
         })
@@ -802,18 +815,7 @@ xtx_sql_predict <- function(D, B, name, outcols, keep, overwrite) {
                                   paste(on, collapse = " AND ")))
     }
     preds <- vapply(pieces, function(x) if (length(x)) paste(x, collapse = " + ") else "CAST(0 AS DOUBLE)", "")
-    select <- sprintf("WITH b AS (%s) SELECT %s FROM b %s", base,
-                      paste(c(paste0("b.", xtx_qi(D, keep)), sprintf("%s AS %s", preds, xtx_qi(D, outcols))),
-                            collapse = ", "),
-                      paste(joins, collapse = " "))
-    if (is.null(name)) {
-        name <- xtx_tmp_name("xtx_pred")
-        xtx_execute(D, sprintf("CREATE TEMPORARY VIEW %s AS %s", xtx_qi(D, name), select))
-    } else {
-        xtx_execute(D, sprintf("CREATE %sTABLE %s AS %s", if (overwrite) "OR REPLACE " else "",
-                              xtx_qi(D, name), select))
-    }
-    name
+    list(preds = preds, joins = if (length(joins)) paste0(" ", paste(joins, collapse = " ")) else "")
 }
 
 ## Translate a logical R expression (for `subset`) into SQL over `s`:

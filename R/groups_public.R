@@ -207,13 +207,8 @@ design_groups <- function(x, key, levels = NULL) {
         ## (as in memory, where logical keys are coded as integers)
         for (j in seq_along(lv)) if (is.logical(lv[[j]])) lv[[j]] <- as.integer(lv[[j]])
         codes <- cd$codes$codes
-        ## the lookup of the codes, to make again at each use (see above)
-        fr <- unclass(codes)$frame
-        r <- fr$pend[[length(fr$pend)]]
-        base <- fr
-        base$pend <- NULL
         return(structure(list(codes = codes, G = as.integer(cd$codes$G), levels = lv, n = xtx_nrows(x),
-                              design = x, lookup = list(frame = base, recipe = r)),
+                              design = x),
                          class = "xtx_groups"))
     }
     kd <- xtx_groups_key_memory(x, parts, nms)
@@ -453,7 +448,7 @@ xtx_groups_check <- function(g, what, na_ok = FALSE) {
         stop(sprintf("`%s` is not a valid grouping (G and levels).", what), call. = FALSE)
     cd <- g$codes
     if (xtx_is_column(cd)) {
-        if (!inherits(g$design, "xtx_remote") || is.null(g$lookup) || xtx_ncols(cd) != 1L)
+        if (!inherits(g$design, "xtx_remote") || xtx_ncols(cd) != 1L)
             stop(sprintf("`%s` is not a valid grouping (remote codes).", what), call. = FALSE)
         xtx_column_valid(cd)
         return(invisible(g))
@@ -497,20 +492,10 @@ xtx_groups_token <- function(x) {
     if (is.environment(e)) e
 }
 
-## The codes of a grouping as xtx_c_codes(). Remotely, a fresh pending lookup
-## of the codes (a new recipe: its own column name, the same lookup table
-## and join as the one design_groups() made), on the settled frame of the
-## key, so that it binds on top of the other operands of each use.
-xtx_groups_codes <- function(g) {
-    if (!xtx_is_column(g$codes)) return(xtx_c_codes(g$codes, g$G))
-    r0 <- g$lookup$recipe
-    fr <- g$lookup$frame
-    col <- paste0("__xtx_gc", substr(xtx_tmp_name("g"), 3L, 10L))
-    r <- xtx_recipe("lookup", deps = list(), items = sprintf("l.v1 AS %s", xtx_qi(fr, col)),
-                   table = r0$table, on = r0$on, col = col, type = r0$type)
-    fr$pend <- list(r)
-    xtx_c_codes(xtx_column(fr, sprintf("s.%s", xtx_qi(fr, col))), g$G)
-}
+## The codes of a grouping as xtx_c_codes(). Remotely the lookup of the
+## codes that design_groups() made: a node, which each read joins to its
+## source with its other operands.
+xtx_groups_codes <- function(g) xtx_c_codes(g$codes, g$G)
 
 ## A column for grouping g (see the documentation of `col`): in memory a
 ## double vector or matrix with one row per row of the design; remotely a
@@ -573,12 +558,8 @@ xtx_groups_matched <- function(x, parts, nms, levels, remote) {
     if (remote) {
         kc <- xtx_groups_key_remote(x, parts)
         codes <- xtx_c_lookup(seq_len(G), kc, lv)
-        fr <- unclass(codes)$frame
-        r <- fr$pend[[length(fr$pend)]]
-        base <- fr
-        base$pend <- NULL
         return(structure(list(codes = codes, G = as.integer(G), levels = lv, n = xtx_nrows(x), design = x,
-                              lookup = list(frame = base, recipe = r), matched = TRUE),
+                              matched = TRUE),
                          class = "xtx_groups"))
     }
     ## (the values as given, or the variables of the design's model frame)

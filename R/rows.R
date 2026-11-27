@@ -30,10 +30,7 @@
 #' @export
 design_subset <- function(x, keep = NULL, cols = list()) {
     checkmate::assert_multi_class(x, c("xtx_matrix", "xtx_remote"))
-    if (is.null(keep)) {
-        x <- xtx_p_rebase(x, cols)
-        return(list(x = x, cols = xtx_cols_map(cols, function(col) xtx_c_on(col, x))))
-    }
+    if (is.null(keep)) return(list(x = x, cols = xtx_cols_map(cols, function(col) xtx_c_on(col, x))))
     x2 <- xtx_p_subset(x, keep)
     walk <- function(v) {
         if (is.list(v) && is.null(oldClass(v))) lapply(v, walk) else xtx_c_subset(v, keep, x2)

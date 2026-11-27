@@ -102,16 +102,18 @@ xtx_c_lookup <- function(values, key, levels = NULL) {
         on <- paste(on, collapse = " AND ")
     }
     for (j in seq_along(vcols)) tab[[vcols[j]]] <- if (int) as.integer(vm[, j]) else vm[, j]
+    ## (the table of values belongs to the session of the connection, as
+    ## any temporary table: it lives until the connection is closed)
     tn <- xtx_tmp_name("xtx_lookup")
     xtx_write_temp(con, tn, tab)
-    col <- paste0("__xtx_lk", substr(tn, 12L, 19L), if (mat) paste0("_", seq_along(vcols)))
-    ## (the join is made at the first use: xtx_bind_lookup())
-    r <- xtx_recipe("lookup", deps = frame$pend %||% list(),
-                   items = paste(sprintf("l.%s AS %s", vcols, q(col)), collapse = ", "),
-                   table = q(tn), on = on, col = col, type = if (int) integer(0) else double(0))
-    fr <- xtx_remote_unscaled(frame)
-    fr$pend <- c(frame$pend, list(r))
-    xtx_column(fr, sprintf("s.%s", q(col)))
+    stem <- xtx_node_stem("lk")
+    col <- paste0(stem, if (mat) paste0("_", seq_along(vcols)))
+    ## (a node: each read that names the column joins the table to its
+    ## source, once)
+    node <- xtx_node("lookup", stem, col, xtx_frame_nodes(frame), sprintf("l.%s AS %s", vcols, q(col)),
+                     sprintf(" LEFT JOIN %s AS l ON %s", q(tn), on),
+                     ref = list(table = tn, key = ksql, type = if (int) "integer" else "double"))
+    xtx_column(xtx_frame_add(xtx_remote_unscaled(frame), node), sprintf("s.%s", q(col)))
 }
 
 ## The columns of the frame of a remote design (or column) plus the new
@@ -147,7 +149,7 @@ xtx_c_key <- function(x, vars, data = NULL) {
     if (inherits(x, "xtx_remote")) {
         miss <- setdiff(vars, names(x$src$types))
         if (length(miss)) stop(sprintf("No column `%s` in the remote data.", miss[1L]), call. = FALSE)
-        return(xtx_column(x, sprintf("s.%s", xtx_qi(x, vars))))
+        return(xtx_column(x, sprintf("s.%s", xtx_qi(x, vars)), type = unname(x$src$types[vars])))
     }
     d <- if (is.null(data)) x$vars else data
     miss <- setdiff(vars, names(d))
@@ -163,10 +165,9 @@ xtx_c_dense_codes <- function(key, raw = FALSE) {
         ## (in memory, also the rows per level: n)
         return(list(codes = xtx_c_codes(cd$codes, cd$G), levels = cd$levels, n = cd$n))
     }
-    ## (the levels are read now: the key on its settled frame)
-    key <- xtx_column_bind(key)
-    frame <- unclass(key)$frame
+    ## (the levels are read now)
     sql <- unclass(key)$sql
+    frame <- xtx_frame_ready(unclass(key)$frame, sql)
     fields <- sprintf("%s AS k%d", sql, seq_along(sql))
     composite <- raw && length(sql) > 1L
     if (composite) {
@@ -192,7 +193,7 @@ xtx_c_dense_codes <- function(key, raw = FALSE) {
         codes <- xtx_c_lookup(seq_len(nrow(lv)), key, lv)
         return(list(codes = xtx_c_codes(codes, nrow(lv)), levels = lv))
     }
-    g <- xtx_c_codes(if (composite) xtx_column(frame, tuple) else key, nrow(lv))
+    g <- xtx_c_codes(if (composite) xtx_column(unclass(key)$frame, tuple) else key, nrow(lv))
     g$levels <- if (composite) data.frame(tuple = tuple_values[ord]) else lv
     list(codes = g, levels = lv, n = counts[ord])
 }
@@ -290,6 +291,7 @@ xtx_p_center <- function(x) {
         if (is.null(ctr)) return(NULL)
         x2 <- xtx_shifted(x, ctr$shift)
         x2$cache <- new.env(parent = emptyenv())
+        x2$from <- c(x$id, x$from)
         x2$id <- xtx_tmp_name("xtx")
         return(list(x = x2, T = ctr$T))
     }

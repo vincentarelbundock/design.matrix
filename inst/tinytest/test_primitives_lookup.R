@@ -97,8 +97,9 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     ## integer codes stay integer remotely
     colname <- function(v) gsub("^\\(s\\.|\"|\\)$", "", unclass(v)$sql)
     ci <- xtx_c_lookup(1:7, rc("s.code + 1"))
-    bound_frame <- function(v) xtx:::xtx_frame_bind(unclass(v)$frame)
-    expect_equal(unname(bound_frame(ci)$src$types[colname(ci)]), "integer")
+    expect_equal(xtx:::xtx_frame_nodes(unclass(ci)$frame)[[1L]]$ref$type, "integer")
+    fr <- xtx:::xtx_frame_ready(unclass(ci)$frame, unclass(ci)$sql)
+    expect_true(is.integer(DBI::dbGetQuery(con, sprintf("SELECT %s AS v FROM (%s) AS s", unclass(ci)$sql, fr$src$select))$v))
     ## xtx_c_groupsums(): several coded groupings and a total in one query,
     ## as xtx_p_groupsum() and xtx_colsum() (NA for a group with a missing value)
     xtx_c_codes <- xtx:::xtx_c_codes
@@ -125,8 +126,8 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     ## xtx_p_materialize(x, cols): the data columns and the internal columns
     ## that the design or `cols` read
     lkc <- xtx_c_lookup(vals, rc("s.code"))
-    ## (lkc bound on top of lk2, already bound: the frame of their sum)
-    Dl <- xtx:::xtx_rebase(D, unclass(lk2 + lkc)$frame)
+    ## (the design with the nodes of both lookups)
+    Dl <- xtx:::xtx_design_with(D, list(lk2, lkc))
     Dk <- xtx:::xtx_p_materialize(Dl, cols = list(lkc))
     nm <- names(Dk$src$types)
     expect_true(all(names(d) %in% nm))
@@ -135,131 +136,111 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     got <- xtx_p_collect(xtx_c_cbind(xtx:::xtx_c_on(row, Dk), xtx:::xtx_c_on(lkc, Dk)))
     expect_equal(got[order(got[, 1]), 2], ref_codes)
     expect_equal(crossprod(Dk), crossprod(D))
-    ## frame lineage: columns built one on the other combine on the
-    ## descendant frame; for columns settled on two branches of the same
-    ## design (two lookups or products, each bound from one frame before
-    ## they are combined: lk and lk2 were read above), the lookups and
-    ## products of one branch are replayed on the other (epxj: no statement
-    ## for a lookup, one view for a product); frozen columns on two branches
-    ## cannot be combined
-    sib <- "two different branches of the same remote design"
+    ## columns of one design combine whatever was read before: lk and lk2
+    ## were read above, each on its own; a read creates nothing in the
+    ## database (no view), and leaves the columns as they were
     nviews <- function() nrow(DBI::dbGetQuery(con, "SELECT * FROM duckdb_views() WHERE temporary AND NOT internal"))
+    ntables <- function() nrow(DBI::dbGetQuery(con, "SELECT * FROM duckdb_tables() WHERE temporary"))
     byrow <- function(v) {
         got <- xtx_p_collect(xtx_c_cbind(row, v))
         got[order(got[, 1]), -1]
     }
     v0 <- nviews()
+    t0 <- ntables()
+    before <- list(lk, lk2)
     expect_equal(byrow(lk + lk2), ref_codes + ref_lv)
     expect_equal(unname(byrow(xtx_c_cbind(lk, lk2))), unname(cbind(ref_codes, ref_lv)))
-    expect_equal(nviews(), v0)                   # lookups: no statement
-    ## a lookup not read yet binds on top of the settled one
     lk3 <- xtx_c_lookup(vals, rc("s.code"))
+    expect_equal(ntables(), t0 + 1L)             # the table of values of the lookup
     expect_equal(xtx_p_collect(lk2 + lk3), ref_lv + ref_codes)
     expect_equal(xtx_p_collect(lk3 + lk2 + rc("s.x")), ref_codes + ref_lv + d$x)
     p1 <- xtx_p_mult(D, c(0, 2))
     expect_equal(xtx_p_collect(p1 - 2 * rc("s.x") + lk), ref_codes)
-    ## (p1 is now settled on top of lk: lk2's lookup is replayed on it)
-    v1 <- nviews()
     expect_equal(byrow(p1 + lk2), 2 * d$x + ref_lv)
-    expect_equal(nviews(), v1)
     expect_equal(byrow(xtx_p_mult(D, c(0, 1)) + lk + lk2), d$x + ref_codes + ref_lv)
-    ## a product read on its own, combined with p1 (read on top of lk):
-    ## one more view, the replayed product
+    ## a product read on its own, combined with p1 (read with lk)
     p5 <- xtx_p_mult(D, c(1, 0))
     expect_equal(xtx_colsum(p5), n)
-    v2 <- nviews()
     expect_equal(byrow(p1 + p5 + lk), 2 * d$x + 1 + ref_codes)
-    expect_equal(nviews(), v2 + 1L)
-    ## the copies of a recipe add the columns of the original: a frame that
-    ## has them (from an earlier replay) does not get them twice
     s15 <- p1 + p5
     expect_equal(byrow(s15 + p5), 2 * d$x + 2)
+    ## two projections made separately combine (they were refused before:
+    ## each stood on its own view)
     f1 <- col_compute(rc("s.x") + 1, table = FALSE)
     f2 <- col_compute(rc("s.x") + 2, table = FALSE)
-    expect_error(f1 + f2, sib)
-    expect_error(f1 + f2, "stored \\(col_compute\\(\\)\\) or frozen")
-    ## a frozen column and a lookup read on its own: the lookup is replayed
+    expect_equal(byrow(f1 + f2), 2 * d$x + 3)
     expect_equal(byrow(f1 + lk2), d$x + 1 + ref_lv)
     f12 <- col_compute(cbind(rc("s.x") + 1, rc("s.x") + 2), table = FALSE)
     expect_equal(xtx_p_collect(f12[, 2] - f12[, 1]), rep(1, n))
-    ## (frames without a lineage, from older objects: the deeper one)
-    nopath <- function(f) {
-        f$path <- NULL
-        f
-    }
-    expect_equal(xtx:::xtx_frame_later(nopath(bound_frame(lk)), nopath(bound_frame(lk3)))$depth,
-                 bound_frame(lk3)$depth)
-    expect_true(is.null(xtx:::xtx_frame_later(nopath(bound_frame(lk)), bound_frame(lk2))$path))
+    ## no read made a view or a table, and the columns read are unchanged
+    expect_equal(nviews(), v0)
+    expect_equal(ntables(), t0 + 1L)
+    expect_identical(list(lk, lk2), before)
 
-    ## ---- pending columns (nh9e): products and lookups bound at first use ----
-    xtx_c_bind <- xtx:::xtx_c_bind
+    ## ---- nodes: products, lookups and projections ----
     xtx_c_freeze <- xtx:::xtx_c_freeze
-    pending <- function(v) length(unclass(v)$frame$pend) > 0L
-    ## a product is pending until read; arithmetic keeps it pending; it is
-    ## bound once (later uses read the same view)
+    nodes <- function(v) names(xtx:::xtx_frame_nodes(unclass(v)$frame))
+    ## a product is a node of its column; arithmetic keeps it; reading
+    ## changes neither
     pa <- xtx_p_mult(D, c(1, 1))
-    expect_true(pending(pa))
-    expect_true(pending(2 * pa + 1))
-    nviews <- function() nrow(DBI::dbGetQuery(con, "SELECT * FROM duckdb_views() WHERE temporary AND NOT internal"))
-    v0 <- nviews()
+    expect_equal(length(nodes(pa)), 1L)
+    expect_identical(nodes(2 * pa + 1), nodes(pa))
+    pa0 <- pa
     expect_equal(xtx_colsum(pa), sum(1 + d$x))
-    expect_equal(nviews(), v0 + 1L)
     expect_equal(xtx_colsum(pa * 2), 2 * sum(1 + d$x))
-    expect_equal(nviews(), v0 + 1L)
-    ## two products and a lookup, none read: one chain, in argument order
+    expect_identical(pa, pa0)
+    ## the SQL of a read names each node once, and only the nodes it reads
+    pq <- xtx_c_cbind(pa, xtx_p_mult(D, c(0, 1)))
+    fr <- xtx:::xtx_frame_ready(unclass(pq)$frame, unclass(pq[, 1] - pq[, 1])$sql)
+    expect_equal(lengths(regmatches(fr$src$select, gregexpr(paste0(nodes(pa), "_1\"? AS"), fr$src$select))), 1L)
+    expect_false(grepl(nodes(pq)[2L], fr$src$select, fixed = TRUE))
+    ## two products and a lookup, none read
     pb <- xtx_p_mult(D, c(0, 3))
     pc <- xtx_p_mult(D, c(2, 0))
     lk4 <- xtx_c_lookup(vals, rc("s.code"))
     got <- xtx_p_collect(xtx_c_cbind(row, pb - pc + lk4))
     expect_equal(got[order(got[, 1]), 2], 3 * d$x - 2 + ref_codes)
     ## a lookup + product + freeze chain: the frozen column combines with the
-    ## columns it was made from, and with a new product bound on top of it
+    ## columns it was made from, and with a new product
     pe <- xtx_p_mult(D, c(0.5, -1))
     lk5 <- xtx_c_lookup(vals, rc("s.code"))
     fz5 <- xtx_c_freeze(pe * lk5)
-    expect_false(pending(fz5))
+    expect_equal(length(nodes(fz5)), 3L)
     got <- xtx_p_collect(xtx_c_cbind(row, fz5 - pe * lk5))
     expect_equal(got[order(got[, 1]), 2], ifelse(is.na(ref_codes), NA_real_, 0))
     pf <- xtx_p_mult(D, c(1, 0))
     got <- xtx_p_collect(xtx_c_cbind(row, fz5 + pf + lk5))
     ref5 <- (0.5 - d$x) * ref_codes + 1 + ref_codes
     expect_equal(got[order(got[, 1]), 2], ref5)
-    ## the same chain as a table (compute): a product made later binds on it
+    ## the same chain as a table (compute): a product made later evaluates
+    ## on it, and the stored column has no node left
     fzt <- xtx_c_freeze(pe * lk5 + pf, table = TRUE)
+    expect_equal(length(nodes(fzt)), 0L)
     pg <- xtx_p_mult(D, c(0, 1))
     got <- xtx_p_collect(xtx_c_cbind(row, fzt + pg))
     expect_equal(got[order(got[, 1]), 2], (0.5 - d$x) * ref_codes + 1 + d$x)
-    ## a lookup keyed by a pending lookup (codes of codes) binds after it
+    ## a lookup keyed by a lookup (codes of codes)
     lk6 <- xtx_c_lookup(c(5L, 4L, 3L, 2L, 1L), rc("s.code"))
     lk7 <- xtx_c_lookup(vals, lk6)
     got <- xtx_p_collect(xtx_c_cbind(row, lk7))
     ref7 <- ifelse(d$code >= 1 & d$code <= 5, vals[6L - pmin(pmax(d$code, 1), 5)], NA)
     expect_equal(got[order(got[, 1]), 2], ref7)
-    ## xtx_c_bind(): columns used one by one, which still combine afterwards
-    q1 <- xtx_c_lookup(vals, rc("s.code"))
-    q2 <- xtx_p_mult(D, c(0, 1))
-    qq <- xtx_c_bind(list(a = q1, b = list(q2, NULL)))
-    expect_identical(names(qq), c("a", "b"))
-    expect_false(pending(qq$a) || pending(qq$b[[1L]]))
-    expect_true(is.null(qq$b[[2L]]))
-    expect_true(is.na(xtx_colsum(qq$a)))
-    expect_equal(xtx_colsum(qq$b[[1L]]), sum(d$x))
-    got <- xtx_p_collect(xtx_c_cbind(row, qq$a + qq$b[[1L]]))
-    expect_equal(got[order(got[, 1]), 2], ref_codes + d$x)
-    expect_identical(xtx_c_bind(list(1:3, NULL)), list(1:3, NULL))
-    ## without xtx_c_bind(), the same two columns read one by one sit on two
-    ## branches: the lookup is replayed on the product's frame (no statement)
+    ## columns read one by one still combine afterwards
     r1 <- xtx_c_lookup(vals, rc("s.code"))
     r2 <- xtx_p_mult(D, c(0, 1))
     xtx_colsum(r2)
     expect_true(is.na(xtx_colsum(r1)))
-    v3 <- nviews()
     got <- xtx_p_collect(xtx_c_cbind(row, r1 + r2))
     expect_equal(got[order(got[, 1]), 2], ref_codes + d$x)
-    expect_equal(nviews(), v3)
-    ## xtx_c_on() refuses a column whose recipes are not bound
-    expect_error(xtx:::xtx_c_on(xtx_p_mult(D, c(1, 0)), D), "pending column")
-    ## xtx_p_materialize(x, cols) binds the pending columns it is given
+    expect_equal(nviews(), v0)
+    ## xtx_c_on(): a column carries over to a design made from its own (with
+    ## its nodes), and not to another design
+    Ds2 <- xtx:::xtx_p_subset(D, DBI::SQL("s.code > 2"))
+    on2 <- xtx:::xtx_c_on(xtx_p_mult(D, c(1, 2)), Ds2)
+    expect_equal(xtx_colsum(on2), sum(1 + 2 * d$x[d$code > 2]))
+    expect_error(xtx:::xtx_c_on(xtx_p_mult(Ds2, c(1, 0)), D), "another remote design")
+    expect_error(xtx_p_mult(Ds2, c(1, 0)) + xtx_p_mult(D, c(1, 0)), "different remote designs")
+    ## xtx_p_materialize(x, cols) copies the columns of the nodes it is given
     lk8 <- xtx_c_lookup(vals, rc("s.code"))
     Dm8 <- xtx:::xtx_p_materialize(D, cols = list(lk8))
     expect_true(colname(lk8) %in% names(Dm8$src$types))

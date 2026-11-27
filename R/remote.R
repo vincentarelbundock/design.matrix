@@ -739,12 +739,12 @@ xtx_remote_column <- function(D, x, what, several = FALSE) {
 ## Columns of a remote design as SQL expressions over its source `s`, the
 ## one form in which the products take them: from the names of columns of
 ## the remote data, a DBI::SQL() expression over them (checked here), or
-## remote columns of the fitting core (primitives.R; the design is then
-## moved to their frame). Returns list(D = the design to use, sql, names).
+## remote columns of the fitting core (primitives.R; the design then has
+## their nodes in its source). Returns list(D = the design to use, sql, names).
 ## `numeric`: named columns must be numeric.
 xtx_remote_cols <- function(D, x, what, several = FALSE, numeric = TRUE) {
     if (xtx_is_column(x)) {
-        return(list(D = xtx_rebase(D, xtx_frame_later(unclass(x)$frame, D)), sql = unclass(x)$sql, names = NULL))
+        return(list(D = xtx_design_with(D, x, short = FALSE), sql = unclass(x)$sql, names = NULL))
     }
     if (inherits(x, "SQL")) {
         checkmate::assert_string(as.character(x), .var.name = what)
@@ -768,7 +768,10 @@ xtx_remote_extend <- function(D, exprs, what = "expression") {
     proto <- tryCatch(DBI::dbGetQuery(con, sprintf("SELECT * FROM (%s) AS s LIMIT 0", select)),
                       error = function(e) stop(sprintf("`%s`: invalid SQL expression: %s", what,
                                                        conditionMessage(e)), call. = FALSE))
+    ## (the nodes of the design are in the select extended)
     D$src$select <- select
+    D$base <- NULL
+    D$nodes <- NULL
     D$src$proto <- proto
     D$src$types <- vapply(proto, xtx_col_type, "")
     ## the extra columns are not in the base table: batches read a copy
@@ -804,43 +807,6 @@ xtx_remote_gram_xty <- function(x, Y = NULL) {
     if (is.null(sc) && length(yc$sql) == 1L)
         return(design_moments(yc$D, Y, NULL, centered = FALSE))
     xtx_remote_moments(xtx_remote_unscaled(yc$D), yc$sql, xtx_sql_times(sc, sc), wy = sc, compress = FALSE)[c("xtx", "xty")]
-}
-
-## X %*% beta written to a temporary view, or to the table `name`, with
-## the columns `keep` (default: all)
-## of the remote data. Returns the name, of class xtx_remote_table (the
-## view under the frame of xtx_p_mult(); public products return columns).
-xtx_remote_predict <- function(x, beta, name = NULL, column = ".fitted", keep = NULL, overwrite = FALSE) {
-    checkmate::assert_class(x, "xtx_remote")
-    p <- x$p
-    B <- if (is.matrix(beta)) beta else matrix(beta, ncol = 1L)
-    checkmate::assert_matrix(B, mode = "numeric", nrows = p, any.missing = FALSE, .var.name = "beta")
-    checkmate::assert_true(all(is.finite(B)), .var.name = "all(is.finite(beta))")
-    storage.mode(B) <- "double"
-    sc <- x$scale
-    x <- xtx_remote_unscaled(x)
-    keep <- if (is.null(keep)) names(x$src$types) else xtx_remote_column(x, keep, "keep", several = TRUE)
-    outcols <- if (ncol(B) == 1L) column else colnames(B) %||% paste0(column, seq_len(ncol(B)))
-    if (any(outcols %in% keep))
-        stop("The prediction column clashes with a column of the remote data.", call. = FALSE)
-    if (!is.null(sc)) {
-        ## rows scaled: the predictions times the scale
-        x <- xtx_remote_extend(x, c(`__xtx_scale` = sc), "scale")
-        tmp <- xtx_sql_predict(x, B, NULL, outcols, c(keep, "__xtx_scale"), FALSE)
-        sel <- sprintf("SELECT %s FROM %s", paste(c(xtx_qi(x, keep),
-                       sprintf("%s * \"__xtx_scale\" AS %s", xtx_qi(x, outcols), xtx_qi(x, outcols))), collapse = ", "),
-                       xtx_qi(x, tmp))
-        if (is.null(name)) {
-            name <- xtx_tmp_name("xtx_pred")
-            xtx_execute(x, sprintf("CREATE TEMPORARY VIEW %s AS %s", xtx_qi(x, name), sel))
-        } else {
-            xtx_execute(x, sprintf("CREATE %sTABLE %s AS %s", if (overwrite) "OR REPLACE " else "", xtx_qi(x, name), sel))
-        }
-        out <- name
-    } else {
-        out <- xtx_sql_predict(x, B, name, outcols, keep, overwrite)
-    }
-    structure(out, class = "xtx_remote_table", connection = xtx_con(x), holder = x$src$holder)
 }
 
 #' @export
@@ -953,8 +919,8 @@ crossprod.xtx_remote <- function(x, y = NULL, ...) {
         ## X' diag(s_x s_y) X
         if (!is.null(y) && !xtx_remote_same(x, y))
             stop("`crossprod(x, y)` of remote designs needs the same design, possibly with scaled rows.", call. = FALSE)
-        ## (scales can read columns of a later frame: the products of the fit)
-        if (!is.null(y)) x <- xtx_rebase(x, xtx_frame_later(x, y))
+        ## (scales can read nodes: the products of the fit)
+        if (!is.null(y)) x <- xtx_design_with(x, y, short = FALSE)
         w <- xtx_sql_times(x$scale, if (is.null(y)) x$scale else y$scale)
         return(xtx_remote_moments(xtx_remote_unscaled(x), w = w)$xtx)
     }

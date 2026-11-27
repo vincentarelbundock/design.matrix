@@ -173,22 +173,21 @@ expect_true(same(by_id(e - e1 / sqrt(e2)), rep(0, n)))
 st <- col_compute(D %*% b)
 expect_true(same(by_id(st + D %*% b2), two(M)))
 expect_true(same(by_id(D %*% b2 - st), M %*% b2 - M %*% b))
-## two products each read before they are combined (epxj): their views are
-## siblings, so the one read second is replayed on top of the other (one
-## more view, made at the first use of the sum, once); the same values as
-## in memory
+## two products each read before they are combined: reads create nothing
+## in the database and change no column, so the sum is the same whatever
+## was read first; the same values as in memory
 nviews <- function() nrow(DBI::dbGetQuery(con, "SELECT * FROM duckdb_views() WHERE temporary AND NOT internal"))
 p1 <- D %*% b
 p2 <- D %*% b2
+v0 <- nviews()
+p10 <- p1
 expect_equal(length(as.vector(p1)), n)
 expect_equal(length(as.vector(p2)), n)
-v0 <- nviews()
 s12 <- p1 + p2
-expect_equal(nviews(), v0)                       # combining runs nothing
 expect_true(same(by_id(s12), two(M)))
-expect_equal(nviews(), v0 + 1L)                  # one view: the replayed product
 expect_true(same(sum(s12), sum(two(M))))
-expect_equal(nviews(), v0 + 1L)                  # bound once
+expect_equal(nviews(), v0)                       # no view, for any read
+expect_identical(p1, p10)                        # a read leaves the column as it was
 expect_true(same(by_id(p2 - p1), M %*% b2 - M %*% b))
 expect_true(same(by_id(p1 * p2 + p1), (M %*% b) * (M %*% b2) + M %*% b))
 ## a product and a quadratic form, each read first

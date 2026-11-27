@@ -39,7 +39,7 @@ design_moments <- function(x, z, w = NULL, n = NULL, centered = TRUE) {
     if (is.null(n)) n <- xtx_nrows(x)
     if (inherits(x, "xtx_remote") && is.null(x$scale) && xtx_is_column(z) &&
         (is.null(w) || xtx_is_column(w))) {
-        x <- xtx_p_rebase(x, list(z, w))
+        x <- xtx_design_with(x, list(z, w))
         y <- xtx_remote_cols(x, z, "response")
         weight <- if (!is.null(w)) xtx_remote_cols(y$D, w, "weights")$sql
         mo <- xtx_sql_moments(y$D, y$sql, weight, sum_y = centered)

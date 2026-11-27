@@ -145,7 +145,7 @@ xtx_response_result <- function(D, spec, cols, yk = 1L) {
         proto <- D$src$proto[[col]]
         f <- if (is.factor(proto)) factor(as.character(vals), levels = levels(proto)) else factor(vals)
         out$levels <- levels(droplevels(f))
-        out$y <- xtx_column(D, sprintf("CAST(s.%s AS VARCHAR)", q))
+        out$y <- xtx_column(D, sprintf("CAST(s.%s AS VARCHAR)", q), type = "character")
     }
     out
 }

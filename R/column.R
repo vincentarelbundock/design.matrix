@@ -276,28 +276,26 @@ col_compute <- function(x, name = NULL, overwrite = FALSE, nm = NULL, table = TR
     checkmate::assert_character(nm, len = k, any.missing = FALSE, min.chars = 1L, unique = TRUE, .var.name = "nm")
     if (any(startsWith(nm, "__xtx_"))) stop("`nm`: names starting with `__xtx_` are reserved.", call. = FALSE)
     ## The table: the rows of the column's frame (the design's filter), with
-    ## every column of that frame and the values, as xtx_c_freeze(table =
-    ## TRUE) makes the temporary one; so the column returned (on a frame
-    ## one level deeper, in the lineage of the column's) combines with the
+    ## the columns of its source and the values, as xtx_c_freeze(table =
+    ## TRUE) makes the temporary one (xtx_store()); so the column returned
+    ## (on a root that descends from the column's) combines with the
     ## columns of its design.
-    fr <- xtx_frame_bind(unclass(x)$frame)
-    taken <- intersect(nm, names(fr$src$types))
+    fr <- unclass(x)$frame
+    taken <- intersect(nm, names(xtx_frame_root(fr)$types))
     if (length(taken))
         stop(sprintf("`nm`: the table already has a column `%s` (from the data); name the values with `nm`.",
                      taken[1L]), call. = FALSE)
-    tab <- xtx_remote_extend(xtx_remote_unscaled(fr), stats::setNames(sql, nm), "column")
-    tab <- xtx_remote_to_table(tab, name = name, overwrite = overwrite)
-    tab$depth <- xtx_frame_depth(fr) + 1L
-    tab <- xtx_frame_child(tab, fr)
-    xtx_column_label(xtx_column(tab, sprintf("s.%s", xtx_qi(tab, nm))), nm)
+    tab <- xtx_store(fr, stats::setNames(sql, nm), name = name, overwrite = overwrite)
+    xtx_column_label(xtx_column(tab, sprintf("s.%s", xtx_qi(tab, nm)), notnull = unclass(x)$notnull %||% FALSE,
+                                lgl = xtx_column_lgl(x), type = xtx_column_type(x)), nm)
 }
 
 #' @rdname design_column
 #' @export
 as.data.frame.xtx_column <- function(x, row.names = NULL, optional = FALSE, ..., keep = NULL, nm = NULL) {
     xtx_column_valid(x)
-    fr <- xtx_frame_bind(unclass(x)$frame)
     sql <- unclass(x)$sql
+    fr <- xtx_frame_ready(unclass(x)$frame, sql)
     k <- length(sql)
     nm <- nm %||% unclass(x)$label %||% (if (k == 1L) ".value" else paste0(".value", seq_len(k)))
     checkmate::assert_character(nm, len = k, any.missing = FALSE, unique = TRUE, .var.name = "nm")
@@ -329,9 +327,7 @@ as.data.frame.xtx_column <- function(x, row.names = NULL, optional = FALSE, ...,
         stop("Select the columns of a remote column by number or with a logical vector.", call. = FALSE)
     idx <- seq_len(xtx_ncols(x))[j]
     if (!length(idx) || anyNA(idx)) stop("Column index out of range.", call. = FALSE)
-    u <- unclass(x)
-    out <- xtx_column(u$frame, u$sql[idx], notnull = u$notnull[idx])
-    if (is.null(u$label)) out else xtx_column_label(out, u$label[idx])
+    xtx_column_pick(x, idx)
 }
 
 #' @rdname design_column
