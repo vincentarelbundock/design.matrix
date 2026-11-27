@@ -310,3 +310,37 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     expect_error(design_resolve(D, list(), response = quote(y)), "remote design")
     test_con_done(con)
 }
+
+## ---- review regressions: design_frame() matches arguments as model.frame() ----
+dm <- data.frame(y = c(1, 2, 3, 4, 5, 6), x = c(-1, 1, -2, 2, -3, 3), w = 1:6)
+## partially matched names: `dat =`, `f =` (the argument after them is the subset)
+expect_identical(design_frame(y ~ x, dat = dm, x > 0), model.frame(y ~ x, dat = dm, x > 0))
+expect_identical(design_frame(f = y ~ x, dm, x > 0), model.frame(f = y ~ x, dm, x > 0))
+expect_identical(design_frame(y ~ x, dat = dm, weights = w), model.frame(y ~ x, dat = dm, weights = w))
+## an object with a model.frame() method that never evaluates its second
+## argument: nothing is forced
+model.frame.xtx_test_cls <- function(formula, ...) "method"
+obj <- structure(list(), class = "xtx_test_cls")
+expect_identical(design_frame(obj, undefined_symbol_xtx), "method")
+## col_ifelse(missing =) in memory with a numeric test
+expect_identical(col_ifelse(c(1, -1, NA, NaN, 0), 1, 0, missing = 0), c(1, 1, 0, 0, 0))
+if (requireNamespace("duckdb", quietly = TRUE)) {
+    con <- test_con()
+    DBI::dbWriteTable(con, "dm", cbind(id = 1:5, data.frame(v = c(1, -1, NA, NaN, 0), u = 1:5)))
+    Rm <- design_matrix(~ u, con, table = "dm", na.action = na.pass)
+    rows <- function(col) { o <- as.data.frame(col, keep = "id"); o[[2L]][order(o$id)] }
+    v <- design_column(Rm, DBI::SQL("s.v"))
+    ## a numeric remote test: NaN is missing, as in memory
+    expect_equal(rows(col_ifelse(v, 1, 0, missing = 0)), c(1, 1, 0, 0, 0))
+    expect_equal(rows(col_ifelse(v, 1, 0, missing = 7)), c(1, 1, 7, 7, 0))
+    ## a test in R with remote yes/no: `missing` where it is NA
+    u <- design_column(Rm, "u")
+    expect_equal(rows(col_ifelse(NA, u, 0, missing = 5)), rep(5, 5))
+    expect_equal(rows(col_ifelse(TRUE, u, 0, missing = 5)), as.numeric(1:5))
+    ## remote design_frame(): partial `dat =`; a misspelt argument is an error
+    DBI::dbWriteTable(con, "dmm", dm)
+    expect_inherits(design_frame(y ~ x, dat = con, table = "dmm"), "xtx_remote_frame")
+    expect_error(design_frame(y ~ x, con, table = "dmm", weight = w), "Unknown arguments: weight", fixed = TRUE)
+    expect_inherits(design_frame(y ~ x, con, w, table = "dmm"), "xtx_remote_frame")
+    test_con_done(con)
+}

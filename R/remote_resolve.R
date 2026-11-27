@@ -25,9 +25,11 @@ xtx_frame_remote <- function(formula, data, ..., subset, weights, na.action, off
                              table = NULL, sql = NULL, engine = NULL, chunk_size = NULL, .caller = parent.frame()) {
     na <- if (missing(na.action)) "omit" else xtx_frame_na_kind(na.action)
     extra <- eval(substitute(alist(...)))
-    bad <- !vapply(extra, is.name, NA)
+    ## (other arguments: unnamed bare names of columns that must be present;
+    ## a named one is a misspelt argument, such as `weight = w`)
+    nm <- names(extra) %||% rep("", length(extra))
+    bad <- !vapply(extra, is.name, NA) | nzchar(nm)
     if (any(bad)) {
-        nm <- names(extra) %||% rep("", length(extra))
         nm <- ifelse(nzchar(nm), nm, vapply(extra, deparse2, ""))
         stop("Unknown arguments: ", paste(nm[bad], collapse = ", "), call. = FALSE)
     }

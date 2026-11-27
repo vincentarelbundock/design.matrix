@@ -497,10 +497,21 @@ xtx_ifelse_missing <- function(test, yes, no, missing) {
     xtx_col_check(test, "test")
     xtx_col_check(yes, "yes")
     xtx_col_check(no, "no")
-    if (!xtx_is_column(test)) return(col_ifelse(test, yes, no))
     f <- xtx_column_frame(test, yes, no)
+    if (!xtx_is_column(test)) {
+        ## (a value in R as the test of remote columns: `missing` where it
+        ## is NA)
+        if (length(test) != 1L) stop("`test` must be a column, or one value.", call. = FALSE)
+        if (is.na(test)) return(xtx_column(f, xtx_column_operand(missing), notnull = !is.na(missing)))
+        return(col_ifelse(test, yes, no))
+    }
     y <- xtx_column_operand(yes)
     n <- xtx_column_operand(no)
+    ## (a numeric test is TRUE where it is not zero; NaN is missing, where
+    ## DuckDB would take it as true)
+    if (!isTRUE(unclass(test)$lgl))
+        test <- xtx_column_logical(xtx_column(f, sprintf("(NULLIF(CAST(%s AS DOUBLE), CAST('NaN' AS DOUBLE)) <> 0)",
+                                                         unclass(test)$sql)))
     same <- !xtx_is_column(no) && length(no) == 1L && identical(as.double(no), as.double(missing))
     sql <- if (same) sprintf("(CASE WHEN %s THEN %s ELSE %s END)", xtx_column_operand(test), y, n)
            else sprintf("(CASE %s WHEN TRUE THEN %s WHEN FALSE THEN %s ELSE %s END)", xtx_column_operand(test), y, n,

@@ -165,8 +165,11 @@ design_frame <- function(...) {
     if (...length() > 1L) {
         i <- xtx_frame_data_arg(...names(), ...length())
         if (i[2L] > 0L) {
-            if (i[1L] > 0L) ...elt(i[1L])
-            if (xtx_is_remote_source(...elt(i[2L]))) return(xtx_frame_remote(..., .caller = caller))
+            ## (an object with a model.frame() method of its own may never
+            ## evaluate its second argument: it is not looked at)
+            f <- if (i[1L] > 0L) ...elt(i[1L])
+            if ((!is.object(f) || inherits(f, "formula")) && xtx_is_remote_source(...elt(i[2L])))
+                return(xtx_frame_remote(..., .caller = caller))
         }
     }
     frame <- the$frame
@@ -190,8 +193,15 @@ design_frame <- function(...) {
 xtx_frame_data_arg <- function(nm, n) {
     if (is.null(nm)) return(c(1L, 2L))
     un <- which(is.na(nm) | !nzchar(nm))
-    f <- match("formula", nm, 0L)
-    d <- match("data", nm, 0L)
+    ## (names match partially, as in a call of model.frame(): `f =` is the
+    ## formula of the generic, `dat =` the data of model.frame.default(),
+    ## where `d =` could also be `drop.unused.levels`)
+    pre <- function(arg, min = 1L) {
+        k <- which(!is.na(nm) & nchar(nm) >= min & startsWith(arg, nm))
+        if (length(k)) k[1L] else 0L
+    }
+    f <- pre("formula")
+    d <- pre("data", 2L)
     k <- 0L
     if (f == 0L) f <- if (length(un) > k) un[k <- k + 1L] else 0L
     if (d == 0L) d <- if (length(un) > k) un[k + 1L] else 0L
