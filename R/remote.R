@@ -647,7 +647,7 @@ xtx_remote_finish <- function(D, engine) {
     D$id <- xtx_tmp_name("xtx")
     D$terms <- xtx_remote_terms(D)
     D$engine <- "sql"
-    D <- xtx_sql_prepare(D)
+    D <- xtx_sql_prepare(D, proto$setup)
     class(D) <- "xtx_remote"
     D
 }

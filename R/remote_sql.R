@@ -13,9 +13,9 @@
 ## sums are the same with one term. Predictions read each term's C_t beta_t
 ## at the row's level (xtx_sql_predict()).
 ##
-## C_t is read off the in-memory design of a few prototype rows (every
-## combined level of S_t, numeric variables set to 1), so that columns,
-## contrasts and their order are exactly those of model.matrix().
+## C_t comes from the set-up of the prototype design of a few rows
+## (xtx_sql_layout()): the contrasts and columns that set-up chose, which
+## are exactly those of model.matrix().
 
 ## Largest C_t (levels x columns) the SQL engine builds.
 xtx_sql_max_cells <- 2^23
@@ -108,9 +108,13 @@ xtx_sql_num <- function(expr, types, con) {
 ## the parts of a design may share columns, and their products add up.
 ## `term`: the index of the part's term in D$terms; `M`: the names of its
 ## numeric columns in the base query (xtx_sql_base()).
-xtx_sql_prepare <- function(D) {
-    plan <- D$plan
-    vi <- match(xtx_terms_vars(plan$terms)$names, names(D$vars))
+##
+## The C of each part comes from the set-up of the prepared prototype
+## design (`setup`: xtx_sql_layout()), the one source of the columns of the
+## design. Only when there is no such set-up is it read off a design built
+## on a grid of levels (xtx_sql_layout_grid()).
+xtx_sql_prepare <- function(D, setup = NULL) {
+    vi <- match(xtx_terms_vars(D$plan$terms)$names, names(D$vars))
     kinds <- vapply(D$vars, function(v) v$kind, "")
     nk <- vapply(D$vars, function(v) as.integer(v[["k"]] %||% 1L), 1L)
     out <- list()
@@ -119,42 +123,142 @@ xtx_sql_prepare <- function(D) {
         S <- t$vars[kinds[t$vars] %in% c("factor", "logical")]
         Mv <- t$vars[kinds[t$vars] == "numeric"]
         L <- vapply(S, function(j) length(D$vars[[j]]$levels), 1L)
-        Lt <- as.integer(prod(L))
         parts <- if (length(Mv)) as.matrix(expand.grid(lapply(nk[Mv], seq_len), KEEP.OUT.ATTRS = FALSE))
                  else matrix(0L, 1L, 0L)
         for (r in seq_len(nrow(parts))) {
             u <- parts[r, ]
-            if (t$index == 0L) {
-                C <- matrix(1, 1L, 1L)
-            } else {
-                grid <- expand.grid(lapply(L, seq_len), KEEP.OUT.ATTRS = FALSE)
-                vals <- lapply(vi, function(j) {
-                    v <- D$vars[[j]]
-                    s <- match(j, S)
-                    codes <- if (is.na(s)) rep(1L, Lt) else grid[[s]]
-                    if (v$kind == "factor") return(factor(v$levels[codes], levels = v$levels))
-                    if (v$kind == "logical") return(c(FALSE, TRUE)[codes])
-                    if (nk[j] == 1L) return(rep(1, Lt))
-                    ## a matrix variable: the column of this part
-                    m <- matrix(1, Lt, nk[j])
-                    if (j %in% Mv) {
-                        m[] <- 0
-                        m[, u[match(j, Mv)]] <- 1
-                    }
-                    m
-                })
-                nd <- structure(list(), row.names = c(NA_integer_, -Lt), class = "data.frame")
-                X <- as.matrix(xtx_apply_general(plan, nd, stats::na.pass, vals = vals))
-                C <- unname(X[, attr(X, "assign") == t$index, drop = FALSE])
-            }
-            out[[length(out) + 1L]] <- list(term = k, S = S, L = L, Lt = Lt,
+            out[[length(out) + 1L]] <- list(term = k, S = S, L = L, Lt = as.integer(prod(L)),
                                             M = if (length(Mv)) xtx_sql_vnames(Mv, nk[Mv], u) else character(),
                                             strides = cumprod(c(1, L))[seq_along(L)],
-                                            cols = which(D$assign == t$index), C = C)
+                                            cols = which(D$assign == t$index), Mv = Mv, u = u)
         }
     }
-    D$sql_terms <- out
+    C <- xtx_sql_layout(D, setup, out, vi, nk)
+    ## (which of the two built the layout: "setup" or "grid")
+    D$sql_layout <- if (is.null(C)) "grid" else "setup"
+    if (is.null(C)) C <- xtx_sql_layout_grid(D, out, vi, nk)
+    D$sql_terms <- Map(function(part, Ct) {
+        part$C <- Ct
+        part$Mv <- part$u <- NULL
+        part
+    }, out, C)
     D
+}
+
+## The matrices C of the parts (xtx_sql_prepare()) from the set-up of the
+## prototype design (the list of C_xtx_setup: see src/modelmatrix.c), which
+## fixed its columns: `factors` (variables x terms: 0, not in the term; 1,
+## coded by contrasts, `contr1`; 2, by dummy variables, `contr2`), `nlevs`
+## (0 for a numeric variable), `columns` (those of a numeric variable) and
+## `count` (the columns of each term; 0 for a term with none). Variable i of
+## the set-up is variable i of the terms of the plan, D$vars[[vi[i]]].
+##
+## Within a term, the column of a combination of one column per variable is
+## sum_i c_i * stride_i (c_i 0-based; stride_i the product of the columns
+## of the variables of the term before i, factors and numerics alike), so
+## the columns of a part (the columns `u` of its numeric variables) need
+## not be consecutive. The rows of C are the combined levels, the first
+## factor varying fastest: C is the Kronecker product of the factors'
+## contrast matrices, written into the columns of the part.
+##
+## Nothing here reads the values of the prototype's variables: the layout
+## does not depend on whether the in-memory kernels would accept them.
+## NULL when there is no set-up (a prototype built by stats::model.matrix()
+## because this version of R is not recognised: xtx_prepare()), or when it
+## does not describe the terms as the design does (not expected).
+xtx_sql_layout <- function(D, setup, parts, vi, nk) {
+    if (is.null(setup)) return(NULL)
+    nVar <- setup$nVar
+    nterms <- setup$nterms
+    fac <- matrix(as.integer(setup$factors), nVar, nterms)
+    out <- vector("list", length(parts))
+    for (r in seq_along(parts)) {
+        part <- parts[[r]]
+        t <- D$terms[[part$term]]
+        if (t$index == 0L) {
+            if (!identical(setup$intercept, 1L)) return(NULL)
+            out[[r]] <- matrix(1, 1L, 1L)
+            next
+        }
+        if (t$index > nterms) return(NULL)
+        count <- setup$count[t$index]
+        if (length(part$cols) != count) return(NULL)
+        if (count == 0L) {
+            out[[r]] <- matrix(0, part$Lt, 0L)
+            next
+        }
+        f <- fac[, t$index]
+        ii <- which(f != 0L)
+        ## the variables of the term, in the order of the set-up
+        if (length(ii) > length(vi) || !identical(sort(vi[ii]), sort(as.integer(t$vars)))) return(NULL)
+        isf <- setup$nlevs[ii] > 0L
+        cm <- lapply(seq_along(ii), function(a) {
+            if (!isf[a]) return(NULL)
+            m <- (if (f[ii[a]] == 1L) setup$contr1 else setup$contr2)[[ii[a]]]
+            if (!is.matrix(m)) m <- as.matrix(m)
+            if (!is.double(m)) storage.mode(m) <- "double"
+            if (is.null(dimnames(m))) m else unname(m)
+        })
+        nc <- vapply(seq_along(ii), function(a) if (isf[a]) ncol(cm[[a]]) else setup$columns[ii[a]], 1L)
+        if (!identical(as.integer(vi[ii[isf]]), as.integer(part$S)) ||
+            !identical(as.integer(vi[ii[!isf]]), as.integer(part$Mv)) ||
+            !identical(unname(vapply(cm[isf], nrow, 1L)), unname(as.integer(part$L))) ||
+            !identical(unname(as.integer(nc[!isf])), unname(as.integer(nk[part$Mv]))) ||
+            prod(as.numeric(nc)) != count) return(NULL)
+        stride <- cumprod(c(1, nc))[seq_along(nc)]
+        ## the Kronecker product of the contrasts, and the 0-based column
+        ## of each of its columns among those of the term
+        K <- NULL
+        col <- sum((as.numeric(part$u) - 1) * stride[!isf])
+        for (a in which(isf)) {
+            K <- if (is.null(K)) cm[[a]] else kronecker(cm[[a]], K)
+            col <- as.vector(outer(col, (seq_len(nc[a]) - 1) * stride[a], `+`))
+        }
+        if (is.null(K)) K <- matrix(1, 1L, 1L)
+        if (identical(as.numeric(col), as.numeric(seq_len(count) - 1L))) {
+            Ct <- K
+        } else {
+            Ct <- matrix(0, part$Lt, count)
+            Ct[, col + 1] <- K
+        }
+        out[[r]] <- Ct
+    }
+    out
+}
+
+## FALLBACK, used only when the prototype design has no set-up
+## (xtx_sql_layout() returned NULL): the matrices C of the parts read off
+## the in-memory design of prototype rows (every combined level of the
+## factors of the term, numeric variables set to 1), built by applying the
+## plan once per part. Also the reference of xtx_sql_layout() in the tests.
+xtx_sql_layout_grid <- function(D, parts, vi, nk) {
+    plan <- D$plan
+    lapply(parts, function(part) {
+        t <- D$terms[[part$term]]
+        if (t$index == 0L) return(matrix(1, 1L, 1L))
+        S <- part$S
+        Mv <- part$Mv
+        Lt <- part$Lt
+        grid <- expand.grid(lapply(part$L, seq_len), KEEP.OUT.ATTRS = FALSE)
+        vals <- lapply(vi, function(j) {
+            v <- D$vars[[j]]
+            s <- match(j, S)
+            codes <- if (is.na(s)) rep(1L, Lt) else grid[[s]]
+            if (v$kind == "factor") return(factor(v$levels[codes], levels = v$levels))
+            if (v$kind == "logical") return(c(FALSE, TRUE)[codes])
+            if (nk[j] == 1L) return(rep(1, Lt))
+            ## a matrix variable: the column of this part
+            m <- matrix(1, Lt, nk[j])
+            if (j %in% Mv) {
+                m[] <- 0
+                m[, part$u[match(j, Mv)]] <- 1
+            }
+            m
+        })
+        nd <- structure(list(), row.names = c(NA_integer_, -Lt), class = "data.frame")
+        X <- as.matrix(xtx_apply_general(plan, nd, stats::na.pass, vals = vals))
+        unname(X[, attr(X, "assign") == t$index, drop = FALSE])
+    })
 }
 
 ## Names, in the base query, of the numeric columns of variables j (with
@@ -256,42 +360,91 @@ xtx_sql_level <- function(res, S, strides) {
 ## expression over the base query `b`, summed within the combined levels of
 ## a set U of factors: add(U, e) returns its id, run() executes, and
 ## get(id) gives list(res, m): the cells (their code columns __xtx_c<j>, at
-## least those of U) and the sums. All items share one GROUP BY over every
-## factor involved, so that the data are read once; a cell finer than U is
-## summed again by the caller (xtx_sql_fold(), or a sparse matrix, which adds
-## duplicates). When that joint grouping would return too many cells, items
-## are grouped by their own U instead, one query per set. `by`: columns of
-## the base query that split every sum (the groups of colSums(), or the
-## numeric variables of compressed products: xtx_sql_cells()); their number
-## is unknown, so the joint grouping is then used only for few cells.
-## `limit`: at most that many cells are read (more mean too many, and the
-## caller gives up). add(u, expr, agg = TRUE): `expr` is summed, or with
-## agg = FALSE it is an aggregate expression itself.
+## least those of U) and the sums.
+##
+## The items are grouped by the factors of their own terms, so that what
+## comes back is bounded by the cells of the terms involved and not by
+## those of all the factors of the design together: the scan groups by the
+## largest sets U (a set within another is summed within the larger one,
+## and summed again by the caller: xtx_sql_fold(), or a sparse matrix, which
+## adds duplicates), all in one statement and one read of the data, with
+## GROUP BY GROUPING SETS; the rows of each set are told apart by
+## GROUPING(). One set, of all the factors, when that has no more cells
+## than those sets together (and always with a single largest set: a plain
+## GROUP BY). When even that would return too many values, each item is
+## grouped by its own U, one query per set.
+##
+## `by`: columns of the base query that split every sum (the groups of
+## colSums(), or the numeric variables of compressed products:
+## xtx_sql_cells()); their number is unknown, so one statement is then
+## used only for few cells. `limit`: for the trial of compressed products
+## (one set of cells): when the scan has more cells than that, or as many
+## as rows (xtx_sql_limit()), it returns none; they are counted in the
+## database, and nothing of a trial that fails comes back.
+## add(u, expr, agg = TRUE): `expr` is summed, or with agg = FALSE it is
+## an aggregate expression itself.
 xtx_sql_scan <- function(D, base, levels, by = character(), limit = NULL) {
     cap <- if (length(by)) 256 else xtx_sql_max_cells
     U <- list()
     e <- character()
     out <- NULL
+    cells <- function(u) prod(as.numeric(levels[u]))
+    within <- function(a, b) all(a %in% b)
+    kcol <- function(u) if (length(u)) paste0("__xtx_c", u) else character()
+    ## one statement: the items `i` summed within the sets of factors `sets`
+    statement <- function(i, sets) {
+        ge <- unique(e[i])
+        keys <- sort(unique(unlist(sets)))
+        kc <- c(by, kcol(keys))
+        mask <- NULL
+        if (length(sets) > 1L) {
+            ## GROUPING(): one bit per key, set where the key is not in the
+            ## grouping set, the first key in the highest bit
+            mask <- vapply(sets, function(u) sum(2^(length(keys) - which(!keys %in% u))), 0)
+            sel <- c(kc, sprintf("CAST(GROUPING(%s) AS INTEGER) AS __xtx_gs", paste(kcol(keys), collapse = ", ")))
+            group <- sprintf(" GROUP BY GROUPING SETS (%s)",
+                             paste(vapply(sets, function(u) sprintf("(%s)", paste(c(by, kcol(u)), collapse = ", ")), ""),
+                                   collapse = ", "))
+        } else {
+            sel <- kc
+            group <- if (length(kc)) " GROUP BY ALL" else ""
+        }
+        sql <- sprintf("SELECT %s FROM b%s", paste(c(sel, sprintf("%s AS __xtx_m%d", ge, seq_along(ge))), collapse = ", "),
+                       group)
+        if (length(kc) && !is.null(limit)) {
+            lim <- xtx_sql_limit(D, limit)
+            sql <- sprintf("WITH b AS (%s), c AS MATERIALIZED (%s LIMIT %.0f) SELECT * FROM c WHERE (SELECT COUNT(*) FROM c) <= %.0f",
+                           base, sql, lim + 1, lim)
+        } else {
+            sql <- sprintf("WITH b AS (%s) %s", base, sql)
+        }
+        ## the set of each item: the smallest that has its factors
+        size <- vapply(sets, cells, 0)
+        owner <- vapply(U[i], function(u) {
+            ok <- which(vapply(sets, function(v) within(u, v), NA))
+            ok[which.min(size[ok])]
+        }, 1L)
+        list(items = i, col = match(e[i], ge), sql = sql, owner = owner, mask = mask)
+    }
     plan <- function() {
+        if (!length(e)) return(list())
+        sets <- unique(U)
+        top <- sets[!vapply(sets, function(a) any(vapply(sets, function(b) length(b) > length(a) && within(a, b), NA)), NA)]
         all <- sort(unique(unlist(U)))
-        ue <- unique(e)
-        joint <- prod(as.numeric(levels[all])) * length(ue) <= cap
-        key <- if (joint) rep("", length(e)) else vapply(U, paste, "", collapse = ",")
+        if (length(top) > 1L && cells(all) <= sum(vapply(top, cells, 0))) top <- list(all)
+        ## (a trial with `limit` has one set; GROUPING() is read as an integer)
+        if (sum(vapply(top, cells, 0)) * length(unique(e)) <= cap && length(all) <= 30L &&
+            (is.null(limit) || length(top) == 1L))
+            return(list(statement(seq_along(e), top)))
+        key <- vapply(U, paste, "", collapse = ",")
         lapply(unique(key), function(k) {
             i <- which(key == k)
-            keys <- if (joint) all else U[[i[1L]]]
-            ge <- unique(e[i])
-            kc <- c(by, if (length(keys)) paste0("__xtx_c", keys))
-            list(items = i, col = match(e[i], ge),
-                 sql = sprintf("WITH b AS (%s) SELECT %s FROM b%s%s", base,
-                               paste(c(kc, sprintf("%s AS __xtx_m%d", ge, seq_along(ge))), collapse = ", "),
-                               if (length(kc)) " GROUP BY ALL" else "",
-                               if (length(kc) && !is.null(limit)) sprintf(" LIMIT %.0f", limit + 1) else ""))
+            statement(i, U[i[1L]])
         })
     }
     list(
         add = function(u, expr, agg = TRUE) {
-            U[[length(U) + 1L]] <<- sort(as.integer(u))
+            U[[length(U) + 1L]] <<- sort(unique(as.integer(u)))
             e <<- c(e, if (agg) sprintf("SUM(%s)", expr) else expr)
             length(e)
         },
@@ -300,16 +453,28 @@ xtx_sql_scan <- function(D, base, levels, by = character(), limit = NULL) {
             out <<- vector("list", length(e))
             for (g in plan()) {
                 res <- xtx_sql_decode(D, xtx_query(D, g$sql))
+                ## the rows of each set
+                parts <- if (is.null(g$mask)) list(res)
+                         else lapply(g$mask, function(m) res[res$`__xtx_gs` == m, , drop = FALSE])
                 for (k in seq_along(g$items)) {
-                    m <- as.double(res[[paste0("__xtx_m", g$col[k])]])
+                    r <- parts[[g$owner[k]]]
+                    m <- as.double(r[[paste0("__xtx_m", g$col[k])]])
                     m[is.na(m)] <- 0
-                    out[[g$items[k]]] <<- list(res = res, m = m)
+                    out[[g$items[k]]] <<- list(res = r, m = m)
                 }
             }
             invisible()
         },
         get = function(id) out[[id]],
         total = function(id) sum(out[[id]]$m))
+}
+
+## The largest number of cells a trial of compressed products may have
+## (`cap`: xtx_compress_cap()): at most the cap, and fewer than the rows
+## (when every row is its own cell there is nothing to compress).
+xtx_sql_limit <- function(D, cap) {
+    n <- D$cache$n %||% D$n
+    if (n > 1) min(cap, n - 1) else cap
 }
 
 ## 1 where a (double) expression of the base query is missing, to sum.

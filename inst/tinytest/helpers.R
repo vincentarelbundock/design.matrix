@@ -151,6 +151,59 @@ fuzz_contrasts <- function(d) {
 }
 
 
+# What an expression sends to the database and what comes back: every call
+# of DBI::dbGetQuery, dbExecute, dbSendQuery, dbSendStatement, dbWriteTable,
+# dbAppendTable and duckdb::duckdb_register, wherever it comes from (the
+# package's xtx_query() and xtx_execute() end in the first two; the option
+# xtx.remote_debug only sees those). A call made while another traced call
+# runs (a DBI method built on another generic) is not recorded again.
+# Returns list(value, count = statements, log = one row per statement: `fn`,
+# `sql` (the statement, or the name of the table written), `rows` and `cols`
+# of the result fetched (0 for a statement that returns none) and
+# `up_rows`, `up_cols` of the data sent (dbWriteTable, dbAppendTable,
+# duckdb_register), fetched = sum(rows * cols), max_rows = the most rows
+# of one result). The functions are untraced on exit, even on error.
+record_queries <- function(expr) {
+    state <- new.env()
+    state$depth <- 0L
+    state$log <- list()
+    enter <- function() state$depth <- state$depth + 1L
+    leave <- function(fn, frame, value) {
+        state$depth <- state$depth - 1L
+        if (state$depth > 0L) return(invisible())
+        arg <- function(nm) tryCatch(get(nm, envir = frame, inherits = FALSE), error = function(e) NULL)
+        sql <- arg("statement") %||% arg("name")
+        sql <- if (is.character(sql) || inherits(sql, "SQL")) paste(as.character(sql), collapse = " ") else NA_character_
+        up <- if (fn %in% c("dbWriteTable", "dbAppendTable")) arg("value") else if (fn == "duckdb_register") arg("df")
+        got <- if (fn == "dbGetQuery" && is.data.frame(value)) dim(value) else c(0L, 0L)
+        state$log[[length(state$log) + 1L]] <- data.frame(
+            fn = fn, sql = sql, rows = got[1L], cols = got[2L],
+            up_rows = if (is.data.frame(up)) nrow(up) else 0L, up_cols = if (is.data.frame(up)) ncol(up) else 0L,
+            stringsAsFactors = FALSE)
+        invisible()
+    }
+    `%||%` <- function(a, b) if (is.null(a)) b else a
+    fns <- list(DBI = c("dbGetQuery", "dbExecute", "dbSendQuery", "dbSendStatement",
+                        "dbWriteTable", "dbAppendTable"),
+                duckdb = "duckdb_register")
+    traced <- list()
+    on.exit(for (t in traced) suppressMessages(untrace(t[[2]], where = asNamespace(t[[1]]))))
+    for (pkg in names(fns)) for (f in fns[[pkg]]) {
+        ## (the exit call is evaluated in the frame of the traced function:
+        ## its arguments and its value)
+        suppressMessages(trace(f, tracer = as.call(list(enter)),
+                               exit = as.call(list(leave, f, quote(environment()), quote(returnValue()))),
+                               print = FALSE, where = asNamespace(pkg)))
+        traced[[length(traced) + 1L]] <- list(pkg, f)
+    }
+    value <- expr
+    log <- if (length(state$log)) do.call(rbind, state$log)
+           else data.frame(fn = character(), sql = character(), rows = integer(), cols = integer(),
+                           up_rows = integer(), up_cols = integer(), stringsAsFactors = FALSE)
+    list(value = value, count = nrow(log), log = log, fetched = sum(as.numeric(log$rows) * log$cols),
+         max_rows = if (nrow(log)) max(log$rows) else 0L)
+}
+
 # The plan of a formula and training data, or of a fitted model (internal
 # to xtx; users reach plans through design_matrix(, newdata = )).
 plan_of <- function(...) get("xtx_plan_of", asNamespace("xtx"))(...)

@@ -19,9 +19,11 @@
 ##
 ## Option xtx.remote_compress: "auto" (default) compresses by the
 ## rule of the operation (xtx_compress_rule()) and xtx_compress_worth(), and
-## gives up when the scan returns more than
+## gives up when the scan has more than
 ## min(n / 2, getOption("xtx.remote_compress_max", 1e6)) cells;
 ## TRUE always compresses (unless every row is distinct); FALSE never.
+## A scan that gives up returns no cell: they are counted in the database
+## (xtx_sql_scan(), `limit`), and the ordinary scan follows.
 
 xtx_compress_mode <- function(mode = getOption("xtx.remote_compress", "auto")) {
     if (!(isTRUE(mode) || isFALSE(mode) || identical(mode, "auto")))
@@ -41,8 +43,8 @@ xtx_compress_mode <- function(mode = getOption("xtx.remote_compress", "auto")) {
 ##     values count as values): compress when it is at most `ratio` times
 ##     the number of rows and at most
 ##     getOption("xtx.remote_compress_max", 1e6).
-## The real GROUP BY gives up as well when it returns more patterns than
-## that (xtx_sql_cell_design()). The estimate is asked once for the rows of
+## The real GROUP BY gives up as well when it has more patterns than
+## that (xtx_sql_scan(), `limit`; xtx_sql_cell_design()). The estimate is asked once for the rows of
 ## a design and a set of keys; the operations differ only in `ratio`.
 xtx_compress_worth <- function(D, keys, n, group = character(),
                               ratio = getOption("xtx.remote_compress_ratio", 0.1)) {
@@ -175,10 +177,11 @@ xtx_sql_cells <- function(D, cap) {
 }
 
 ## The design of the cells (the rows of `res`, a result of the scan), or
-## NULL when they are more than `cap`, or as many as the rows.
+## NULL when the trial failed: the scan found more cells than `cap`, or as
+## many as the rows, and returned none of them (xtx_sql_scan(), `limit`).
 xtx_sql_cell_design <- function(D, res, cap) {
     G <- nrow(res)
-    if (G > cap || (G == (D$cache$n %||% D$n) && G > 1L)) return(NULL)
+    if (G == 0L || G > xtx_sql_limit(D, cap)) return(NULL)
     X <- matrix(0, G, D$p, dimnames = list(NULL, D$colnames))
     for (Tt in D$sql_terms) {
         if (!length(Tt$cols)) next

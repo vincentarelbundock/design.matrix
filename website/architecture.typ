@@ -121,13 +121,13 @@ In memory, fixed effects use a dense integer code per observation. DuckDB fits a
 
 == The SQL engine
 
-For a remote design, the products of the previous section are `GROUP BY` aggregates over factor columns as stored. Levels become codes in R, on the cells that come back, and the $C_t$ are read off the in-memory design of a few prototype rows (every combined level, numeric variables set to 1), so that columns, contrasts and their order are those of `model.matrix()`.
+For a remote design, the products of the previous section are `GROUP BY` aggregates over factor columns as stored. Levels become codes in R, on the cells that come back, and the $C_t$ come from the set-up of the in-memory design of a few prototype rows (the contrasts it chose for each factor of each term, and the column of each combination), so that columns, contrasts and their order are those of `model.matrix()`. The sums of a term, or of a pair of terms for $X' W X$, are grouped by the factors of that term or pair, in one statement (`GROUP BY GROUPING SETS`): what comes back is bounded by the cells of the terms involved, not by the cells of all the factors of the design together, and never grows with the rows. R applies the contrasts to those sums.
 
 A variable that SQL cannot compute (an R function with no translation) is evaluated in R once, batch by batch, into a column of a temporary table, and is then a column like any other. Results of fits with one value per row (fitted values, residuals, predictions) are views in the database, which keep the columns of the data; products with the design are columns.
 
 == Compression in the database
 
-When the data have few design patterns, the scan of the SQL engine also groups by the numeric variables of the design, and returns each cell with its number of rows and the sums of the weights and responses; the design of the cells is built in memory from the engine's own $C_t$ and the fit runs there (`R/remote_compress.R`). An estimate of the number of patterns, from a sample and from `approx_count_distinct()`, decides whether to try.
+When the data have few design patterns, the scan of the SQL engine also groups by the numeric variables of the design, and returns each cell with its number of rows and the sums of the weights and responses; the design of the cells is built in memory from the engine's own $C_t$ and the fit runs there (`R/remote_compress.R`). An estimate of the number of patterns, from a sample and from `approx_count_distinct()`, decides whether to try. The cells of a trial are counted in the database: when there are more than the cap, or as many as rows, the statement returns none of them and the ordinary scan runs.
 
 == The API of the fitting code
 

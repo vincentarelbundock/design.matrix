@@ -40,8 +40,8 @@ M <- as.matrix(design_matrix(fo, d))
 
 ## TRUE: one query per product, the numeric variables as keys of the
 ## GROUP BY; the dense results
-## (a numeric variable __xtx_v<j> among the keys of the outer SELECT)
-grouped_scan <- function(sql) grepl("\\) SELECT (__xtx_[a-z0-9]+, )*__xtx_v[0-9]+,", sql) && grepl("GROUP BY ALL", sql, fixed = TRUE)
+## (a numeric variable __xtx_v<j> among the keys of the SELECT of the cells)
+grouped_scan <- function(sql) grepl("\\(SELECT (__xtx_[a-z0-9]+, )*__xtx_v[0-9]+,", sql) && grepl("GROUP BY ALL", sql, fixed = TRUE)
 q <- queries(crossprod(D, "w" * D), xtx.remote_compress = TRUE)
 expect_true(same(q$value, crossprod(M, d$w * M)))
 expect_equal(length(q$sql), 1L)
@@ -128,5 +128,73 @@ D2 <- design_matrix(~ xc + f, con, table = "d")
 M2 <- as.matrix(design_matrix(~ xc + f, d))
 expect_true(same(with_opts(crossprod(D2), xtx.remote_compress = TRUE), crossprod(M2)))
 expect_null(xtx:::xtx_sql_moments(D2, cap = 10))
+
+## ---- a trial that fails is discarded in the database ----
+## The cells of a trial are counted where they are computed: when there are
+## more than the cap, or as many as the rows, the trial returns no row, and
+## the ordinary scan follows. What each mode fetches (record_queries()):
+fetched <- function(expr, ...) {
+    op <- options(...)
+    on.exit(options(op))
+    record_queries(expr)
+}
+trial <- function(r) grepl("c AS MATERIALIZED", r$log$sql, fixed = TRUE)
+## forced on, every row its own cell (2000 cells of xc): nothing of the
+## trial comes back; one more statement, the scan by the 3 levels of f
+r <- fetched(crossprod(D2), xtx.remote_compress = TRUE)
+expect_true(same(r$value, crossprod(M2)))
+expect_identical(r$count, 2L)
+expect_identical(trial(r), c(TRUE, FALSE))
+expect_identical(r$log$rows, c(0L, 3L))
+r <- fetched(crossprod(D2, "y"), xtx.remote_compress = TRUE)
+expect_true(same(r$value, crossprod(M2, d$y)))
+expect_identical(r$log$rows, c(0L, 3L))
+r <- fetched(colSums(D2, group = "g"), xtx.remote_compress = TRUE)
+expect_true(same(r$value, rowsum(M2, d$g)))
+expect_identical(r$log$rows[trial(r)], 0L)
+expect_true(all(r$log$rows <= 6L * 3L))
+## forced on, few cells (30: 5 values of xd, 3 levels, 2 logicals): the
+## cells and nothing else
+r <- fetched(crossprod(D, "w" * D), xtx.remote_compress = TRUE)
+expect_true(same(r$value, crossprod(M, d$w * M)))
+## (the first statement reads the columns of the scaled source, no row)
+expect_identical(trial(r), c(FALSE, TRUE))
+expect_identical(r$log$rows, c(0L, nrow(unique(d[c("xd", "f", "lg")]))))
+## forced off: no trial at all
+for (e in list(quote(crossprod(D2)), quote(crossprod(D, "w" * D)), quote(colSums(D, group = "g")))) {
+    r <- fetched(eval(e), xtx.remote_compress = FALSE)
+    expect_false(any(trial(r)), info = deparse(e))
+    expect_true(all(r$log$rows <= 6L * 3L * 2L), info = deparse(e))
+}
+## automatic, compressed: the decision (two statements of one row), then
+## the 15 cells
+DW <- suppressMessages(design_matrix(fw, con, table = "d"))
+r <- fetched(crossprod(DW, "w" * DW), xtx.remote_compress = "auto")
+expect_true(same(r$value, crossprod(MW, d$w * MW)))
+expect_identical(trial(r), c(FALSE, FALSE, FALSE, TRUE))
+expect_identical(r$log$rows, c(0L, 1L, 1L, nrow(unique(d[c("xd", "xe")]))))
+## automatic, the estimate wrong: the cap (here 10 cells) is below the 15
+## cells the estimate promised. The trial returns nothing and the ordinary
+## scan (one row: the design has no factor) gives the products
+DW <- suppressMessages(design_matrix(fw, con, table = "d"))
+key <- paste(c(DW$filter, xtx:::xtx_compress_keys(DW)), collapse = "\r")
+DW$cache$worth[[key]] <- c(est = 5, rows = n)
+r <- fetched(crossprod(DW, "w" * DW), xtx.remote_compress = "auto", xtx.remote_compress_max = 10)
+expect_true(same(r$value, crossprod(MW, d$w * MW)))
+expect_identical(trial(r), c(FALSE, TRUE, FALSE))
+expect_identical(r$log$rows, c(0L, 0L, 1L))
+## and the fits' patterns (xtx_fit_suffstats() calls xtx_sql_patterns()):
+## NULL, with nothing fetched, over the cap
+pt <- fetched(xtx:::xtx_sql_patterns(DW, "CAST(s.y AS DOUBLE)", mode = "auto", fit = "glm"), xtx.remote_compress_max = 10)
+expect_null(pt$value)
+expect_identical(pt$log$rows[trial(pt)], 0L)
+pt <- fetched(xtx:::xtx_sql_patterns(DW, "CAST(s.y AS DOUBLE)", mode = TRUE))
+expect_identical(nrow(pt$value$x), 15L)
+expect_identical(pt$log$rows[trial(pt)], 15L)
+## weighted, every row its own cell: the second pass is never run
+pt <- fetched(xtx:::xtx_sql_patterns(D2, "CAST(s.y AS DOUBLE)", "CAST(s.w AS DOUBLE)", mode = TRUE))
+expect_null(pt$value)
+expect_identical(pt$count, 1L)
+expect_identical(pt$log$rows, 0L)
 
 test_con_done(con)
