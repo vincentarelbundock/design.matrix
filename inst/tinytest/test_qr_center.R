@@ -5,7 +5,7 @@ library(xtx)
 # the X'X of the centered design (as remote designs do), so that R, hence
 # vcov(), keeps the accuracy of lm() on badly conditioned designs. The
 # columns kept and the NA pattern still come from the uncentered X'X, as in
-# lm(). The in-memory versions of the checks of test_remote_lm.R.
+# lm(). (The fits on these designs are tested in xtx.fit.)
 same <- function(a, b, tol = 1e-7) isTRUE(all.equal(unname(a), unname(b), tolerance = tol))
 
 set.seed(42)
@@ -28,40 +28,6 @@ d$y[c(3, 50)] <- NA
 d$f1[7] <- NA
 d$xc[9] <- NaN
 d$w[11] <- 0
-
-check_fit <- function(f, l, info, tol = 1e-7) {
-    expect_identical(is.na(coef(f)), is.na(coef(l)), info = paste(info, "aliased"))
-    expect_true(same(coef(f), coef(l), tol), info = paste(info, "coef"))
-    expect_true(same(vcov(f), vcov(l), tol), info = paste(info, "vcov"))
-    expect_true(same(sqrt(diag(vcov(f))), sqrt(diag(vcov(l))), tol), info = paste(info, "se"))
-    expect_true(same(sigma(f), sigma(l), tol), info = paste(info, "sigma"))
-    expect_identical(df.residual(f), df.residual(l), info = paste(info, "df"))
-    expect_true(same(summary(f)$r.squared, summary(l)$r.squared, tol), info = paste(info, "R2"))
-}
-
-formulas <- list(
-    y ~ xd + f1 + f2,
-    y ~ xd7 + f1,
-    y ~ f1 + f3 + xd,
-    y ~ xc * f1 + f2,
-    y ~ xs + f1,
-    y ~ xs * f2 + f1,
-    y ~ xt + f1,
-    y ~ xc + f1 + f3,
-    y ~ log(xd) + I(xc^2) + f1,
-    y ~ xb + xs,
-    y ~ xb * f2,
-    y ~ xb * xs,
-    y ~ xb * xs + xt + f1,
-    y ~ xs + xt + xb + f3 + f1)
-for (fo in formulas) {
-    for (wt in c(FALSE, TRUE)) {
-        info <- paste(deparse(fo), if (wt) "weighted" else "")
-        l <- if (wt) lm(fo, d, weights = w) else lm(fo, d)
-        f <- if (wt) design_lm(fo, d, weights = w) else design_lm(fo, d)
-        check_fit(f, l, info)
-    }
-}
 
 # qr() directly: rank, pivot and the factor of lm()'s QR, up to sign
 d0 <- na.omit(d)
@@ -89,10 +55,10 @@ set.seed(3)
 dc <- data.frame(x = runif(5000) + 100, f = gl(5, 1000))
 dc$y <- 1 + dc$x + rnorm(5000)
 for (fo in list(y ~ f + x + I(x^2), y ~ f * log(x) + x)) {
-    check_fit(design_lm(fo, dc), lm(fo, dc), deparse(fo))
     D <- design_matrix(fo, dc)
     expect_true(same(qr.coef(qr(D), dc$y), qr.coef(qr(as.matrix(D)), dc$y), 1e-8), info = deparse(fo))
 }
+
 # (design.matrix#r6g7) the shifted design is X T on every row: T is found
 # on prototypes built, like the shifted design, from the frame's columns as
 # stored; such designs are now centered (no guard)
@@ -108,32 +74,7 @@ for (fo in list(y ~ f + x + I(x^2), y ~ f * log(x) + x, y ~ I(x^2) + f, y ~ log(
     expect_true(all(err <= 1e-10 * pmax(scale, 1)), info = info)
     ## (badly conditioned: qr() centers; I(x^2) alone is not bad enough)
     if (!identical(fo, y ~ I(x^2) + f)) expect_false(is.null(qr(D)$centered), info = paste(info, "centered"))
-    check_fit(design_lm(fo, dc), lm(fo, dc), info)
-    dw <- transform(dc, w = runif(nrow(dc), 0.5, 2))
-    check_fit(design_lm(fo, dw, weights = w), lm(fo, dw, weights = w), paste(info, "weighted"))
 }
-# with fixed effects: centered as well, coefficients and covariance as
-# lm() with the FE as dummies (the intercept and f absorbed)
-dc$g <- sample(40, nrow(dc), TRUE)
-for (fo in list(y ~ x + I(x^2) | f, y ~ log(x) + I(x^2) | f + g, y ~ I(x^2) | g)) {
-    info <- paste(deparse(fo), "FE")
-    rhs <- deparse(fo[[3L]][[2L]])
-    fes <- all.vars(fo[[3L]][[3L]])
-    l <- lm(stats::as.formula(paste("y ~", rhs, "+", paste(sprintf("factor(%s)", fes), collapse = " + "))), dc)
-    a <- design_lm(fo, dc)
-    nm <- names(coef(a))
-    expect_true(same(coef(a), coef(l)[nm], 1e-7), info = paste(info, "coef"))
-    ## (lm()'s covariance, with fixest's small sample correction of the FE fit)
-    ## (drop = FALSE: with one coefficient, a 1 x 1 matrix as vcov(a))
-    Vl <- vcov(l)[nm, nm, drop = FALSE] * df.residual(l) / df.residual(a)
-    expect_true(same(vcov(a), Vl, 1e-7), info = paste(info, "vcov"))
-}
-
-# design_glm() (gaussian) takes the same factorization
-l <- glm(y ~ xb * xs + f1, data = d)
-g <- design_glm(y ~ xb * xs + f1, data = d)
-expect_true(same(coef(g), coef(l)), info = "glm coef")
-expect_true(same(vcov(g), vcov(l)), info = "glm vcov")
 
 # centering leaves the user's random numbers alone
 set.seed(1)
@@ -147,33 +88,3 @@ q <- qr(design_matrix(y ~ xc * f1 + xd, d0))
 expect_null(q$centered)
 q <- qr(design_matrix(y ~ xb * xs, d0))
 expect_false(is.null(q$centered))
-
-# in memory and remote agree (the remote fit centers too)
-if (requireNamespace("duckdb", quietly = TRUE) && requireNamespace("DBI", quietly = TRUE)) {
-    con <- test_con()
-    DBI::dbWriteTable(con, "d", d)
-    DBI::dbWriteTable(con, "dc", dc)
-    for (fo in list(y ~ f + x + I(x^2), y ~ f * log(x) + x)) {
-        info <- paste(deparse(fo), "remote, stored columns")
-        f <- design_lm(fo, dc)
-        r <- design_lm(fo, con, table = "dc")
-        expect_true(same(coef(f), coef(r)), info = paste(info, "coef"))
-        expect_true(same(vcov(f), vcov(r)), info = paste(info, "vcov"))
-    }
-    for (fo in list(y ~ x + I(x^2) | f, y ~ log(x) + I(x^2) | f + g)) {
-        info <- paste(deparse(fo), "remote FE, stored columns")
-        f <- design_lm(fo, dc)
-        r <- design_lm(fo, con, table = "dc")
-        expect_true(same(coef(f), coef(r)), info = paste(info, "coef"))
-        expect_true(same(vcov(f), vcov(r)), info = paste(info, "vcov"))
-    }
-    for (fo in list(y ~ xs + f1, y ~ xb * xs, y ~ xt + f1, y ~ xb * f2)) {
-        info <- paste(deparse(fo), "remote")
-        f <- design_lm(fo, d)
-        r <- design_lm(fo, con, table = "d")
-        expect_identical(is.na(coef(f)), is.na(coef(r)), info = paste(info, "aliased"))
-        expect_true(same(coef(f), coef(r)), info = paste(info, "coef"))
-        expect_true(same(vcov(f), vcov(r)), info = paste(info, "vcov"))
-    }
-    test_con_done(con)
-}

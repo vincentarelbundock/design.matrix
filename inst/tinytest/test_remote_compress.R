@@ -122,54 +122,6 @@ expect_null(with_opts(cap(DW2, "glm"), xtx.remote_compress_ratio = 0.01))
 xm <- with_opts(crossprod(D, "ym"), xtx.remote_compress = TRUE)
 expect_true(all(is.na(xm)))
 
-## compressed and uncompressed fits: weighted (two passes for the sum of
-## squares within the patterns) and with an offset in the keys (design_glm)
-for (w in list(NULL, "w")) {
-    a <- design_lm(y ~ xd * f + lg, con, table = "d", weights = w, compress = TRUE)
-    b <- design_lm(y ~ xd * f + lg, con, table = "d", weights = w, compress = FALSE)
-    l <- lm(y ~ xd * f + lg, d, weights = if (is.null(w)) NULL else d$w)
-    expect_true(a$compressed)
-    expect_false(b$compressed)
-    expect_true(same(coef(a), coef(l)) && same(coef(b), coef(l)))
-    expect_true(same(a$rss, b$rss) && same(a$rss, sum(weighted.residuals(l)^2)))
-}
-d$yp <- rpois(n, exp(0.2 * d$xd))
-DBI::dbWriteTable(con, "d", d, overwrite = TRUE)
-a <- design_glm(yp ~ xd + f, poisson, con, table = "d", offset = "g", compress = TRUE)
-g0 <- glm(yp ~ xd + f, poisson, d, offset = g)
-expect_true(a$compressed)
-expect_true(same(coef(a), coef(g0), 1e-7) && same(deviance(a), deviance(g0), 1e-7))
-
-## fits under "auto" (xtx_compress_rule()). With 2000 rows: the glm compresses
-## (90 patterns with the offset g, 4.5% of the rows), the lm (30 patterns,
-## 1.5%) does not
-a <- design_glm(yp ~ xd + f, poisson, con, table = "d", offset = "g")
-expect_true(a$compressed)
-expect_true(same(coef(a), coef(g0), 1e-7) && same(deviance(a), deviance(g0), 1e-7))
-expect_false(design_lm(y ~ xd * f + lg, con, table = "d")$compressed)
-## with 20000 rows: an unweighted lm of 6 patterns (0.03%) compresses; the
-## weighted one does not, without a decision query (2 numeric columns); a
-## weighted lm with many numeric columns (11) and 15 patterns (0.075%) does
-nb <- 20000
-b <- data.frame(xd = sample(0:4, nb, TRUE) / 2, xe = sample(0:2, nb, TRUE), f = sample(c("a", "b"), nb, TRUE),
-                w = sample(1:3, nb, TRUE))
-b$y <- b$xd + b$xe + rnorm(nb)
-DBI::dbWriteTable(con, "b", b)
-a <- design_lm(y ~ xe + f, con, table = "b")
-expect_true(a$compressed)
-expect_true(same(coef(a), coef(lm(y ~ xe + f, b))))
-q <- queries(design_lm(y ~ xe * f, con, table = "b", weights = "w"))
-expect_false(q$value$compressed)
-expect_false(any(grepl("approx_count_distinct(hash(", q$sql, fixed = TRUE)))
-expect_true(same(coef(q$value), coef(lm(y ~ xe * f, b, weights = w))))
-fwy <- update(fw, y ~ .)
-a <- design_lm(fwy, con, table = "b", weights = "w")
-expect_true(a$compressed)
-expect_true(same(coef(a), coef(lm(fwy, b, weights = w))))
-## compress = TRUE still forces, FALSE never
-expect_true(design_lm(y ~ xe * f, con, table = "b", weights = "w", compress = TRUE)$compressed)
-expect_false(design_lm(y ~ xe + f, con, table = "b", compress = FALSE)$compressed)
-
 ## too many cells: TRUE gives up after the scan (every row distinct), and
 ## the products are the scan over the rows
 D2 <- design_matrix(~ xc + f, con, table = "d")

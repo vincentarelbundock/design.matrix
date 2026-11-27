@@ -289,7 +289,8 @@ for (fo in list(y ~ x1 * f2 + ch + lg, y ~ splines::ns(z, 3) + f1)) {
     }
 }
 
-## SQL expressions as weights and groups; residuals and sandwich meats
+## SQL expressions as weights and groups; sandwich meats (with the
+## residuals of a remote fit: tests of xtx.fit)
 set.seed(11)
 ds <- data.frame(y = rnorm(300), x = rnorm(300), f = sample(letters[1:4], 300, TRUE),
                  cl = sample(1:12, 300, TRUE))
@@ -297,8 +298,6 @@ ds$y[5] <- NA
 DBI::dbWriteTable(con, "ds", ds)
 dk <- ds[!is.na(ds$y), ]
 X <- model.matrix(y ~ x * f, dk)
-fit <- lm(y ~ x * f, dk)
-e <- unname(residuals(fit))
 for (engine in "sql") {
     D <- design_matrix(y ~ x * f, con, table = "ds", engine = engine, chunk_size = 64)
     sw <- DBI::SQL("1 + abs(x)")
@@ -308,15 +307,7 @@ for (engine in "sql") {
     expect_true(same(colSums(D, group = DBI::SQL("cl % 3")), rowsum(X, dk$cl %% 3)), info = engine)
     expect_true(same(colMeans(DBI::SQL("2 * x") * D, group = "cl"),
                      rowsum(2 * dk$x * X, dk$cl) / as.vector(table(dk$cl))), info = engine)
-    R <- residuals(design_lm(D))
-    expect_equal(dim(R), dim(D), info = engine)
-    expect_true(same(crossprod(R, DBI::SQL('".resid" * ".resid"') * R), crossprod(X, e^2 * X)), info = engine)
-    expect_true(same(crossprod(".resid" * R), crossprod(X, e^2 * X)), info = engine)
-    expect_true(same(colSums(".resid" * R, group = "cl"), rowsum(e * X, dk$cl)), info = engine)
-    expect_true(max(abs(crossprod(R, ".resid"))) < 1e-8, info = engine)
 }
-Rl <- residuals(design_lm(design_matrix(log(abs(y)) ~ x, con, table = "ds")))
-expect_true(max(abs(crossprod(Rl, ".resid"))) < 1e-8)
 expect_error(DBI::SQL("nope + 1") * design_matrix(y ~ x, con, table = "ds"), "invalid SQL expression")
 
 ## errors

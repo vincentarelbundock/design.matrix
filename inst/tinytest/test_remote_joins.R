@@ -44,45 +44,6 @@ ndm <- DBI::dbReadTable(con, "nd")
 ndm <- ndm[order(ndm$id), ]
 expect_identical(levels(ndm$e), c("zz", "r", "p", "q", "s"))
 
-forms <- list(
-    enum = y ~ x * e + z,
-    text = y ~ x * h + z,
-    logical = y ~ x * b + e,
-    integer_factor = y ~ factor(g) + x,
-    enum_text = y ~ x + e:h + z,
-    enum_logical_text = y ~ e * b + h:x,
-    three = y ~ x:e:h + b)
-
-for (nm in names(forms)) {
-    f <- forms[[nm]]
-    for (na in c("omit", "exclude")) {
-        nact <- if (na == "omit") stats::na.omit else stats::na.exclude
-        lab <- paste(nm, na)
-        r <- suppressMessages(design_lm(f, con, table = "d", na.action = nact))
-        l <- lm(f, m, na.action = nact)
-        expect_identical(names(coef(r)), names(coef(l)), info = lab)
-        expect_true(same(coef(r), coef(l)), info = lab)
-        ## fitted values and residuals, as tables
-        fr <- rd(fitted(r))
-        fl <- fitted(l)
-        expect_equal(nrow(fr), length(fl), info = lab)
-        expect_true(same(fr$.fitted, fl[as.character(fr$id)]), info = paste(lab, "fitted"))
-        expect_true(same(fr$.resid, residuals(l)[as.character(fr$id)]), info = paste(lab, "residuals"))
-        ## predictions on new data with another ENUM type
-        pr <- rd(suppressMessages(predict(r, con, table = "nd")))
-        pl <- predict(l, ndm)
-        expect_true(same(pr[[ncol(pr)]], pl), info = paste(lab, "predict"))
-    }
-    ## GLM: the linear predictor of each iteration
-    gf <- stats::update(f, k ~ .)
-    gr <- suppressMessages(design_glm(gf, poisson, con, table = "d", compress = FALSE))
-    gl <- glm(gf, poisson, m)
-    expect_true(same(coef(gr), coef(gl), 1e-7), info = paste(nm, "glm"))
-    expect_true(same(deviance(gr), deviance(gl), 1e-7), info = paste(nm, "glm deviance"))
-    pr <- rd(suppressMessages(predict(gr, con, table = "nd", type = "response")))
-    expect_true(same(pr[[ncol(pr)]], predict(gl, ndm, type = "response"), 1e-7), info = paste(nm, "glm predict"))
-}
-
 ## colSums() within groups (the scan with groups), over complete rows
 DBI::dbWriteTable(con, "dc", m[stats::complete.cases(m[, c("x", "e", "h", "b")]), ])
 mc <- DBI::dbReadTable(con, "dc")

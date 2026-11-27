@@ -263,3 +263,11 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     expect_equal(lk[[2L]], match(nd$a, g$levels$a)[order(nd$id)] * 10)
     test_con_done(con)
 }
+
+# The compression of a GLM is weighted only when weights are given (or a
+# two-column response gives trials), in memory as remotely
+kp <- column_family(poisson())
+kb <- column_family(binomial())
+expect_false(xtx:::xtx_glm_mem_cols(c(1, 2, 3), NULL, NULL, kp)$weighted)
+expect_true(xtx:::xtx_glm_mem_cols(c(1, 2, 3), c(1, 1, 2), NULL, kp)$weighted)
+expect_true(xtx:::xtx_glm_mem_cols(cbind(c(1, 2), c(0, 1)), NULL, NULL, kb)$weighted)
