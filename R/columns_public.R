@@ -466,20 +466,23 @@ col_pmax <- function(a, b, checked = TRUE) {
 #' @param x A column: a numeric vector in memory, a [design_column()]
 #'   remotely.
 #' @param fun `"pnorm"`, `"qnorm"`, `"dnorm"` and `"pcauchy"` (the standard
-#'   distributions, as [stats::pnorm()] and the others compute them); and
+#'   distributions, as [stats::pnorm()] and the others compute them);
 #'   `"log_positive"`, the natural logarithm of values known to be positive
-#'   (remotely without the guards of `log()` at zero and below).
+#'   (remotely without the guards of `log()` at zero and below), and
+#'   `"lgamma_positive"`, `lgamma()` of values known to be positive (remotely
+#'   without the guard of `lgamma()` at zero, whose SQL names its argument
+#'   three times).
 #' @return A column (a double vector in memory, a `design_column` remotely).
 #' @examples
 #' col_math(c(-1, 0, 1), "pnorm")
 #' @keywords internal
 #' @export
-col_math <- function(x, fun = c("pnorm", "qnorm", "dnorm", "pcauchy", "log_positive")) {
+col_math <- function(x, fun = c("pnorm", "qnorm", "dnorm", "pcauchy", "log_positive", "lgamma_positive")) {
     fun <- match.arg(fun)
     xtx_col_check(x, "x")
     switch(fun,
            pnorm = xtx_c_pnorm(x), qnorm = xtx_c_qnorm(x), dnorm = xtx_c_dnorm(x), pcauchy = xtx_c_pcauchy(x),
-           log_positive = xtx_fast_log(x))
+           log_positive = xtx_fast_log(x), lgamma_positive = xtx_c_lgamma(x))
 }
 
 ## col_ifelse() with a value where the test is missing. In memory, the

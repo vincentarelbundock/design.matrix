@@ -344,3 +344,13 @@ if (requireNamespace("duckdb", quietly = TRUE)) {
     expect_inherits(design_frame(y ~ x, con, w, table = "dmm"), "xtx_remote_frame")
     test_con_done(con)
 }
+
+## col_math(, "lgamma_positive"): lgamma() of positive values, in memory and remotely
+expect_identical(col_math(c(1, 2.5, 10), "lgamma_positive"), lgamma(c(1, 2.5, 10)))
+if (requireNamespace("duckdb", quietly = TRUE)) {
+    con <- test_con()
+    DBI::dbWriteTable(con, "dl", data.frame(u = c(1, 2.5, 10, 100)))
+    Rl <- design_matrix(~ u, con, table = "dl")
+    expect_equal(sum(col_math(design_column(Rl, "u"), "lgamma_positive")), sum(lgamma(c(1, 2.5, 10, 100))))
+    test_con_done(con)
+}

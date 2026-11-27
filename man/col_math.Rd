@@ -4,16 +4,22 @@
 \alias{col_math}
 \title{Functions of a column that base R cannot dispatch on}
 \usage{
-col_math(x, fun = c("pnorm", "qnorm", "dnorm", "pcauchy", "log_positive"))
+col_math(
+  x,
+  fun = c("pnorm", "qnorm", "dnorm", "pcauchy", "log_positive", "lgamma_positive")
+)
 }
 \arguments{
 \item{x}{A column: a numeric vector in memory, a \code{\link[=design_column]{design_column()}}
 remotely.}
 
 \item{fun}{\code{"pnorm"}, \code{"qnorm"}, \code{"dnorm"} and \code{"pcauchy"} (the standard
-distributions, as \code{\link[stats:pnorm]{stats::pnorm()}} and the others compute them); and
+distributions, as \code{\link[stats:pnorm]{stats::pnorm()}} and the others compute them);
 \code{"log_positive"}, the natural logarithm of values known to be positive
-(remotely without the guards of \code{log()} at zero and below).}
+(remotely without the guards of \code{log()} at zero and below), and
+\code{"lgamma_positive"}, \code{lgamma()} of values known to be positive (remotely
+without the guard of \code{lgamma()} at zero, whose SQL names its argument
+three times).}
 }
 \value{
 A column (a double vector in memory, a \code{design_column} remotely).
