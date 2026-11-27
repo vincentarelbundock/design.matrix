@@ -48,7 +48,7 @@ suppressPackageStartupMessages(switch(package,
     "lm_xtx (DuckDB)" = {
         library(xtx)
         library(xtx.fit)
-        design_threads(1)
+        options(xtx.threads = 1)
     },
     "feols" = {
         library(fixest)

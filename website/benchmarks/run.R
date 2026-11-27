@@ -18,7 +18,7 @@
 # workers get the folder as BENCH_RESULTS.
 #
 # The BLAS runs on one thread (OMP_NUM_THREADS=1, since OpenBLAS built with
-# OpenMP ignores OPENBLAS_NUM_THREADS). design_threads() is capped by the same
+# OpenMP ignores OPENBLAS_NUM_THREADS). The option xtx.threads is capped by the same
 # OpenMP limit, so the benchmarks that time several threads run without it.
 multithreaded <- c("threads")
 

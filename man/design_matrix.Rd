@@ -58,7 +58,7 @@ For a formula, \code{as.matrix(design_matrix(f, d))} is identical to
 same values bit for bit (including signed zeros and the payloads of \code{NA}
 and \code{NaN}), same names and attributes in the same order. The C routine is
 a port of the one in R's stats package; its fill visits rows in chunks,
-optionally on several threads (see \code{\link[=design_threads]{design_threads()}}), and performs exactly
+optionally on several threads (see the option \code{xtx.threads} in \link{xtx-package}), and performs exactly
 the same floating point operations as R for every cell.
 
 \strong{Options.}

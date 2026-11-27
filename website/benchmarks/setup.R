@@ -1,5 +1,5 @@
 library(xtx)
-design_threads(1)
+options(xtx.threads = 1)
 # Build the model frame exactly as model.matrix() does, so that comparisons
 # with functions that call it are fair, and compute every row.
 options(xtx.skip_na_copy = FALSE, xtx.dedup = FALSE)

@@ -1,5 +1,5 @@
 fast_model_matrix <- function(formula, data, threads) {
-    design_threads(threads)
+    options(xtx.threads = threads)
     as.matrix(design_matrix(formula, data))
 }
 

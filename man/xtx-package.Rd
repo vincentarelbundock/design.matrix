@@ -10,6 +10,26 @@ Builds model matrices that are identical, bit for bit, to those of
 \code{\link[stats:model.matrix]{stats::model.matrix()}}, faster, and offers algebra on the design
 without forming the dense matrix.
 }
+\section{Options}{
+
+\code{options(xtx.threads = )} sets the number of threads of the dense fill
+and of the kernels: an integer, \code{0} for all available threads, or a
+number strictly between 0 and 1 for that fraction of them (rounded up).
+Without the option, half of the available threads are used (rounded up,
+as in fixest), and one thread during \verb{R CMD check}. The available threads
+are those OpenMP reports, capped by the environment variable
+\code{OMP_THREAD_LIMIT}; without OpenMP, one. A larger number is capped, and
+an invalid value is an error at the next operation.
+
+The dense fill and the row-wise kernels (\code{\%*\%}, \code{\link[=quadratic_diagonal]{quadratic_diagonal()}})
+compute each row independently, so their results do not depend on the
+number of threads. Sums over rows (\code{crossprod()}, \code{colSums()} and
+\code{colMeans()}, with or without groups) split the rows into fixed blocks,
+one per thread, whose sums are added in a fixed order: results are
+identical for a given number of threads, and can differ in the last
+digits between numbers of threads. Small problems run on one thread.
+}
+
 \seealso{
 Useful links:
 \itemize{

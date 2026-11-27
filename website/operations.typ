@@ -58,7 +58,7 @@ Building the design defers the cost of allocating and filling the dense matrix u
 
 == Using multiple threads with `as.matrix()`
 
-Writing the dense output accounts for much of the work in both implementations. Additional threads can speed things up (see #link("reference/design_threads.html")[`design_threads()`]). The memory column includes both the dense output and temporary allocations made while building it.
+Writing the dense output accounts for much of the work in both implementations. Additional threads can speed things up (set with `options(xtx.threads = )`: an integer, `0` for all available threads, or a fraction of them; the default is half). The memory column includes both the dense output and temporary allocations made while building it.
 
 #bench("threads")
 

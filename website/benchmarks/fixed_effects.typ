@@ -112,7 +112,7 @@ The packages:
 
 = Protocol
 
-- Everything runs on one core and one thread: `design_threads(1)`, `setFixest_nthreads(1)`, `data.table::setDTthreads(1)`, DuckDB's `SET threads = 1`, and a single-threaded BLAS, with the whole run pinned to one CPU core.
+- Everything runs on one core and one thread: `options(xtx.threads = 1)`, `setFixest_nthreads(1)`, `data.table::setDTthreads(1)`, DuckDB's `SET threads = 1`, and a single-threaded BLAS, with the whole run pinned to one CPU core.
 - The data of each design and size are simulated once (same seed for every package) and saved as a Parquet file.
 - Each combination of package, design, size, fixed effects and number of regressors runs in a fresh R process: read the Parquet file (into a data frame for the in-memory fits; the DuckDB fits query the file directly, through a view, so their times include reading it), fit once (warmup), then time three fits and keep the median.
 - Memory is the peak resident memory of the process during the warmup fit, minus the resident memory just before it. It counts every allocation, in R, C, C++ or DuckDB, but not the data frame of the in-memory fits, read before.

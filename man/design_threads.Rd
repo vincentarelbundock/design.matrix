@@ -16,27 +16,16 @@ returns the current setting.}
 The number of threads (invisibly when setting).
 }
 \description{
-The dense fill and the row-wise kernels (\code{\%*\%}, \code{\link[=quadratic_diagonal]{quadratic_diagonal()}})
-can run on several threads. Each row is computed independently, so the
-results do not depend on the number of threads.
-}
-\details{
-Sums over rows (\code{crossprod()}, \code{colSums()} and \code{colMeans()}, with or
-without groups) can also run on several threads: the rows are split into
-fixed blocks, one per thread, whose sums are added in a fixed order.
-Results are identical for a given number of threads; with different
-numbers of threads they can differ in the last digits. Small problems
-run on one thread.
-
-The default follows fixest: half of the available threads (rounded up),
-and one thread during \verb{R CMD check}. The option \code{xtx.threads},
-which takes the same values as \code{n}, replaces that default. The available
-threads are those OpenMP reports, capped by the environment variable
-\code{OMP_THREAD_LIMIT}; without OpenMP, one.
+Resolves the option \code{xtx.threads} (see the section Options of
+\link{xtx-package}) into a number of threads, or sets that option after
+checking the value. Users set the option directly with
+\code{options(xtx.threads = )}; this function is exported for the package
+'xtx.fit', whose own kernels need the resolved number.
 }
 \examples{
-old <- design_threads()
-design_threads(2)
-design_threads(0.5)
-design_threads(old)
+design_threads()
+old <- options(xtx.threads = 2)
+design_threads()
+options(old)
 }
+\keyword{internal}

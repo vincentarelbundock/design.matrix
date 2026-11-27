@@ -24,7 +24,7 @@ suppressPackageStartupMessages({
     library(xtx, lib.loc = lib)
     library(fixest)
 })
-design_threads(threads)
+options(xtx.threads = threads)
 setFixest_nthreads(threads)
 data.table::setDTthreads(threads)
 
